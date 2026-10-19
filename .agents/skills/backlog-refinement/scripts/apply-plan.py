@@ -23,13 +23,18 @@ Plan shape::
         "remove_labels": [],
         "comment": "Backlog refinement (...): ...",
         "body": "full rewritten body (ready only), or null",
-        "close_reason": "completed" | "not planned" (stale/dont-build), or null
+        "close_reason": "completed" | "not planned" (stale/dont-build), or null,
+        "evidence": ["file:line, commit or PR that shows the work shipped"],
+        "validated": true   # stale only: the orchestrator re-ran the evidence
     }]}
 
 `agent: refined` is always added. Label hygiene follows the core rubric: a
 ready issue loses any `agent-bail:`/`needs:`/`status: blocked` left from an
 earlier assessment, and an excluded or stale one loses `dev: agent`. A stale
-issue is closed when the local rubric sets `stale-action: close`; handback
+issue is closed when the local rubric sets `stale-action: close` (the default)
+and the entry is validated: `validated: true` with non-empty `evidence`, set by
+the orchestrator after re-running that evidence against the integration
+branch. An unvalidated stale entry is only recommended for close. Handback
 closes instead require explicit issue-specific confirmation. Otherwise the
 plan's comment stands as the recommendation. With `Rewrite mode:
 suggest`, a rewritten body is posted as a comment instead of replacing the body.
@@ -161,6 +166,15 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
             errors.append(f"{where}: close_reason is only for a stale or dont-build verdict")
         if verdict == "dont-build" and close_reason != "not planned":
             errors.append(f"{where}: dont-build needs close_reason 'not planned'")
+        validated = entry.get("validated", False)
+        evidence = entry.get("evidence", [])
+        if not isinstance(validated, bool):
+            errors.append(f"{where}: validated must be true or false")
+        elif validated:
+            if verdict != "stale":
+                errors.append(f"{where}: validated is only for a stale verdict")
+            if not isinstance(evidence, list) or not any(isinstance(x, str) and x.strip() for x in evidence):
+                errors.append(f"{where}: a validated stale entry needs non-empty evidence")
         bails = [x for x in add if x.startswith(BAIL_PREFIX)]
         needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
         if sum(x in priority_labels for x in add) > 1:
@@ -535,12 +549,25 @@ def apply_entry(
     if entry["comment"].strip() not in existing:
         gh(["issue", "comment", number, "--body-file", "-"], stdin=entry["comment"])
     if entry["verdict"] in ("stale", "dont-build"):
-        if close_confirmed or config.stale_action == "close":
+        if close_confirmed or auto_closes(entry, config):
             gh(["issue", "close", number, "--reason", entry["close_reason"]])
             notes.append(f"closed as {entry['close_reason']}")
+        elif config.stale_action == "close":
+            notes.append("close recommended (not validated)")
         else:
             notes.append("close recommended (stale-action: recommend)")
     return ", ".join(notes) or "labelled"
+
+
+def auto_closes(entry: dict[str, Any], config: RubricConfig) -> bool:
+    """A stale entry closes without a per-issue confirmation only when the repo
+    allows it and the orchestrator validated the evidence."""
+    return (
+        entry["verdict"] == "stale"
+        and not entry.get("decision_comment")
+        and config.stale_action == "close"
+        and entry.get("validated") is True
+    )
 
 
 def preview(plan: dict[str, Any], config: RubricConfig, done: set[int]) -> None:
@@ -552,7 +579,12 @@ def preview(plan: dict[str, Any], config: RubricConfig, done: set[int]) -> None:
         if entry.get("body"):
             notes.append("body→comment" if config.rewrite_mode == "suggest" else "body")
         if entry["verdict"] == "stale":
-            notes.append(f"close ({entry['close_reason']})" if config.stale_action == "close" else "recommend close")
+            if auto_closes(entry, config):
+                notes.append(f"close ({entry['close_reason']})")
+            elif config.stale_action == "close":
+                notes.append("recommend close (not validated)")
+            else:
+                notes.append("recommend close")
         if entry["number"] in done:
             notes.append("already applied")
         print(f"#{entry['number']:<6}{entry['verdict']:<14}{labels[:58]:<60}{', '.join(notes)}")

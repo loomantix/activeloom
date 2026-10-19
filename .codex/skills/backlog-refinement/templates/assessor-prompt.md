@@ -51,6 +51,6 @@ Write `{OUT_FILE}` as JSON, exactly this shape, with one entry per issue:
 
 Add a priority label only when the issue carries none; an existing one stands. Use `refined-only` for a human-reserved (assigned) issue: add at most a priority, and name in the comment the category it would get if unassigned.
 
-Use an empty list, never placeholder text, when there is nothing to add or remove: `apply-plan.py` rejects any label the repository does not have, and any label outside the refinement families above. `evidence` and `rubric_note` are for the reviewer and the refinement retro; the applier ignores them.
+Use an empty list, never placeholder text, when there is nothing to add or remove: `apply-plan.py` rejects any label the repository does not have, and any label outside the refinement families above. `evidence` is what the reviewer re-checks before a stale issue can close, so cite the merged commit or PR and the `file:line` that shows the work; `rubric_note` is for the refinement retro. Never set `validated`: only the reviewer sets it, after re-running your evidence.
 
 Then reply with one line per issue: number, verdict, priority.

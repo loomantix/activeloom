@@ -47,7 +47,7 @@ Ask the open questions in one round, numbered, each with your recommended answer
 4. **Title-prefix priorities** — when step 1 found a recurring prefix, propose the `priority-title-prefixes` marker mapping each prefix to a priority label, highest first. Ask whether any family of issues — the children of one epic, say — carries its parent's prefix on purpose while each child is labelled separately; record that family as a local exception, so the mismatch is not reported as a conflict.
 5. **Auto-managed labels** — labels on issues that a scheduled workflow opens and closes. Look for them in `.github/workflows/` before asking.
 6. **Rewrite mode** — `edit` (refinement rewrites the issue body) or `suggest` (it posts the rewrite as a comment for a human to apply).
-7. **Stale action** — `recommend` (refinement recommends a close for a human) or `close` (it closes a verified-stale issue itself, after the evidence comment). Recommend `close` when reopening a wrongly closed issue is cheap, as it is in most repositories.
+7. **Stale action** — `close` (the default: refinement closes a stale issue itself once its evidence is validated against the integration branch, after the evidence comment) or `recommend` (it recommends the close for a human). Recommend `close` unless a wrong close is expensive to notice or undo.
 
 ## 4. Write the files
 
