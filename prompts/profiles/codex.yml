@@ -115,6 +115,9 @@ skills:
   horch:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to run horch or to orchestrate a herdr workspace.'
+  hloop:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hloop or a batch of agent issues on herdr.'
   hpromote:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to run hpromote or a promotion on herdr.'

@@ -19,6 +19,7 @@
 .agents/skills/feature-dev/SKILL.md
 .agents/skills/grill/SKILL.md
 .agents/skills/hgrill/SKILL.md
+.agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
 .agents/skills/hpromote/SKILL.md
 .agents/skills/hreview/SKILL.md
@@ -66,6 +67,7 @@
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
 .claude/skills/hgrill/SKILL.md
+.claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
 .claude/skills/hpromote/SKILL.md
 .claude/skills/hreview/SKILL.md
@@ -111,6 +113,7 @@
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md
 .codex/skills/hgrill/SKILL.md
+.codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md
 .codex/skills/hpromote/SKILL.md
 .codex/skills/hreview/SKILL.md
