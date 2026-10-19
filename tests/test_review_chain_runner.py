@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import shlex
 import signal
 import shutil
@@ -5783,15 +5784,24 @@ def test_recovery_process_probe_finds_live_child(
     if identity == 'run':
         env['ACTIVELOOM_RUN_ID'] = h.recovery_runner.state['run_id']
     cwd = Path(h.recovery_runner.state['config']['worktree']) if identity == 'cwd' else h.directory
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], env=env, cwd=cwd)
+    child = subprocess.Popen(
+        [sys.executable, '-c', 'import time; print("ready", flush=True); time.sleep(60)'],
+        env=env, cwd=cwd, stdout=subprocess.PIPE, text=True,
+    )
     original_iterdir = Path.iterdir
     monkeypatch.setattr(Path, 'iterdir', lambda p: iter([Path('/proc') / str(child.pid)]) if p == Path('/proc') else original_iterdir(p))
     try:
+        # Popen can return while exec is still installing /proc's environment.
+        assert child.stdout is not None
+        assert select.select([child.stdout], [], [], 5)[0], "child did not become ready"
+        assert child.stdout.readline() == 'ready\n'
         # A reviewer process can predate the run; exec retains its start time.
         assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner)
     finally:
         child.terminate()
         child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 @pytest.mark.parametrize('denied', [False, True])
