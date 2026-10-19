@@ -1254,7 +1254,7 @@ function rowsHaveHistoricalMarkers(rows) {
   });
 }
 
-// ../../node_modules/.pnpm/@babel+parser@8.0.6/node_modules/@babel/parser/lib/index.js
+// ../../node_modules/.pnpm/@babel+parser@8.0.7/node_modules/@babel/parser/lib/index.js
 var Position = class {
   constructor(line, col, index) {
     this.line = void 0;
@@ -11200,8 +11200,10 @@ var StatementParser = class extends ExpressionParser {
     }
     this.scope.enter(514);
     this.prodParam.enter(functionFlags(isAsync, node.generator));
-    if (!isDeclaration) {
+    if (!isDeclaration && tokenIsIdentifier(this.state.type)) {
+      this.expressionScope.enter(newExpressionScope());
       node.id = this.parseFunctionId();
+      this.expressionScope.exit();
     }
     this.parseFunctionParams(node, false);
     this.parseFunctionBodyAndFinish(node, isDeclaration ? "FunctionDeclaration" : "FunctionExpression");
