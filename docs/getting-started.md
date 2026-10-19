@@ -290,16 +290,58 @@ Add these **after** the first sync lands, so the links resolve.
 
 ## Installing from a clone
 
-`scripts/install-skills.sh` is a Claude-specific contributor helper: it **symlinks** skills out of a clone of this repository, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
+`scripts/install-skills.sh` is the contributor helper. It **symlinks** each harness's skills out of a clone of this repository into that harness's user-level skills directory, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
 
-`activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them.
+`activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them. Both install into the same directories:
+
+| Harness (`--harness`)      | Tree in this repository | User skills directory              |
+| -------------------------- | ----------------------- | ---------------------------------- |
+| Claude Code (`claude`)     | `.claude/skills`        | `~/.claude/skills`                 |
+| Codex (`codex`)            | `.codex/skills`         | `~/.agents/skills`                 |
+| Antigravity CLI (`gemini`) | `.agents/skills`        | `~/.gemini/antigravity-cli/skills` |
+
+The table comes from the `harnesses:` block of [`scripts/sync-targets.yml`](../scripts/sync-targets.yml). Each directory is the one the harness's own documentation gives for personal skills.
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
 cd activeloom
-./scripts/install-skills.sh --dry-run
+./scripts/install-skills.sh --dry-run   # every harness found on this machine
 ./scripts/install-skills.sh
 ```
+
+With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`, and falls back to Claude Code. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. Re-run it after a pull that adds, renames, or retires a skill. It links skill directories only; `activeloom add` also installs the shared support files skills read from beside their skills directory.
+
+After installing skills, choose each engine's model and effort with the `review-setup` skill or `activeloom review-config`; see [Review profile](#review-profile).
+
+### Claude Code
+
+```bash
+./scripts/install-skills.sh --harness claude
+```
+
+Override the destination with `--dest claude=DIR` or `CLAUDE_SKILLS_DIR`.
+
+### Codex
+
+```bash
+./scripts/install-skills.sh --harness codex
+```
+
+Codex reads personal skills from `~/.agents/skills`. It still reads the older `~/.codex/skills` and lists both, so a skill linked in both appears twice: the script prunes dangling links into this clone there and prints an `rm` command for each live one. Override the destination with `--dest codex=DIR` or `CODEX_SKILLS_DIR`. Earlier `activeloom add` releases copied Codex skills into `~/.codex/skills`; delete those copies after reinstalling.
+
+### Antigravity
+
+```bash
+./scripts/install-skills.sh --harness gemini
+```
+
+This installs for the Antigravity CLI (`agy`). The Antigravity app and IDE read `~/.gemini/config/skills` instead:
+
+```bash
+./scripts/install-skills.sh --harness gemini --dest gemini="$HOME/.gemini/config/skills"
+```
+
+`GEMINI_SKILLS_DIR` sets the same override. Earlier `activeloom add` releases copied these skills into `~/.agents/skills`, which is now Codex's directory; delete those copies after reinstalling.
 
 ## Troubleshooting
 

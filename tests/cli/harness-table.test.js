@@ -13,9 +13,9 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const { HARNESSES } = require(path.join(REPO_ROOT, 'cli', 'lib', 'detect.js'));
 
 /**
- * Read `harnesses:` from the manifest as `{id: {root}}`.
+ * Read `harnesses:` from the manifest as `{id: {root, home, skills, cli}}`.
  *
- * @returns {Map<string, string>}
+ * @returns {Map<string, Record<string, string>>}
  */
 function parseHarnesses() {
   const text = fs.readFileSync(
@@ -42,9 +42,12 @@ function parseHarnesses() {
       found.set(currentId, {});
       continue;
     }
-    const rootMatch = /^ {4}root:\s*(\S+)\s*$/.exec(line);
-    if (rootMatch && currentId) {
-      found.get(currentId).root = rootMatch[1];
+    const keyMatch =
+      /^ {4}(root|home|skills|legacy_skills|cli):\s*(\S+)\s*$/.exec(line);
+    if (keyMatch && currentId) {
+      const key =
+        keyMatch[1] === 'legacy_skills' ? 'legacySkills' : keyMatch[1];
+      found.get(currentId)[key] = keyMatch[2];
       continue;
     }
   }
@@ -59,9 +62,9 @@ test('the manifest still has a parseable harnesses block', () => {
   );
 });
 
-test('CLI harness ids and roots match scripts/sync-targets.yml', () => {
+test('CLI harness table matches scripts/sync-targets.yml', () => {
   const manifest = parseHarnesses();
-  const cli = new Map(HARNESSES.map((h) => [h.id, { root: h.root }]));
+  const cli = new Map(HARNESSES.map(({ id, ...config }) => [id, config]));
 
   assert.deepStrictEqual(
     [...cli.keys()].sort(),
@@ -83,4 +86,25 @@ test('gemini is the id and .agents is the root', () => {
   const gemini = HARNESSES.find((h) => h.id === 'gemini');
   assert.ok(gemini, 'no harness with id "gemini"');
   assert.strictEqual(gemini.root, '.agents');
+});
+
+test('every harness declares where it lives on a machine', () => {
+  for (const [id, config] of parseHarnesses()) {
+    for (const key of ['root', 'home', 'skills', 'cli']) {
+      assert.ok(
+        config[key],
+        `harness "${id}" has no \`${key}\` in the manifest`,
+      );
+    }
+  }
+});
+
+test('user skills directories follow each harness vendor', () => {
+  // Claude Code, Codex, and Antigravity CLI document these user scopes.
+  const skills = Object.fromEntries(HARNESSES.map((h) => [h.id, h.skills]));
+  assert.deepStrictEqual(skills, {
+    claude: '.claude/skills',
+    codex: '.agents/skills',
+    gemini: '.gemini/antigravity-cli/skills',
+  });
 });

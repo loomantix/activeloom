@@ -30,20 +30,22 @@ revision with `git rev-parse HEAD` and the installed skill's SHA-256; a movable
 sync ref is not an installed version.
 
 Claude Code loads `.claude/skills/internal-docs/SKILL.md` and supports
-`/internal-docs`. Current Codex native discovery uses `.agents/skills`, so select
-the Gemini surface as well as Codex for this skill's native repository/personal
-discovery; `.codex/skills` remains the legacy distributed/manual adapter. Through
-sync, naming `gemini` delivers that harness's whole target set, not only this
-skill: narrow it with `skip_targets` (see [Sync](sync.md)), or install this one
-skill personally with `add --harness gemini`. Gemini
-CLI documents `.agents/skills` as a workspace/user alias. Agy runtime behavior
-needs an actual fresh-session smoke, independently of Gemini CLI documentation.
-Codex-only legacy installation can read its installed file explicitly and use
-the manual command contract; it is not claimed as native discovery.
+`/internal-docs`. Current Codex native discovery uses `.agents/skills`. For a
+personal install, `add --harness codex` writes to `~/.agents/skills`, Codex's
+documented user scope. For repository discovery, select the Gemini surface as
+well as Codex; `.codex/skills` remains the legacy distributed/manual adapter.
+Through sync, naming `gemini` delivers that harness's whole target set, not only
+this skill: narrow it with `skip_targets` (see [Sync](sync.md)). A personal
+`add --harness gemini` writes to `~/.gemini/antigravity-cli/skills`, the
+Antigravity CLI's user scope. Agy runtime behavior needs an actual fresh-session
+smoke, independently of the documentation. Codex-only legacy installation can
+read its installed file explicitly and use the manual command contract; it is
+not claimed as native discovery.
 
 Sources: [OpenAI skills](https://developers.openai.com/codex/skills),
 [Claude Code skills](https://code.claude.com/docs/en/skills),
-[Gemini CLI skills](https://geminicli.com/docs/cli/skills/).
+[Gemini CLI skills](https://geminicli.com/docs/cli/skills/),
+[Antigravity skills](https://antigravity.google/docs/skills).
 
 ## Diagnose and exercise
 
