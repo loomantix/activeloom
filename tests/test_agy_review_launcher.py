@@ -857,13 +857,28 @@ def test_launcher_requires_a_trustworthy_structured_result(
     assert result.stdout == ""
 
 
-def test_launcher_failure_directs_the_caller_to_the_ledger(tmp_path: Path) -> None:
+@pytest.mark.parametrize("launcher", AGY_REVIEW_LAUNCHERS[:2])
+def test_launcher_failure_directs_the_caller_to_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str
+) -> None:
+    scripts = tmp_path / "launcher"
+    scripts.mkdir()
+    copied_launcher = scripts / "run-agy-review.sh"
+    copied_launcher.write_bytes((ROOT / launcher).read_bytes())
+    copied_launcher.chmod(0o755)
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((LAUNCHER.parent / name).read_bytes())
+    (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
+    (scripts / "local-review-handoff.py").write_text(
+        '"""Run admission is outside this envelope-diagnostic test."""\n', encoding="utf-8"
+    )
+    monkeypatch.setitem(globals(), "LAUNCHER", copied_launcher)
     # A narrated success or an already-posted comment is not a passing result;
     # the operator has to read the ledger and re-run rather than relax the gate.
     fake_agy, _ = _fake_agy(
         tmp_path,
         review_payload=json.dumps(
-            {"status": "ERROR", "response": "round complete", "error": "tool call failed"}
+            {"status": "ERROR", "response": "round complete", "error": "synthetic tool timeout"}
         ),
     )
     environment = {
@@ -875,7 +890,11 @@ def test_launcher_failure_directs_the_caller_to_the_ledger(tmp_path: Path) -> No
     result = _run(environment)
 
     assert result.returncode == 1
-    assert "read the PR ledger directly" in result.stderr
+    if launcher.startswith(".claude/"):
+        assert "read the PR ledger directly" in result.stderr
+    assert "synthetic tool timeout" in result.stderr
+    assert "round complete" not in result.stderr
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize(
