@@ -23,7 +23,7 @@ SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"
 LEDGER_VERSION_FILE = ROOT / ".claude/skills/critique/scripts/review-ledger.version"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
-AGY_SURFACE_SHA = "c4c7a1d3956b94f05b320f57b3218a596ea40c54"
+AGY_SURFACE_SHA = "03d3dda77333bc8d430e45dffd2d1f67cb9b4ce3"
 LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 
 # Continuation flags start a fresh one-shot only by their absence, so the
@@ -630,11 +630,12 @@ def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
     assert not argv_file.exists()
 
 
-def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("surface_head", ["c" * 40, "c4c7a1d3956b94f05b320f57b3218a596ea40c54"])
+def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path, surface_head: str) -> None:
     argv_file = tmp_path / "argv.json"
     fake_agy, _ = _fake_agy(tmp_path)
     environment = {
-        **_trusted_environment(tmp_path, surface_head="c" * 40),
+        **_trusted_environment(tmp_path, surface_head=surface_head),
         "AGY_ARGV_FILE": str(argv_file),
         "AGY_REVIEW_CLI": str(fake_agy),
     }
@@ -704,10 +705,12 @@ def test_launcher_rejects_file_hidden_by_global_excludes(tmp_path: Path) -> None
     assert not argv_file.exists()
 
 
-def test_launcher_pin_matches_the_launcher_source() -> None:
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_pin_matches_the_launcher_source(harness: str) -> None:
     # The launcher comment promises this constant moves in lockstep with the pin,
     # so assert it rather than mirroring the value by hand.
-    assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in LAUNCHER.read_text(encoding="utf-8")
+    launcher = ROOT / harness / "skills/critique/scripts/run-agy-review.sh"
+    assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in launcher.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("harness", [".claude", ".codex"])
