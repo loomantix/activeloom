@@ -225,9 +225,9 @@ It inventories every tab and session in the workspace, checks your instruction f
 
 It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
 
-### `hloop <k>` — batch loop
+### `hloop next <k>` — batch loop
 
-What you type: `/hloop 5` for the top five agent-ready issues, or `/hloop 17 18 21` for named ones; add `--concurrency <c>` to change how many builds run at once (default 3). It runs as the workspace's orchestrator and follows `horch` for everything else.
+What you type: `/hloop next 5` for the top five agent-ready issues, `/hloop 17` for issue #17, or `/hloop 17 18 21` for several named issues; add `--concurrency <c>` to change how many builds run at once (default 3). It runs as the workspace's orchestrator and follows `horch` for everything else.
 
 Before launching it screens the queue and shows you the plan: issues assigned to someone else, excluded by refinement or not yet refined are skipped with a reason; an issue that lists design options with no recorded choice goes to the grill queue; and issues whose bodies name the same files run one after the other, behaviour changes first, so the second PR does not conflict once the first ships.
 

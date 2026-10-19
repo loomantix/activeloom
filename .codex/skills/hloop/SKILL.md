@@ -7,7 +7,7 @@ description: Herdr batch loop — the orchestrator picks a batch of agent-ready 
 
 Usage:
 
-- `hloop <k>`: the top `k` ready agent issues.
+- `hloop next <k>`: the top `k` ready agent issues.
 - `hloop <n> [<m> ...]`: the named issues.
 - `--concurrency <c>`: builds running at once. Default 3.
 
@@ -24,7 +24,7 @@ This session is the **orchestrator** and follows the `horch` skill (`.codex/skil
 
 ## 1. Pick
 
-1. **Queue.** `python3 -I .codex/skills/issues/scripts/ready.py --agent --limit 30 --json` for `<k>`; otherwise the named issues.
+1. **Queue.** `python3 -I .codex/skills/issues/scripts/ready.py --agent --limit 30 --json` for `next <k>`; otherwise the named issues. A single bare number names one issue, never a batch size.
 2. **Skip**, and say why, any issue that:
    - is assigned to someone else;
    - carries an `agent-bail:` label, or a label `ready.py` hard-excludes;
