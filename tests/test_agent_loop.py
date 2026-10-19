@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1493,9 +1494,19 @@ def test_a_later_issue_stop_does_not_name_the_previous_issue_run_state(
     assert [event["issue"] for event in events if event["event"] == "pr_ready"] == [77]
     stop = [event for event in events if event["event"] == "stop"][-1]
     assert (stop["issue"], stop["category"]) == (78, "validation-red")
-    assert "--resume-batch" in stop["resumeCommand"]
-    assert "--resume-run" not in stop["resumeCommand"]
-    assert "Resume review with" not in result.stderr
+    # Completed workers now have a pre-publication checkpoint of their own.
+    resume = shlex.split(stop["resumeCommand"])
+    assert resume[1] == "--resume-run"
+    state_path = Path(resume[2])
+    state = json.loads(state_path.read_text())
+    assert (state["issue"], state["phase"]) == (78, "worker-complete")
+    previous = next((tmp_path / "logs").glob("*issue-77*/run-state.json"))
+    assert str(previous) not in stop["resumeCommand"]
+    assert str(previous) not in result.stderr
+    batch = next((tmp_path / "logs").glob("*-batch-*.json"))
+    child = next(item for item in json.loads(batch.read_text())["issues"] if item["issue"] == 78)
+    assert child["childRunState"] == str(state_path)
+    assert "--resume-batch" in result.stderr
 
 
 @pytest.mark.parametrize("legacy", [False, True])
