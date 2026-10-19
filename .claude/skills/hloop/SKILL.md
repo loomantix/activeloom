@@ -55,24 +55,23 @@ A `BUILD-QUESTION` moves the issue to the skipped list with that question. End t
 
 On `BUILD-PR: <pr> <sha>`:
 
-1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block.
-2. Mark it ready (`gh pr ready <pr>`); the ship gate refuses drafts, and the chain runs either way. A herder may set it back to draft for the run and ready again on convergence.
-3. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push.
-4. Start the review chain as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher.
+1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The PR is a draft, the base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block. Keep the PR in draft so `hreview` or `auto-glance` owns the ready flip on convergence.
+2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push.
+3. Start the review chain as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher.
 
 ## 4. When a watcher stops
 
 Read the herder's pane, then:
 
 - **converged** → step 5;
-- **stopped at the glance gate** → `horch`'s glance routing. When `auto-glance` declines because the change can never classify as small (a dependency or lockfile change, whatever its size), start a full `hreview` instead;
+- **stopped at the glance gate** → `horch`'s glance routing. When `auto-glance` declines because the change can never classify as small (a dependency or lockfile change, whatever its size), prompt `hreview <pr>` to review the change anyway (overriding the human-glance gate);
 - **glance with findings** → send the findings to a fix session (the build's session if it is still open, otherwise a new one in the PR's tab), then glance again at the new head;
 - **exhausted, non-converged or blocked** → `horch`'s Problems. Leave the PR and its tab as they are.
 
 ## 5. Ship
 
 1. **Tests at the head.** CI on PRs to the integration branch may skip test jobs, so run, in the PR's worktree at its head, the specs the PR added or changed, and the full suite when the PR changes shared logic or a dependency. The repository's `AGENTS.md or CLAUDE.md` names the commands and any environment the database-backed tests need. Check the skipped count: tests that skip for a missing environment are not a pass. If the build session removed its worktree, use a detached one at the head under `worktree_root` and remove it afterwards. A failure is a block.
-2. **Ship** through `horch`'s Shipping, with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
+2. **Ship** through `horch`'s Shipping (if the converged PR is still in draft, mark it ready with `gh pr ready <pr>` first), with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
 3. **Deferred findings.** A herder's final report can list findings the reviewers deferred. For the ones that are confirmed and user-visible, file one follow-up issue per PR, quoting each comment's file and line, with acceptance criteria. Label it `dev: agent` but **not** `agent: refined`, so the next batch skips it until it is refined. Test gaps go in the same issue. First search open issues for the PR number and each finding's file: the herder may already have filed it.
 4. **Clean up.** Remove the build worktree and its local branch, skipping whatever the merge already removed. Leave the review tab as `horch` says.
 5. Start any queued or serialized issue, unless a hold is set.
