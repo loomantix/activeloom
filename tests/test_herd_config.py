@@ -413,12 +413,28 @@ def test_safe_value_of_a_known_flag_is_not_a_risk(tmp_path: Path, capsys: pytest
     assert report["unrecognized"] == ["-s workspace-write", "--search"]
 
 
+def test_sandbox_only_flag_does_not_disable_approval_prompts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"codex": {"permission_off_args": ["-s", "danger-full-access"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["stops_at_prompts"] is True
+
+
+def test_approval_flag_in_launch_args_applies_to_editing_sessions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"codex": {"launch_args": ["-a", "never"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["stops_at_prompts"] is False
+
+
 def test_permission_flag_in_launch_args_reaches_read_only_sessions(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     engines = {"claude": {"launch_args": ["--dangerously-skip-permissions"]}}
     report = permissions(tmp_path, capsys, engines, "claude")["claude"]
-    assert report["stops_at_prompts"] is True
+    assert report["stops_at_prompts"] is False
     assert report["turned_off_in_read_only"] == [
         {"arg": "--dangerously-skip-permissions", "turns_off": "every permission check"}
     ]

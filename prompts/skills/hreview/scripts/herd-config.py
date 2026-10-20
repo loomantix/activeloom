@@ -592,8 +592,12 @@ def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, A
         entry = loaded["config"]["engines"][engine]
         turned_off, unrecognized = _turned_off(engine, entry["permission_off_args"])
         in_launch, _ = _turned_off(engine, entry["launch_args"])
+        approval_off = any(
+            "approval prompts" in item["turns_off"] or item["turns_off"] == "every permission check"
+            for item in turned_off + in_launch
+        )
         report[engine] = {
-            "stops_at_prompts": not entry["permission_off_args"],
+            "stops_at_prompts": not approval_off,
             "turned_off": turned_off,
             "unrecognized": unrecognized,
             "turned_off_in_read_only": in_launch,
