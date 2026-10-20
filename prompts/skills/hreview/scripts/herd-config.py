@@ -536,6 +536,71 @@ def read_user(path: Path) -> dict[str, Any]:
     return {"source": {"path": str(path), "present": True}, "config": effective}
 
 
+# Flags each CLI documents as turning a safety check off. A flag with a value
+# counts only with that value: `-s read-only` is a read-only session, not a risk.
+PERMISSION_FLAGS: dict[str, dict[str, tuple[str | None, str]]] = {
+    "claude": {
+        "--dangerously-skip-permissions": (None, "every permission check"),
+        "--permission-mode": ("bypassPermissions", "every permission check"),
+    },
+    "codex": {
+        "--dangerously-bypass-approvals-and-sandbox": (None, "approval prompts and the sandbox"),
+        "-s": ("danger-full-access", "the sandbox"),
+        "--sandbox": ("danger-full-access", "the sandbox"),
+        "-a": ("never", "approval prompts"),
+        "--ask-for-approval": ("never", "approval prompts"),
+    },
+    "gemini": {},
+}
+
+
+def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str]]:
+    known = PERMISSION_FLAGS[engine]
+    found: list[dict[str, str]] = []
+    unrecognized: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        flag, has_inline, inline = arg.partition("=")
+        if flag not in known:
+            unrecognized.append(arg)
+            index += 1
+            continue
+        wanted, turns_off = known[flag]
+        if wanted is None:
+            found.append({"arg": arg, "turns_off": turns_off})
+            index += 1
+            continue
+        value = inline if has_inline else (args[index + 1] if index + 1 < len(args) else "")
+        shown = arg if has_inline else f"{arg} {value}".strip()
+        if value == wanted:
+            found.append({"arg": shown, "turns_off": turns_off})
+        else:
+            unrecognized.append(shown)
+        index += 1 if has_inline else 2
+    return found, unrecognized
+
+
+def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, Any]:
+    """What a session that edits will and won't be asked about, per engine.
+
+    `launch_args` reach read-only sessions too, so a flag there that turns a
+    check off is reported separately: it defeats the read-only launch.
+    """
+    report: dict[str, Any] = {}
+    for engine in engines:
+        entry = loaded["config"]["engines"][engine]
+        turned_off, unrecognized = _turned_off(engine, entry["permission_off_args"])
+        in_launch, _ = _turned_off(engine, entry["launch_args"])
+        report[engine] = {
+            "stops_at_prompts": not entry["permission_off_args"],
+            "turned_off": turned_off,
+            "unrecognized": unrecognized,
+            "turned_off_in_read_only": in_launch,
+        }
+    return {"source": loaded["source"], "engines": report}
+
+
 # --- state paths and locks -------------------------------------------------------
 
 
@@ -602,7 +667,11 @@ def main(argv: list[str] | None = None) -> int:
     user_args.add_argument("--read-only", action="store_true", help="omit permission-off arguments")
     user_args.add_argument("--path", type=Path)
 
-    paths = commands.add_parser("paths", help="create and print per-repository state paths")
+    permissions = commands.add_parser("permissions", help="what editing sessions will and won't be asked, per engine")
+    permissions.add_argument("--engine", required=True, choices=ENGINES, action="append")
+    permissions.add_argument("--path", type=Path)
+
+    paths =commands.add_parser("paths", help="create and print per-repository state paths")
     lock = commands.add_parser("lock", help="take a per-repository lock (exit 3 if held)")
     unlock = commands.add_parser("unlock", help="release a per-repository lock")
     for command in (paths, lock, unlock):
@@ -630,6 +699,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "user-args":
             entry = read_user(args.path or user_config_path())["config"]["engines"][args.engine]
             _emit(entry["launch_args"] + ([] if args.read_only else entry["permission_off_args"]))
+        elif args.command == "permissions":
+            _emit(permission_report(read_user(args.path or user_config_path()), list(dict.fromkeys(args.engine))))
         else:
             resolved = state_paths(args.repo, args.skill, args.key)
             if args.command == "paths":

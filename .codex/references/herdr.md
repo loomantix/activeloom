@@ -7,22 +7,35 @@ Shared mechanics for `hreview`, `auto-glance`, `hgrill`, `horch`, `hloop` and `h
 - herdr 0.9.0 or later, and this session running inside it: `test "${HERDR_ENV:-}" = 1`. Otherwise say so and stop.
 - `gh` authenticated for the repository, `git`, `jq`, Python 3.
 - The review surface the skill names (ledger helper, run controller, review profile) installed in the checkout.
+- The [permissions preflight](#permissions-preflight), before the first engine launch.
 
 ## Configuration
 
 The config helper ships with `hreview`: `python3 -I <skills root>/hreview/scripts/herd-config.py <command>`. Every command prints JSON; exit 1 is an invalid config, 2 a git or usage error, 3 a held lock. Treat 1 and 2 as blocks.
 
-| Command                                             | Use                                                                                                                           |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `repo`                                              | `.activeloom-herd.json` from the integration branch at `origin`, with defaults applied. Never read the copy in a PR worktree. |
-| `user`                                              | `~/.config/activeloom/herd.json` (or `$ACTIVELOOM_HERD_USER_CONFIG`) with defaults applied.                                   |
-| `user-args --engine <e> [--read-only]`              | The user's extra launch argv for one engine. `--read-only` drops the permission-off arguments.                                |
-| `gate-fix-paths --base <sha> --head <sha>`          | Classify a gate fix's changed paths against the repository's `gate_fix` globs.                                                |
-| `paths --repo <owner/name> --skill <s> [--key <k>]` | Create and print the private state and scratch directories for this repository and skill.                                     |
-| `lock` / `unlock` (same arguments as `paths`)       | Take or release an exclusive lock. `lock` exits 3 when another run holds it.                                                  |
-| `validate [<file>]`                                 | Check a working-tree `.activeloom-herd.json` while authoring it.                                                              |
+| Command                                             | Use                                                                                                                                           |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo`                                              | `.activeloom-herd.json` from the integration branch at `origin`, with defaults applied. Never read the copy in a PR worktree.                 |
+| `user`                                              | `~/.config/activeloom/herd.json` (or `$ACTIVELOOM_HERD_USER_CONFIG`) with defaults applied.                                                   |
+| `user-args --engine <e> [--read-only]`              | The user's extra launch argv for one engine. `--read-only` drops the permission-off arguments.                                                |
+| `gate-fix-paths --base <sha> --head <sha>`          | Classify a gate fix's changed paths against the repository's `gate_fix` globs.                                                                |
+| `paths --repo <owner/name> --skill <s> [--key <k>]` | Create and print the private state and scratch directories for this repository and skill.                                                     |
+| `lock` / `unlock` (same arguments as `paths`)       | Take or release an exclusive lock. `lock` exits 3 when another run holds it.                                                                  |
+| `validate [<file>]`                                 | Check a working-tree `.activeloom-herd.json` while authoring it.                                                                              |
+| `permissions --engine <e> [--engine <e>]`           | Per engine: whether sessions that edit stop at approval prompts, which configured flags turn a check off, and any such flag in `launch_args`. |
 
 State files hold identifiers only: pane and tab IDs, PR and issue numbers, heads, outcomes, URLs, timestamps. No issue text, evidence, customer data or tokens. Scratch never goes in a worktree.
+
+## Permissions preflight
+
+Every herd skill runs this before its first engine launch. Run `permissions` with an `--engine` for every engine this run may start in a session that edits, then act on each engine's entry before launching anything:
+
+- **`stops_at_prompts` is true.** Its panes stop at every approval prompt, and the run answers them with `herdr agent send-keys`. This session's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through. Tell the user, and offer to set the engine up: name the flag its CLI documents for unattended sessions (Claude `--dangerously-skip-permissions`; Codex `-a never -s danger-full-access`; Gemini/Agy, the flag its CLI documents) and what it turns off. Write it to `herd.json` under that engine's `permission_off_args` only on the user's explicit choice, then run `permissions` again. If they decline, continue.
+- **`turned_off` is not empty.** Tell the user in one line per engine what its sessions run without, for example `codex: -a never -s danger-full-access turns off approval prompts and the sandbox`. Do not ask again; the setting is theirs.
+- **`unrecognized` is not empty.** Name those flags and say the helper cannot tell what they turn off.
+- **`turned_off_in_read_only` is not empty.** Those flags are in `launch_args`, so read-only sessions run without the check too. Tell the user and recommend moving them to `permission_off_args`.
+
+A session that another session started has no user to ask: it reports these in its first message and continues as configured. The session the user invoked asks. Never write `herd.json` without the user's choice.
 
 ## Engines
 

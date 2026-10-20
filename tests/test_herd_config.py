@@ -372,6 +372,58 @@ def test_unknown_user_engine_is_rejected() -> None:
         herd.validate_user({"schema_version": 1, "engines": {"agy": {}}})
 
 
+def permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], *names: str) -> Any:
+    path = tmp_path / "herd.json"
+    path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
+    argv = ["permissions", "--path", str(path)]
+    for name in names:
+        argv += ["--engine", name]
+    assert herd.main(argv) == 0
+    return json.loads(capsys.readouterr().out)["engines"]
+
+
+def test_engine_without_permission_flags_stops_at_prompts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report = permissions(tmp_path, capsys, {}, "codex")
+    assert report == {
+        "codex": {"stops_at_prompts": True, "turned_off": [], "unrecognized": [], "turned_off_in_read_only": []}
+    }
+
+
+def test_permission_flags_name_what_they_turn_off(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {
+        "claude": {"permission_off_args": ["--permission-mode=bypassPermissions"]},
+        "codex": {"permission_off_args": ["-a", "never", "--sandbox", "danger-full-access"]},
+    }
+    report = permissions(tmp_path, capsys, engines, "claude", "codex")
+    assert report["claude"]["stops_at_prompts"] is False
+    assert report["claude"]["turned_off"] == [
+        {"arg": "--permission-mode=bypassPermissions", "turns_off": "every permission check"}
+    ]
+    assert report["codex"]["turned_off"] == [
+        {"arg": "-a never", "turns_off": "approval prompts"},
+        {"arg": "--sandbox danger-full-access", "turns_off": "the sandbox"},
+    ]
+    assert report["codex"]["unrecognized"] == []
+
+
+def test_safe_value_of_a_known_flag_is_not_a_risk(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"codex": {"permission_off_args": ["-s", "workspace-write", "--search"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["turned_off"] == []
+    assert report["unrecognized"] == ["-s workspace-write", "--search"]
+
+
+def test_permission_flag_in_launch_args_reaches_read_only_sessions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"claude": {"launch_args": ["--dangerously-skip-permissions"]}}
+    report = permissions(tmp_path, capsys, engines, "claude")["claude"]
+    assert report["stops_at_prompts"] is True
+    assert report["turned_off_in_read_only"] == [
+        {"arg": "--dangerously-skip-permissions", "turns_off": "every permission check"}
+    ]
+
+
 # --- state paths and locks ----------------------------------------------------------------
 
 
