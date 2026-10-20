@@ -100,7 +100,7 @@ skills:
     DESC_TRIGGER: ' Use when the user asks to run hreview or a live review chain on herdr for one or more PRs.'
   auto-glance:
     FM_EXTRAS: ''
-    DESC_TRIGGER: ' Use when the user asks to run auto-glance on a PR, or when horch routes a PR that hreview stopped at the human-glance gate.'
+    DESC_TRIGGER: ' Use when the user asks to run auto-glance on a PR, or when hreview dispatches an opted-in PR at the human-glance gate.'
   hgrill:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to run hgrill or an automated grill chain on herdr for named issues or the next issues in the grill queue.'

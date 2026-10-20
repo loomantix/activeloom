@@ -108,6 +108,32 @@ To fill them, run the **`onboard`** skill in your agent. It reads the repository
 
 `activeloom init --dry-run` previews changes without writing consumer files. On a new consumer, the full tree render is skipped until `.activeloom-config.yml` exists; the output identifies that limitation.
 
+### Choose auto-glance
+
+During `onboard` or `review-setup`, answer: **Enable auto-glance? Yes (recommended for herdr workflows with an independent local reviewer), No (keep human glance), or defer.** Eligible changes classified `skip` (docs/config only) or `smallChange` get one local non-author reviewer through `/auto-glance` instead of waiting on a human. A clean read and green CI can mark the PR ready; auto-glance never merges. Always-Deep surfaces still require the full chain.
+
+The setup skill asks before creating or updating the consumer-owned `.activeloom-herd.json`, preserves other settings, and confirms the integration branch. For example, choosing Yes for a repository integrating on `main` produces:
+
+```json
+{
+  "schema_version": 1,
+  "integration_branch": "main",
+  "glance": { "auto": true }
+}
+```
+
+Choosing No records `false`. Deferring leaves the file unchanged; an absent `glance.auto` defaults to `false`. Neither installer `--yes` nor an unanswered prompt enables it.
+
+Validate with the installed harness's helper:
+
+```bash
+python3 -I .claude/skills/hreview/scripts/herd-config.py validate .activeloom-herd.json
+```
+
+Use `.codex` or `.agents` for those repository harnesses, or locate the helper beside your personal skills. Personal installs also use `review-setup` for this choice, but it is **per repository**, not a personal profile setting. Install `review-setup`, `hreview`, and `auto-glance` if missing; auto-glance needs herdr and a non-author engine in the Lean review order.
+
+Submit the configuration through the repository's normal PR process. Validation checks the working file; activation waits for merge. `herd-config.py repo` reads the remote default branch first and then the named integration branch. If they differ, both must carry configuration naming the same integration branch. See [Herd configuration](herd-orchestration.md) for the full policy.
+
 **When to move up:** when re-running `init` by hand starts getting forgotten.
 
 Once the repository is installed, [Everyday workflows](workflows.md) shows how to use `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain in it. [Set up for autonomous development](autonomous-development.md) carries it on to a refined backlog and a first `agent-loop` run.

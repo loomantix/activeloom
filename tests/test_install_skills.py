@@ -106,6 +106,9 @@ def test_installs_every_harness_into_its_own_directory(upstream: Path, home: Pat
             name: str(upstream / root / "skills" / name) for name in SKILLS[root]
         }
     assert "Done: 5 installed" in result.stdout
+    assert "run review-setup" in result.stdout
+    assert "glance.auto is opt-in in each repository" in result.stdout
+    assert "setup asks before writing it" in result.stdout
 
 
 def test_default_selects_harnesses_by_home_directory(upstream: Path, home: Path) -> None:

@@ -276,6 +276,11 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
     ui.info('');
     ui.info('Start a new agent session and the skill is available.');
     ui.info(
+      'Use `review-setup` for personal review settings and the repository auto-glance choice ' +
+        '(one local non-author reviewer for small changes). Install review-setup, hreview, and auto-glance if needed; ' +
+        'glance.auto is opt-in per repository, not a personal setting.',
+    );
+    ui.info(
       ui.dim(
         'To share these with your team instead of just this machine, run `npx activeloom init`.',
       ),
