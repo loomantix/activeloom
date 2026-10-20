@@ -44,6 +44,8 @@ REVIEW_PROMPTS = (
     "skills/horch/SKILL.md",
     "skills/hpromote/SKILL.md",
     "skills/hreview/SKILL.md",
+    # hpromote follows its step rules and runs its helper.
+    "skills/promote/SKILL.md",
 )
 
 # Executable paths a prompt may name outside its own root, each because exactly

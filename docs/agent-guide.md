@@ -58,6 +58,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Grill issues across several engines          | `hgrill`                                   | Touches only the chained issues and their children; ends at an assumptions block for a human check                                  |
 | Orchestrate a herdr workspace                | `horch`                                    | Needs a per-push instruction file; ships only to the integration branch, through `ship-staging`                                     |
 | Run a batch of agent issues on herdr         | `hloop`                                    | Runs under `horch`'s rules; skips issues with an open design; ships only through `horch`'s gate                                     |
+| Promote integration to production            | `promote`                                  | Runs the repository's `.activeloom-promote.json` recipe; stops at the human approval and merge                                      |
 | Promote integration to production on herdr   | `hpromote`                                 | Needs a `promotion` section; stops at the human approval and merge                                                                  |
 
 The herd skills (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`) share their mechanics in each root's `references/herdr.md` and read `.activeloom-herd.json` from the integration branch; see [Herd orchestration](herd-orchestration.md).

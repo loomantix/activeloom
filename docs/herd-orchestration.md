@@ -4,14 +4,14 @@ The herd skills let one agent session drive other agent sessions in visible term
 
 They run on [herdr](https://herdr.dev), a terminal workspace manager for coding agents. Any of the three harnesses (Claude Code, Codex, Gemini/Agy) can drive, and any of them can be driven.
 
-| Skill         | What it does                                                                                                         | Stops for you when                                         |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.               | It converged (merge is yours), or it is blocked            |
-| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.         | The read found something, or CI is red                     |
-| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check. | Always: the assumptions block waits for your sign-off      |
-| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.       | A ship gate fails, a chain blocks, or a call is yours      |
-| `hloop`       | Runs a batch of agent-ready issues: a build tab per issue, then a review chain, then a ship through `horch`'s gate.  | An issue's design is open, a gate fails, or a chain blocks |
-| `hpromote`    | Runs an integration-to-production promotion with a read-only risk review and fix lanes.                              | The promotion PR is ready: approving and merging it        |
+| Skill         | What it does                                                                                                          | Stops for you when                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.                | It converged (merge is yours), or it is blocked            |
+| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.          | The read found something, or CI is red                     |
+| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check.  | Always: the assumptions block waits for your sign-off      |
+| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.        | A ship gate fails, a chain blocks, or a call is yours      |
+| `hloop`       | Runs a batch of agent-ready issues: a build tab per issue, then a review chain, then a ship through `horch`'s gate.   | An issue's design is open, a gate fails, or a chain blocks |
+| `hpromote`    | Runs your repository's promotion recipe across at most six visible panes, with a read-only risk review and fix lanes. | The promotion PR is ready: approving and merging it        |
 
 These are orchestration tools, not a second evidence system. Each review pass is the engine's ordinary interactive review, recorded in the PR ledger exactly as if you had run it yourself. Tiers, round caps, convergence and attestations are unchanged; for runner-owned, attested chains keep using the [automatic review chain](workflows.md#the-automatic-review-chain). The design records are loomantix/activeloom#419 (the live review chain) and loomantix/activeloom#422 (these skills).
 
@@ -139,25 +139,25 @@ Every command is an argv array, never a shell string: `["pnpm", "install"]`, not
 
 #### Section reference
 
-| Key                        | Default when absent           | Meaning                                                                                                                                                                                                                                                                                                              |
-| -------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schema_version`           | required, `1`                 | Unknown keys anywhere are errors, so a typo cannot silently disable a rule.                                                                                                                                                                                                                                          |
-| `integration_branch`       | the remote's default branch   | Where converged work ships and where this file is read from.                                                                                                                                                                                                                                                         |
-| `worktree.bootstrap`       | none                          | Commands run in each new worktree before a session starts in it.                                                                                                                                                                                                                                                     |
-| `gate_fix`                 | absent: disabled              | When a pass is blocked by a red gate the PR did not cause, `hreview` may open a separate, small, test-or-tooling-only fix PR for you to merge. Paths are classified off-limits first, then test, product, tooling; a fix touching off-limits, product or unclassified paths is refused. There are no built-in globs. |
-| `gate_fix.extra_checks`    | none                          | Run in the PR worktree after the fix is merged in, before the pass reruns.                                                                                                                                                                                                                                           |
-| `glance.auto`              | `false`                       | When `true`, `hreview` runs `auto-glance` itself at the human-glance gate. When `false`, it stops for a human glance.                                                                                                                                                                                                |
-| `ship`                     | absent: `horch` never merges  | Present: `horch` ships converged work to the integration branch through `ship-staging`.                                                                                                                                                                                                                              |
-| `ship.on_ship`             | `none`                        | After the merge: `label` adds `ship.label` to linked open issues, `close` closes them with a comment naming the merge commit, `none` leaves them.                                                                                                                                                                    |
-| `ship.checks`              | `all-runs`                    | `required`: the branch's required checks must pass, and an empty required set fails the gate. `all-runs`: required checks must pass and every workflow run at the head must have completed green, with at least one run.                                                                                             |
-| `ship.post_ship_checks`    | none                          | Run in the primary checkout after a ship. A failure is reported; the PR stays shipped.                                                                                                                                                                                                                               |
-| `builds.engines`           | the orchestrator's own engine | Engines `horch` may start builds on.                                                                                                                                                                                                                                                                                 |
-| `grill.engines`            | `claude`, `codex`, `gemini`   | Grill chain order. Engines your review profile marks unavailable are skipped; fewer than two is a block.                                                                                                                                                                                                             |
-| `grill.hold_label`         | `agent-bail: grill-review`    | Added when a chain finishes, so the issue waits for your check and stays out of the agent queues.                                                                                                                                                                                                                    |
-| `grill.verify_first_label` | none                          | Removed after a chain, which counts as the verification it asked for.                                                                                                                                                                                                                                                |
-| `grill.persona`            | "the issue owner"             | One line describing who the driver answers as.                                                                                                                                                                                                                                                                       |
-| `production_lanes`         | none                          | Token-heavy production work (videos, long documents) that `horch` may hand to a named engine and skill. It stops at a local artifact for your approval.                                                                                                                                                              |
-| `promotion`                | absent: `hpromote` refuses    | `skill` (your repository's own promotion skill) and `production_branch` are required. `risk_engine` defaults to the first engine in your deep review order that is not the driver's. `preflight`, `deploy_workflows` and `post_merge` feed the promotion phases.                                                     |
+| Key                        | Default when absent           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version`           | required, `1`                 | Unknown keys anywhere are errors, so a typo cannot silently disable a rule.                                                                                                                                                                                                                                                                                                                                                        |
+| `integration_branch`       | the remote's default branch   | Where converged work ships and where this file is read from.                                                                                                                                                                                                                                                                                                                                                                       |
+| `worktree.bootstrap`       | none                          | Commands run in each new worktree before a session starts in it.                                                                                                                                                                                                                                                                                                                                                                   |
+| `gate_fix`                 | absent: disabled              | When a pass is blocked by a red gate the PR did not cause, `hreview` may open a separate, small, test-or-tooling-only fix PR for you to merge. Paths are classified off-limits first, then test, product, tooling; a fix touching off-limits, product or unclassified paths is refused. There are no built-in globs.                                                                                                               |
+| `gate_fix.extra_checks`    | none                          | Run in the PR worktree after the fix is merged in, before the pass reruns.                                                                                                                                                                                                                                                                                                                                                         |
+| `glance.auto`              | `false`                       | When `true`, `hreview` runs `auto-glance` itself at the human-glance gate. When `false`, it stops for a human glance.                                                                                                                                                                                                                                                                                                              |
+| `ship`                     | absent: `horch` never merges  | Present: `horch` ships converged work to the integration branch through `ship-staging`.                                                                                                                                                                                                                                                                                                                                            |
+| `ship.on_ship`             | `none`                        | After the merge: `label` adds `ship.label` to linked open issues, `close` closes them with a comment naming the merge commit, `none` leaves them.                                                                                                                                                                                                                                                                                  |
+| `ship.checks`              | `all-runs`                    | `required`: the branch's required checks must pass, and an empty required set fails the gate. `all-runs`: required checks must pass and every workflow run at the head must have completed green, with at least one run.                                                                                                                                                                                                           |
+| `ship.post_ship_checks`    | none                          | Run in the primary checkout after a ship. A failure is reported; the PR stays shipped.                                                                                                                                                                                                                                                                                                                                             |
+| `builds.engines`           | the orchestrator's own engine | Engines `horch` may start builds on.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `grill.engines`            | `claude`, `codex`, `gemini`   | Grill chain order. Engines your review profile marks unavailable are skipped; fewer than two is a block.                                                                                                                                                                                                                                                                                                                           |
+| `grill.hold_label`         | `agent-bail: grill-review`    | Added when a chain finishes, so the issue waits for your check and stays out of the agent queues.                                                                                                                                                                                                                                                                                                                                  |
+| `grill.verify_first_label` | none                          | Removed after a chain, which counts as the verification it asked for.                                                                                                                                                                                                                                                                                                                                                              |
+| `grill.persona`            | "the issue owner"             | One line describing who the driver answers as.                                                                                                                                                                                                                                                                                                                                                                                     |
+| `production_lanes`         | none                          | Token-heavy production work (videos, long documents) that `horch` may hand to a named engine and skill. It stops at a local artifact for your approval.                                                                                                                                                                                                                                                                            |
+| `promotion`                | absent: `hpromote` refuses    | `production_branch` is required. `skill` defaults to the generic `promote`; name your own skill to override its step rules (keep `skill` explicit while older checkouts, which still require it, read this file). `risk_engine` defaults to the first engine in your deep review order that is not the driver's. Without a [promotion recipe](#the-promotion-recipe), `preflight`, `deploy_workflows` and `post_merge` become one. |
 
 Validate a draft before you commit it:
 
@@ -241,9 +241,104 @@ What you type: `/hpromote`, or `/hpromote --dry-run` to stop after the risk revi
 
 A dry run pins the integration and production SHAs and reports its verdict locally, even when no promotion PR exists. It creates no PR, posts no comments and starts no fixes. On completion it releases its lock, removes its clean review worktree and labels the tab `P<mmdd> ✓ dry-run`; findings stay in the report, and the label does not mean production was deployed or approved.
 
-What appears: a `P<mmdd>` tab. The driver runs your repository's own promotion skill (named in `promotion.skill`), opens or adopts the promotion PR, and starts a **read-only** risk review of the whole diff in a `risk` pane. It verifies every blocker and major finding itself, posts one comment with dispositions, and for each confirmed blocker starts a fix session that opens a PR to the integration branch, gets it reviewed in a `review-<pr>` pane, and ships it through `horch`'s gate. When the integration branch moves, it reviews only the delta.
+What appears: a `P<mmdd>` tab of at most six panes, the driver on top and up to five worker slots below it. The driver reads your [promotion recipe](#the-promotion-recipe) and runs each phase's lanes in the slots, so every preflight command, CI watch and deploy watch runs in a pane you can see. It opens or adopts the promotion PR and runs the recipe's **read-only** risk review of the whole diff in its own slot. It verifies every blocker and major finding itself, posts one comment with dispositions, and for each confirmed blocker starts a fix session that opens a PR to the integration branch, gets it reviewed in a `review-<pr>` pane, and ships it through `horch`'s gate. When the integration branch moves, it reviews only the delta.
 
-It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it watches the deploy workflows and runs the post-merge checks. It never rolls back on its own.
+It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it runs the recipe's post-merge lanes: deploy watchers and checks side by side. It never rolls back on its own.
+
+#### The promotion recipe
+
+`.activeloom-promote.json`, committed on your integration branch and read from the remote like `.activeloom-herd.json`, says exactly what a promotion is for your repository. The `promote` skill runs it in one session without herdr; `hpromote` runs it across panes. Nothing about any one repository's process is built in.
+
+```json
+{
+  "schema_version": 1,
+  "integration_branch": "develop",
+  "production_branch": "main",
+  "guide": "docs/release/promotion.md",
+  "rollback": "docs/runbooks/rollback.md",
+  "blocker_issues": { "labels": ["type: bug"] },
+  "pull_request": {
+    "merge_method": "merge",
+    "surface": [{ "name": "migrations", "globs": ["db/migrations/**"] }],
+    "after_merge": ["Confirm the release notes page shows this promotion."]
+  },
+  "steps": [
+    {
+      "id": "install",
+      "kind": "command",
+      "phase": "preflight",
+      "run": ["npm", "ci"],
+      "fix": ["npm", "install"]
+    },
+    {
+      "id": "lint",
+      "kind": "command",
+      "phase": "preflight",
+      "run": ["npm", "run", "lint"]
+    },
+    {
+      "id": "release-gate",
+      "kind": "command",
+      "phase": "preflight",
+      "lane": "gate",
+      "run": ["scripts/release-gate"],
+      "on_fail": "hold"
+    },
+    {
+      "id": "deps",
+      "kind": "task",
+      "phase": "preflight",
+      "brief": "docs/release/dependency-prs.md",
+      "writes": true
+    },
+    {
+      "id": "integration-deploy",
+      "kind": "watch_workflow",
+      "phase": "preflight",
+      "workflow": "deploy.yml"
+    },
+    {
+      "id": "risk",
+      "kind": "risk_review",
+      "phase": "pre_merge",
+      "focus": ["Background job retries"]
+    },
+    { "id": "ci", "kind": "watch_checks", "phase": "pre_merge" },
+    {
+      "id": "deploy-app",
+      "kind": "watch_workflow",
+      "phase": "post_merge",
+      "workflow": "deploy.yml"
+    },
+    {
+      "id": "smoke",
+      "kind": "command",
+      "phase": "post_merge",
+      "lane": "verify",
+      "run": ["scripts/smoke", "production"]
+    }
+  ]
+}
+```
+
+Phases run in order: `preflight` on the integration head, then the promotion PR is opened, `pre_merge` on its head, your approval and merge, and `post_merge` on the merge commit. Inside a phase, steps that share a `lane` run in order and stop at the first failure; different lanes are independent. A `command` or `task` defaults to the shared `main` lane (a task to a lane of its own); each watcher and the risk review defaults to a lane of its own.
+
+| Kind             | Runs                                                                         | Options                                                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`        | An argv in a worktree detached at the phase's commit                         | `fix`: a deterministic fix shipped as a PR to the integration branch. `on_fail`: `block` (default), `hold` (stops for you), `warn`. `timeout_minutes` |
+| `task`           | A session that follows a brief in your repository, such as dependency triage | `writes`: whether it may act on what the brief says (default `false`; never in a dry run)                                                             |
+| `risk_review`    | The read-only whole-diff review, `pre_merge` only                            | `engine`, `focus` items added to the review                                                                                                           |
+| `watch_checks`   | The promotion PR's checks, `pre_merge` only                                  | `checks`: `required` or `all`. `rerun_flakes` (0-2, default 1). `timeout_minutes`                                                                     |
+| `watch_workflow` | The newest run of a workflow on the phase's commit                           | `if_absent`: `fail` (default) or `skip` for path-filtered workflows. `timeout_minutes`                                                                |
+
+How `hpromote` lays the tab out: `promote-recipe.py layout` maps each phase's lanes onto at most five slots, keeping one free for fixes before the merge. Lanes sit side by side; each watcher and the risk review keeps its own slot; when there are more lanes than slots, short lanes fold into one slot and run one after another. Slots are reused from phase to phase. The example above gives four preflight slots, two pre-merge slots and two post-merge slots.
+
+Check a draft before you commit it:
+
+```bash
+python3 -I .codex/skills/promote/scripts/promote-recipe.py validate .activeloom-promote.json
+python3 -I .codex/skills/promote/scripts/promote-recipe.py layout --recipe .activeloom-promote.json
+```
 
 ## Driving from each harness
 
