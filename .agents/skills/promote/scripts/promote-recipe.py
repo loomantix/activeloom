@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -631,9 +633,19 @@ def run_command(step: dict[str, Any], cwd: Path) -> dict[str, Any]:
     _say(f"── {step['id']}: {' '.join(step['run'])}")
     started = time.monotonic()
     try:
-        code = subprocess.run(step["run"], cwd=cwd, timeout=step["timeout_minutes"] * 60, check=False).returncode
-    except subprocess.TimeoutExpired:
-        code = 124
+        with subprocess.Popen(step["run"], cwd=cwd, start_new_session=os.name == "posix") as process:
+            try:
+                code = process.wait(timeout=step["timeout_minutes"] * 60)
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
+                process.wait()
+                code = 124
     except OSError as exc:
         _say(f"cannot start: {exc}")
         code = 127

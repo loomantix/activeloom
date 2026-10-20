@@ -5,7 +5,10 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -317,6 +320,32 @@ def test_never_more_than_six_panes(shells: int, watchers: int) -> None:
 SHA = "a" * 40
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group timeout")
+@pytest.mark.parametrize("on_fail,outcome", [("block", "timeout"), ("warn", "warn")])
+def test_command_timeout_stops_descendants(tmp_path: Path, on_fail: str, outcome: str) -> None:
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import pathlib, time\n"
+        "pathlib.Path('started').touch()\n"
+        "time.sleep(1)\n"
+        "pathlib.Path('late-write').touch()\n"
+    )
+    parent = tmp_path / "parent.py"
+    parent.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, 'child.py'])\n"
+        "time.sleep(30)\n"
+    )
+    result = recipe_mod.run_command(
+        {"id": "timeout", "run": [sys.executable, str(parent)],
+         "timeout_minutes": 0.01, "on_fail": on_fail}, tmp_path,
+    )
+    assert result["outcome"] == outcome and result["exit"] == 124
+    assert (tmp_path / "started").exists(), "descendant must have started before the timeout"
+    time.sleep(1)
+    assert not (tmp_path / "late-write").exists()
+
+
 def test_run_lane_stops_at_the_first_failure(tmp_path: Path) -> None:
     steps = [
         {"id": "ok", "kind": "command", "phase": "preflight", "run": ["true"]},
@@ -501,6 +530,25 @@ def test_show_reads_the_remote_branch_not_the_working_tree(remote: tuple[Path, P
     done = show(work)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["source"]["kind"] == "file"
+
+
+def test_standalone_show_with_explicit_integration_branch(remote: tuple[Path, Path]) -> None:
+    _, work = remote
+    git(work, "branch", "main")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "remote", "set-head", "origin", "main")
+    (work / ".activeloom-promote.json").write_text(json.dumps(FULL))
+    git(work, "add", ".")
+    git(work, "commit", "-q", "-m", "integration recipe")
+    git(work, "push", "-q", "origin", "develop")
+    argv = [sys.executable, "-I", str(SOURCE / "promote-recipe.py"), "show", "--repo-dir", str(work)]
+    absent = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert absent.returncode == 4
+    found = subprocess.run(argv + ["--default-branch", "develop"], capture_output=True, text=True, check=False)
+    assert found.returncode == 0, found.stderr
+    result = json.loads(found.stdout)
+    assert result["source"]["ref"] == "origin/develop"
+    assert result["source"]["commit"] == git(work, "rev-parse", "HEAD")
 
 
 def test_show_falls_back_to_the_herd_config_and_checks_agreement(remote: tuple[Path, Path]) -> None:

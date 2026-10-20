@@ -7,7 +7,7 @@ description: Promotion from a repository recipe — runs the integration-to-prod
 
 Usage:
 
-- `promote [--dry-run]`: preflight, open or adopt the promotion PR, run the pre-merge steps, stop at the approval.
+- `promote [--dry-run] [--integration-branch <branch>]`: preflight, open or adopt the promotion PR, run the pre-merge steps, stop at the approval.
 - `promote merged`: the human merged the promotion PR; run the post-merge steps.
 - `promote validate [<file>]`: check a working-tree recipe while writing it.
 
@@ -17,7 +17,7 @@ This skill runs the recipe in one session, one lane after another. `hpromote` ru
 
 `R` = `.codex/skills/promote/scripts/promote-recipe.py`. Its JSON schema, `promote-recipe.schema.json`, sits beside it.
 
-`python3 -I $R show > <scratch>/recipe.json` reads `.activeloom-promote.json` from the integration branch at `origin`, never from a working tree or PR head. Exit 4 means the repository has no recipe: say so, point at the schema, and stop. Exit 1 or 2 is a block. `validate` checks a local file and exits the same way.
+`python3 -I $R show > <scratch>/recipe.json` discovers `.activeloom-promote.json` through the remote default branch, then reads the integration branch it names. With `--integration-branch <branch>`, pass `--default-branch <branch>` to `show` instead, and require the returned recipe's `integration_branch` to match. This supports a first recipe committed only on the integration branch while production remains the remote default. Both paths read from `origin`, never a working tree or PR head. Exit 4 means the starting branch has no recipe: ask for the integration branch if none was supplied; otherwise point at the schema and stop. Exit 1 or 2 is a block. `validate` checks a local file and exits the same way.
 
 A recipe names `integration_branch` and `production_branch`, optional `guide` (promotion notes: read it before the first step) and `rollback` (runbook), `blocker_issues`, `pull_request` settings, and `steps`. Each step has an `id`, a `kind`, a `phase` and a `lane`.
 
