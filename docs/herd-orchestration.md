@@ -249,6 +249,10 @@ It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploy
 
 `.activeloom-promote.json`, committed on your integration branch and read from the remote like `.activeloom-herd.json`, says exactly what a promotion is for your repository. The `promote` skill runs it in one session without herdr; `hpromote` runs it across panes. Nothing about any one repository's process is built in.
 
+Sync bootstraps `promote/SKILL.md` only when absent, preserving existing repository-owned promotion instructions. The skill body remains consumer-owned after bootstrap; review and apply later upstream skill changes manually. Its recipe helper and schema continue to sync normally.
+
+Legacy herd configs without a recipe retain deployment-before-verification ordering: synthesized post-merge workflow watches and commands share one ordered lane. Explicit recipes can use separate lanes for independent checks, or put dependent smoke commands after their deployment watch in the same lane.
+
 ```json
 {
   "schema_version": 1,

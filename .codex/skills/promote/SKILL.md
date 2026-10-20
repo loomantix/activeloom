@@ -75,7 +75,7 @@ A dry run reads remote state and runs the recipe's commands in the inspection wo
 ### 1. State
 
 1. `git fetch origin <integration> <production>`. Pin `I` = `origin/<integration>` and `P` = `origin/<production>`, full SHAs. If `git log --oneline P..I` is empty there is nothing to promote: report it and stop.
-2. `gh pr list --base <production> --state open --json number,url,headRefName,headRefOid`. An open PR whose head is the integration branch is adopted in step 3 (a dry run reads it only). Close any other as `close_stale` allows.
+2. `gh pr list --base <production> --state open --json number,url,headRefName,headRefOid`. An open PR whose head is the integration branch is adopted in step 3 (a dry run reads it only). With `close_stale`, close another PR only after positively identifying it as a stale promotion using the repository guide's documented promotion marker or branch convention. A production base alone is insufficient; leave unrelated or ambiguous PRs open. A dry run reports candidates without closing them.
 3. Create the inspection worktree at `I`: `git worktree add --detach <root>/<name>-promote-<yyyymmdd> I`, where `<root>` is the repository's worktree location from its agent guide, else a sibling of the primary checkout. Never switch the primary checkout.
 4. Read `guide`, if set, from the worktree.
 
@@ -112,9 +112,9 @@ Refetch the PR and confirm its head branch, base and `headRefOid` = `I`.
 Run every `pre_merge` lane against the promotion PR head, passing `--pr <n>`. A dry run has no PR: it runs only the session lanes, against `I`, and lists the shell lanes it skipped.
 
 - A failed check: read the failed job. A transient failure is rerun (`gh run rerun <id> --failed`) up to `rerun_flakes` times, then the lane runs again. A defect is a blocker: fix it on the integration branch through a PR, never on the production branch or in the promotion PR.
-- When a fix lands, the PR head moves. Run the `pre_merge` lanes again at the new head; the risk review covers only the delta since the last head it reviewed.
+- Whenever the PR head moves, return to step 1, refresh the inspection worktree and run every `preflight` lane at the new head before running `pre_merge` again. The risk review may cover only the delta since the last head it reviewed.
 
-Ready means: every `pre_merge` lane passed at the current head, no confirmed blocker or major finding, and `gh pr view <n> --json mergeable` reads `MERGEABLE`.
+Ready means: every `preflight` and `pre_merge` lane passed at the same current head, no confirmed blocker or major finding, and `gh pr view <n> --json mergeable` reads `MERGEABLE`. Adopting an existing PR requires the same current-head evidence.
 
 ### Risk review
 

@@ -73,7 +73,7 @@ A running pane is titled `<title> ▶`, a finished one `<title> ✓ <outcome>`. 
 
 Follow the promotion skill's preflight and health phases, with these additions:
 
-- **Adopt an existing PR.** If one is open (`gh pr list --base <production> --head <integration> --state open`), a normal run adopts it and goes to Phase 3. A dry run uses it only as read-only context and continues through the health checks below and Phase 2's SHA pinning.
+- **Adopt an existing PR.** If one is open (`gh pr list --base <production> --head <integration> --state open`), record it for adoption in Phase 2. Continue through preflight at its current head. A dry run uses it only as read-only context.
 - Pin the integration and production heads, and create an inspection worktree detached at the integration head under the user's `worktree_root` (`<name>-promote-<yyyymmdd>`). Run the recipe's `preflight` phase on the slots in it.
 - A failed `block` step that a PR to the integration branch can fix becomes a Phase 4 blocker; a `hold` marks the tab ⚠ for the user. A local environment problem is not a defect, so say which it is.
 - Note the deploy surface for the PR body: the files matching each recipe `surface` entry, migrations and their declared bounds, deployment and infrastructure changes, new environment variables or secrets production must carry, feature flags and their production values.
@@ -88,7 +88,7 @@ Otherwise follow the promotion skill. Title it with `python3 -I $R title --recip
 
 Each PR in the promotion was reviewed on its own. This pass looks for risk that shows only when the whole set reaches production together. It is not a review-chain pass; its findings count toward no ledger.
 
-Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes on their slots at the same time (a dry run has no PR and runs no shell lanes). A recipe without a `risk_review` has no risk pass: the PR comment says so, and Phase 5 follows once the other lanes finish.
+Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes on their slots at the same time (a dry run has no PR and runs no shell lanes). A recipe without a `risk_review` has no risk pass: record "risk review not configured", skip steps 1–5 below, and continue at step 6 once the other runnable lanes finish.
 
 1. Use the inspection worktree when the promotion head is still the head it was created at; otherwise create a new detached one at the promotion head under the user's `worktree_root`.
 2. Start the risk engine in the risk review's slot, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Trust the folder; the driver created it.
@@ -116,7 +116,7 @@ Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes 
 
    Minors are listed, not fixed, and do not block.
 
-6. With `--dry-run`, report the pinned SHAs, verdict and every finding with its disposition in the driver pane. End the risk session, remove its clean detached worktree, release the dispatch lock, rename the tab `P<mmdd> ✓ dry-run`, notify, and stop. Findings remain reported; this terminal label means the dry run completed, not that the promotion is safe or deployed. A failed review follows Blocks and retains its worktree and lock.
+6. With `--dry-run`, report the pinned SHAs, lane outcomes, verdict (or "risk review not configured") and every finding with its disposition in the driver pane. End any worker sessions, remove the clean inspection worktrees, release the dispatch lock, rename the tab `P<mmdd> ✓ dry-run`, notify, and stop. This terminal applies whether or not a risk review ran. Findings remain reported; this terminal label means the dry run completed, not that the promotion is safe or deployed. A failed lane or review follows Blocks and retains its worktree and lock.
 
    Otherwise post **one** comment on the promotion PR: the verdict, each finding with its disposition, and a link to each fix PR. When later phases change something, edit that same comment (`gh api -X PATCH`); never post a second one.
 
@@ -141,13 +141,13 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 
 2. When the line appears, verify it with `gh pr view` (draft, base the integration branch, head SHA matches). End the fix session. In the same slot, titled `review-<pr>`, start a herder and prompt it the `hreview` skill with `<pr>` (addressed per herdr.md's Engines table). It dispatches auto-glance itself when opted in; watch its result without starting a second glancer. If it stops for a human glance or reports a block, mark the tab ⚠.
 3. Ship it through `horch`'s shipping gate and steps, every one of them.
-4. When the integration branch moves, the promotion PR's head moves with it. Re-run Phase 3 on the **delta only** (`git diff <last reviewed head>..<new head>`) in a fresh session and a new detached worktree, remove the old one, and update the PR comment.
+4. When the integration branch moves, the promotion PR's head moves with it. Return to Phase 1 in a new detached worktree and rerun preflight at the new head before Phase 3. The risk review may cover the **delta only** (`git diff <last reviewed head>..<new head>`) in a fresh session. Remove the old clean worktree and update the PR comment.
 5. If a fix session or its review cannot converge, mark the tab ⚠ with that blocker and leave the fix PR in draft.
 
 ### Phase 5: CI and hand-off
 
-1. Every `pre_merge` lane runs at the current head; the `watch_checks` lane is the CI watch. Rerun a flaky job up to the step's `rerun_flakes`, then rerun the lane in its slot. When the head moves, rerun the shell lanes at the new head.
-2. Ready means: no confirmed blocker or major left in the risk verdict, every fix PR shipped, every `pre_merge` lane passed at the head, and `mergeable=MERGEABLE`. When ready, rename the tab `P<mmdd> ⏸ approve`, notify with `--sound request` (`PR #<n> ready: approve and merge deploys production`), and print the PR URL, the verdict and the After merge checklist.
+1. Every `pre_merge` lane runs at the current head; the `watch_checks` lane is the CI watch. Rerun a flaky job up to the step's `rerun_flakes`, then rerun the lane in its slot. Whenever the head moves, return to Phase 1 and rerun preflight and all pre-merge lanes at the new head.
+2. Ready means: no confirmed blocker or major left in the risk verdict, every fix PR shipped, every `preflight` and `pre_merge` lane passed at the same current head, and `mergeable=MERGEABLE`. When ready, rename the tab `P<mmdd> ⏸ approve`, notify with `--sound request` (`PR #<n> ready: approve and merge deploys production`), and print the PR URL, the verdict and the After merge checklist.
 3. Stop. Merging is the human's. Do not wait for the merge in a loop that outlives the turn; the user or the dispatcher sends `merged`.
 
 ### Post-merge

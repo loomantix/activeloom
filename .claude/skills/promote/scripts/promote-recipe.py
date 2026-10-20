@@ -415,7 +415,7 @@ def from_herd(herd: dict[str, Any]) -> dict[str, Any]:
     steps.append({"id": "risk", "kind": "risk_review", "phase": "pre_merge", "engine": promotion.get("risk_engine")})
     steps.append({"id": "ci", "kind": "watch_checks", "phase": "pre_merge"})
     for slug, workflow in zip(slugs, workflows):
-        steps.append({"id": f"post-{slug}", "kind": "watch_workflow", "phase": "post_merge", "workflow": workflow})
+        steps.append({"id": f"post-{slug}", "kind": "watch_workflow", "phase": "post_merge", "lane": "verify", "workflow": workflow})
     for index, argv in enumerate(promotion.get("post_merge", []), 1):
         steps.append({"id": f"post-merge-{index}", "kind": "command", "phase": "post_merge", "lane": "verify", "run": argv})
     return validate_recipe(

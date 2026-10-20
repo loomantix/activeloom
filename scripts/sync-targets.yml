@@ -375,6 +375,7 @@ harnesses:
       - source: .claude/skills/promote/SKILL.md
         destination: .claude/skills/promote/SKILL.md
         substitutions: []
+        create_if_missing: true
 
       - source: .claude/skills/promote/scripts/promote-recipe.py
         destination: .claude/skills/promote/scripts/promote-recipe.py
@@ -960,6 +961,7 @@ harnesses:
       - source: .codex/skills/promote/SKILL.md
         destination: .codex/skills/promote/SKILL.md
         substitutions: []
+        create_if_missing: true
 
       - source: .codex/skills/promote/scripts/promote-recipe.py
         destination: .codex/skills/promote/scripts/promote-recipe.py
@@ -1481,6 +1483,7 @@ harnesses:
       - source: .agents/skills/promote/SKILL.md
         destination: .agents/skills/promote/SKILL.md
         substitutions: []
+        create_if_missing: true
 
       - source: .agents/skills/promote/scripts/promote-recipe.py
         destination: .agents/skills/promote/scripts/promote-recipe.py

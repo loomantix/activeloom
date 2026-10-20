@@ -226,6 +226,11 @@ def test_recipe_from_legacy_herd_promotion_keys() -> None:
     assert by_id["risk"]["engine"] == "codex"
     assert by_id["post-deploy-app"]["workflow"] == "Deploy App"
     assert by_id["post-merge-1"]["lane"] == "verify"
+    post_steps = [step for step in effective["steps"] if step["phase"] == "post_merge"]
+    assert [step["kind"] for step in post_steps] == ["watch_workflow", "watch_workflow", "command"]
+    assert {step["lane"] for step in post_steps} == {"verify"}
+    post_layout = next(phase for phase in recipe_mod.layout(effective)["phases"] if phase["phase"] == "post_merge")
+    assert post_layout["panes"][0]["lanes"][0]["steps"] == [step["id"] for step in post_steps]
     assert effective["integration_branch"] == "develop" and effective["production_branch"] == "main"
 
 
