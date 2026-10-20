@@ -704,6 +704,12 @@ function printNextSteps(tier, harnesses, facts, configWritten) {
     );
   }
 
+  ui.step(
+    'Run `review-setup` in your agent to choose repository auto-glance: ' +
+      'one local non-author reviewer for small changes (recommended with herdr). ' +
+      'It asks before writing glance.auto and integration_branch in .activeloom-herd.json, then validates it; --yes does not opt in.',
+  );
+
   if (tier.n >= 2) {
     ui.step('Commit everything, including the workflow.');
   } else {

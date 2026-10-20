@@ -501,6 +501,25 @@ const initArgs = (repoDir, overrides = {}) => ({
   ...overrides,
 });
 
+test('init --yes recommends auto-glance setup without opting the repository in', async (t) => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const lines = [];
+  t.mock.method(console, 'log', (line) => lines.push(line));
+  try {
+    assert.strictEqual(await initLib.init(initArgs(repo)), 0);
+    const output = lines.join('\n');
+    assert.match(output, /review-setup.*auto-glance/);
+    assert.match(output, /recommended with herdr/);
+    assert.match(output, /--yes does not opt in/);
+    assert.strictEqual(
+      fs.existsSync(path.join(repo, '.activeloom-herd.json')),
+      false,
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('--force preserves an existing consumer-owned config', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
   try {

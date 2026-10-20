@@ -55,14 +55,15 @@ On `BUILD-PR: <pr> <sha>`:
 
 1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The PR is a draft, the base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block. Keep the PR in draft so `hreview` or `auto-glance` owns the ready flip on convergence.
 2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push.
-3. Start the review chain as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher.
+3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
 
 ## 4. When a watcher stops
 
 Read the herder's pane, then:
 
-- **converged** → step 5;
-- **stopped at the glance gate** → `horch`'s glance routing. When `auto-glance` declines because the change can never classify as small (a dependency or lockfile change, whatever its size), prompt `hreview <pr>` to review the change anyway (overriding the human-glance gate);
+- **converged or clean auto-glance** → step 5;
+- **auto-glance in progress** → keep watching the same herder; `hreview` owns it;
+- **stopped at the glance gate** → `horch`'s human-glance alert or block handling; do not launch another auto-glance or override the gate;
 - **glance with findings** → send the findings to a fix session (the build's session if it is still open, otherwise a new one in the PR's tab), then glance again at the new head;
 - **exhausted, non-converged or blocked** → `horch`'s Problems. Leave the PR and its tab as they are.
 

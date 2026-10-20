@@ -146,7 +146,7 @@ Every command is an argv array, never a shell string: `["pnpm", "install"]`, not
 | `worktree.bootstrap`       | none                          | Commands run in each new worktree before a session starts in it.                                                                                                                                                                                                                                                     |
 | `gate_fix`                 | absent: disabled              | When a pass is blocked by a red gate the PR did not cause, `hreview` may open a separate, small, test-or-tooling-only fix PR for you to merge. Paths are classified off-limits first, then test, product, tooling; a fix touching off-limits, product or unclassified paths is refused. There are no built-in globs. |
 | `gate_fix.extra_checks`    | none                          | Run in the PR worktree after the fix is merged in, before the pass reruns.                                                                                                                                                                                                                                           |
-| `glance.auto`              | `false`                       | When `true`, `horch` sends PRs that stop at the human-glance gate to `auto-glance`. When `false`, it alerts you instead.                                                                                                                                                                                             |
+| `glance.auto`              | `false`                       | When `true`, `hreview` runs `auto-glance` itself at the human-glance gate. When `false`, it stops for a human glance.                                                                                                                                                                                                |
 | `ship`                     | absent: `horch` never merges  | Present: `horch` ships converged work to the integration branch through `ship-staging`.                                                                                                                                                                                                                              |
 | `ship.on_ship`             | `none`                        | After the merge: `label` adds `ship.label` to linked open issues, `close` closes them with a comment naming the merge commit, `none` leaves them.                                                                                                                                                                    |
 | `ship.checks`              | `all-runs`                    | `required`: the branch's required checks must pass, and an empty required set fails the gate. `all-runs`: required checks must pass and every workflow run at the head must have completed green, with at least one run.                                                                                             |
@@ -184,14 +184,14 @@ Where it stops:
 - **Converged and CI green:** it marks the PR ready and tells you it is ready for final review and merge.
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
-- **Glance-sized PR:** it stops at the human-glance gate, as the workflow says.
+- **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
 - **Blocked:** anything it cannot decide within the rules.
 
-It never merges, never marks a PR ready except through the converged path, never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
+It never merges, marks a PR ready only through the converged path or the auto-glance clean-result and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
 
 ### `auto-glance <pr>` — one model instead of a human glance
 
-Only runs when the repository sets `glance.auto: true`. What you type: `/auto-glance 42`; under `horch` it starts on its own when a chain stops at the glance gate.
+Only runs when the repository sets `glance.auto: true`. What you type: `/auto-glance 42`; `hreview` starts it directly at the glance gate, including when invoked without `horch`. The orchestrator watches that result instead of starting a second glancer.
 
 It confirms the PR really is glance-sized and not on an always-Deep surface, picks the first non-author engine from your Lean order, and starts it in a pane below. The reviewer reads the whole diff and posts one comment, starting with an `auto-glance:v1` marker, that lists every finding with severity and confidence. If nothing is blocking or major and CI at that exact head is green, the PR is marked ready and an `auto-glance-result:v1` reply records the clean result. Otherwise the PR is left alone and you are alerted.
 
@@ -217,7 +217,7 @@ It inventories every tab and session in the workspace, checks your instruction f
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
 - starts builds you scheduled on the engines `builds.engines` allows; each ends at a draft PR;
-- routes glance-sized PRs to `auto-glance` (or alerts you when `glance.auto` is off);
+- watches `hreview` dispatch and finish `auto-glance` for glance-sized PRs (or alerts you when `glance.auto` is off);
 - dispatches `hgrill`, `hloop` and `hpromote` when you ask;
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
 - hands production-lane work to the configured engine and queues the result for your approval;

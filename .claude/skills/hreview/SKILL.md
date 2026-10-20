@@ -19,7 +19,7 @@ Read [`herdr.md`](../../references/herdr.md) first: engine launch, startup dialo
 ## Hard stops
 
 - never merge;
-- never mark a PR ready outside `next-pass` → `verify-coverage` → `finish-run --outcome converged` (a herder-opened gate-fix PR is the one exception; see [Pre-existing red gate](#pre-existing-red-gate));
+- never mark a PR ready outside `next-pass` → `verify-coverage` → `finish-run --outcome converged`, except through `auto-glance`'s clean-result and CI gate below or for a herder-opened gate-fix PR (see [Pre-existing red gate](#pre-existing-red-gate));
 - never start a new run after the cap to get more rounds;
 - never override or dismiss a reviewer's finding.
 
@@ -46,7 +46,9 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; `gh pr view <n> --json headRefName,headRefOid,baseRefName,isDraft,state,author`. The PR must be open. Full SHAs only.
 4. Config: `python3 -I $C repo` and `python3 -I $C user`. Either failing is a block.
 5. Worktree: reuse the one already on the PR branch (`git worktree list --porcelain`); otherwise `git worktree add <worktree_root>/<name>-pr<n> <branch>`, then run each `worktree.bootstrap` command in it. Never switch a primary checkout. Require it clean with local HEAD = PR head = remote head.
-6. Tier extensions first: if `.review/addendum.local.md` has a `## Review tier extensions` section and the diff touches a surface it lists as always-Deep, skip the glance gate and resolve Deep under trigger 6 (the standing request recorded there), naming the extension in the trigger. Otherwise apply the workflow's human-glance gate, unless the PR already carries a tier marker or the invocation explicitly asked for this change to be reviewed anyway. On `skip` or `smallChange`: print the workflow's line, notify, and stop that PR. Under `/horch`, that stop is what routes the PR to `/auto-glance`.
+6. Tier extensions first: if `.review/addendum.local.md` has a `## Review tier extensions` section and the diff touches a surface it lists as always-Deep, skip the glance gate and resolve Deep under trigger 6 (the standing request recorded there), naming the extension in the trigger. Otherwise apply the workflow's human-glance gate, unless the PR already carries a tier marker, a `local-review-run:v1` marker, or the invocation explicitly asked for this change to be reviewed anyway. Classify the current head with `node $L classify-changeset --base <merge-base sha> --head <head>`. On `skip` or `smallChange`:
+   - **`glance.auto` is `false`** in `herd-config.py repo`: print the workflow's line, notify, and stop that PR for a human glance.
+   - **`glance.auto` is `true`**: resolve the author as in step 8 (`--author` wins over commit trailers; missing or ambiguous authorship blocks). Run `/auto-glance <n> --author <author>` yourself in this herder session, following that skill in full, and wait for its result. Do not wait for `horch` to route it. The auto-glance skill owns the reviewer pane, exact-head result and ready flip; it rechecks eligibility and configuration. Report its clean, findings, or blocked outcome, then end this PR's path here without creating a chain run or roster or falling through to step 7. Continue other PRs under the invocation's independent/companion ordering. A declined or blocked glance is not permission to start a chain.
 7. Settings — reference them, do not restate them:
    - order: `python3 -I $P order --tier <tier> --repo $repo`
    - per engine model and effort: `python3 -I $P launch-args --engine <e> --repo $repo`
@@ -142,4 +144,4 @@ Each pass emits its ordinary per-pass record; marking live passes waits on looma
 
 ## Final report
 
-Per PR, under 200 words: end state, PR state (ready or draft), run ID, then an ordered list of engine, round, head and classification. Also list relaunches, blocks, gate fixes and the CI result.
+Per PR, under 200 words: end state, PR state (ready or draft), run ID, then an ordered list of engine, round, head and classification. For auto-glance, report its outcome, reviewer, exact head and CI result instead of a run ID or rounds; no chain was started. Also list relaunches, blocks, gate fixes and the CI result.

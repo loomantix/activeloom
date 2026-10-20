@@ -12,6 +12,8 @@ This is the unified project formerly named **claude-platform**. New consumers us
 
 ## What it provides
 
+Setup also asks whether to enable [auto-glance](docs/getting-started.md#choose-auto-glance): one local non-author reviewer for eligible `skip`/`smallChange` PRs instead of waiting for a human glance. It is recommended for herdr workflows, but stays off until confirmed in the repository's `.activeloom-herd.json`; personal installation does not enable it globally.
+
 | Capability                 | What you get                                                                                                                                                                                                            |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Engineering skills         | Instructions and helpers for design, diagnosis, implementation, issue management, and review. Load the skill relevant to the task.                                                                                      |

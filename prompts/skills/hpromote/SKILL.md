@@ -129,7 +129,7 @@ For each blocker, up to 3 at a time:
    - Finish with one line: PROMO-FIX-PR: <number> <head sha>.
    ```
 
-2. When the line appears, verify it with `gh pr view` (draft, base the integration branch, head SHA matches). End the fix session. In a `review-<pr>` pane, start a herder and prompt it the `hreview` skill with `<pr>` (addressed per herdr.md's Engines table); if it stops at the glance gate and the repository has `glance.auto` on, prompt it the `auto-glance` skill with `<pr>`; otherwise mark the tab ⚠ for a human glance.
+2. When the line appears, verify it with `gh pr view` (draft, base the integration branch, head SHA matches). End the fix session. In a `review-<pr>` pane, start a herder and prompt it the `hreview` skill with `<pr>` (addressed per herdr.md's Engines table). It dispatches auto-glance itself when opted in; watch its result without starting a second glancer. If it stops for a human glance or reports a block, mark the tab ⚠.
 3. Ship it through `<<INVOKE>>horch`'s shipping gate and steps, every one of them.
 4. When the integration branch moves, the promotion PR's head moves with it. Re-run Phase 3 on the **delta only** (`git diff <last reviewed head>..<new head>`) in a fresh session and a new detached worktree, remove the old one, and update the PR comment.
 5. If a fix session or its review cannot converge, mark the tab ⚠ with that blocker and leave the fix PR in draft.

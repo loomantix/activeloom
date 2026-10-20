@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -43,6 +44,27 @@ def load() -> ModuleType:
 
 
 herd = load()
+
+
+def test_getting_started_auto_glance_example_validates(tmp_path: Path) -> None:
+    guide = (ROOT / "docs/getting-started.md").read_text()
+    section = guide.split("### Choose auto-glance\n", 1)[1]
+    example = re.search(r"```json\n(.*?)\n```", section, re.S)
+    assert example
+    config = json.loads(example.group(1))
+    for enabled in (True, False):
+        config["glance"]["auto"] = enabled
+        path = tmp_path / ".activeloom-herd.json"
+        path.write_text(json.dumps(config))
+        result = subprocess.run(
+            ["python3", "-I", str(SOURCE / "herd-config.py"), "validate", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        effective = json.loads(result.stdout)
+        assert effective["glance"]["auto"] is enabled
+        assert effective["integration_branch"] == "main"
 
 
 def fixture(kind: str, name: str) -> Any:
