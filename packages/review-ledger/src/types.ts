@@ -513,6 +513,12 @@ export interface ChangedFile {
   blank?: number | null | undefined;
   /** True for a submodule gitlink, whose churn is a commit id, not code. */
   submodule?: boolean | undefined;
+  /**
+   * Added and deleted line content without the diff prefix. Only the
+   * dependency-update rule reads it; absent means a manifest, workflow or image
+   * file cannot be recognised as a pin change.
+   */
+  changedLines?: string[] | undefined;
 }
 
 /** How one path classified, on both the value axis and the review axis. */
@@ -562,6 +568,19 @@ export interface ChangesetReport {
    * configuration and prompt surfaces filed under a test-named directory.
    */
   smallChangeLines: number;
+  /**
+   * True when every review-significant file is a dependency pin change: a
+   * lockfile, a manifest version line, an Actions pin, a container image tag
+   * or digest, or a submodule gitlink. The range gets a dependency analysis,
+   * not a review chain. Never true together with `skip` or `smallChange`.
+   */
+  dependencyUpdate: boolean;
+  /**
+   * Files that are dependency pin changes, whether or not the range is
+   * dependency-only. Non-empty with `dependencyUpdate` false is a mixed range:
+   * the code follows the normal tier and these files get the analysis.
+   */
+  dependencyPaths: string[];
 }
 
 /** What kind of pass spent the tokens. */

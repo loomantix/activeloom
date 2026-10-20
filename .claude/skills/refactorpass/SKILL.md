@@ -16,11 +16,15 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `/dep-analysis` instead: no review chain runs on a
+dependency update, whatever the request, tier marker, or skill name. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when

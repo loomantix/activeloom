@@ -5,17 +5,12 @@ does diff size — a large mechanical refactor is Lean unless it also trips
 trigger 4. Nor does topic adjacency: code _about_ security that does not itself
 enforce a sensitive boundary is not trigger 1.
 
-**Dependency version updates (manifest and lockfile changes) do not select Deep.**
-Upgrading an external dependency (e.g. updating `package.json`, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`) does not trip
-Trigger 1 or Trigger 4 simply because the package itself handles authentication,
-cryptography, validation, networking, or concurrency. A multi-lane code review
-inspects code diffs in this repository; it cannot critique external package
-source from a version bump diff. Dependency risk is properly addressed through
-upfront research, release notes, security advisories, and running the consumer test
-suite—not through a multi-lane code review chain. Dependency updates that
-proceed to review remain Lean unless accompanied by material application code
-changes that touch sensitive boundaries or non-obvious runtime behaviour.
+**Dependency updates take no tier.** A dependency-only range takes the
+dependency route in [Human glance](#human-glance) and never reaches tier
+resolution. In a mixed range the dependency files do not set the tier either:
+a package that handles authentication, cryptography, validation, networking, or
+concurrency does not trip trigger 1 or 4 by being bumped. The tier comes from
+the code changes alone, and the bump gets the dependency analysis.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI

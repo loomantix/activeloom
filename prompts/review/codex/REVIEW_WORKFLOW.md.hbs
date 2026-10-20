@@ -583,8 +583,8 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger. Manifest or
-   lockfile-only dependency bumps do not select this trigger; see "What does not
+   bounded-repair exception below before selecting this trigger. A dependency
+   pin change never selects this trigger; see "What does not
    set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot

@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.9.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.10.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -17313,6 +17313,208 @@ function verifyLedger(params) {
   return { actor, dispositions: matched.length, verified: true };
 }
 
+// src/dependency.ts
+var LOCKFILE_BASENAMES = /* @__PURE__ */ new Set([
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "bun.lockb",
+  "bun.lock",
+  "deno.lock",
+  "cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+  "pipfile.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "go.sum",
+  "go.work.sum",
+  "flake.lock",
+  "podfile.lock",
+  "pubspec.lock",
+  "mix.lock",
+  "package.resolved",
+  "packages.lock.json",
+  "gradle.lockfile",
+  ".terraform.lock.hcl"
+]);
+var MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "pnpm-workspace.yaml",
+  "deno.json",
+  "deno.jsonc",
+  "composer.json",
+  "pyproject.toml",
+  "pipfile",
+  "setup.cfg",
+  "cargo.toml",
+  "go.mod",
+  "go.work",
+  "gemfile",
+  "podfile",
+  "pubspec.yaml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "mix.exs"
+]);
+var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.(txt|in)$/;
+var OWN_VERSION_KEYS = /* @__PURE__ */ new Set(["version"]);
+var VERSION_VALUE = /^(?=[^\d]*\d)[\^~<>=!*vV]*\s*\d[\w.*+-]*(\s*(\|\||,|\s)\s*[\^~<>=!]*\s*v?\d[\w.*+-]*)*$/;
+var PROTOCOL_VALUE = /^(workspace|catalog|npm|jsr):\S*$/;
+var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d[\w.+-]*(\+sha\d*\.[0-9a-f]+)?$/;
+var STRUCTURE_ONLY = /^[[\]{}(),]*$/;
+function isVersionValue(raw) {
+  const value = raw.trim().replace(/^["']|["']$/g, "");
+  return VERSION_VALUE.test(value) || PROTOCOL_VALUE.test(value) || AT_VERSION_VALUE.test(value);
+}
+function isKeyedVersionLine(line) {
+  const match = /^(?:-\s+)?["']?(@?[\w][\w@./:-]*)["']?\s*[:=]\s*(.+?)\s*,?$/.exec(line);
+  if (!match) {
+    return false;
+  }
+  const key = match[1].toLowerCase();
+  const value = match[2];
+  if (OWN_VERSION_KEYS.has(key)) {
+    return false;
+  }
+  if (value.startsWith("{")) {
+    const inline = /\bversion\s*=\s*("[^"]*"|'[^']*')/.exec(value);
+    return inline !== null && isVersionValue(inline[1]);
+  }
+  return isVersionValue(value);
+}
+function isRequirementLine(line) {
+  if (line.startsWith("#") || /^--hash=\S+(\s*\\)?$/.test(line)) {
+    return true;
+  }
+  return /^[A-Za-z0-9][\w.\-[\],]*\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+(\s*,\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+)*(\s*;[^\\]*)?(\s*\\)?$/.test(
+    line
+  );
+}
+function isGoModLine(line) {
+  return line.startsWith("//") || /^(require\s+)?[\w.~/-]+\s+v\d[\w.+-]*(\s*\/\/\s*indirect)?$/.test(line) || /^(go|toolchain)\s+(go)?\d[\w.]*$/.test(line);
+}
+function isMavenLine(line) {
+  return /^<version>\s*v?\d[\w.+-]*\s*<\/version>$/.test(line);
+}
+function isGradleLine(line) {
+  return /^\w+\s*\(?\s*["'][\w.-]+:[\w.-]+:v?\d[\w.+-]*["']\s*\)?$/.test(line);
+}
+function isGemLine(line) {
+  return /^(gem|pod)\s+["'][\w.-]+["']\s*,\s*["'][~<>=!\s\d.]+["'](\s*,\s*["'][~<>=!\s\d.]+["'])*$/.test(
+    line
+  );
+}
+function isMixLine(line) {
+  return /^\{:\w+,\s*"[~<>=\s\d.]+"\}\s*,?$/.test(line);
+}
+function isManifestLine(name, line) {
+  if (STRUCTURE_ONLY.test(line)) {
+    return true;
+  }
+  if (name === "go.mod" || name === "go.work") {
+    return isGoModLine(line);
+  }
+  if (name === "pom.xml") {
+    return isMavenLine(line);
+  }
+  if (name === "build.gradle" || name === "build.gradle.kts") {
+    return isGradleLine(line);
+  }
+  if (name === "gemfile" || name === "podfile") {
+    return isGemLine(line);
+  }
+  if (name === "mix.exs") {
+    return isMixLine(line);
+  }
+  if (name === "setup.cfg" || name === "pyproject.toml" || name === "pipfile") {
+    const quoted = /^["']([^"']+)["']\s*,?$/.exec(line);
+    if (quoted && isRequirementLine(quoted[1].trim())) {
+      return true;
+    }
+    if (name === "setup.cfg" && isRequirementLine(line)) {
+      return true;
+    }
+  }
+  if (line.startsWith("#") && !name.endsWith(".json")) {
+    return true;
+  }
+  return isKeyedVersionLine(line);
+}
+function isActionPinLine(line) {
+  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@[\w.-]+["']?(\s+#.*)?$/.test(
+    line
+  );
+}
+function isImageReference(value) {
+  return /^["']?[\w.-]+(:\d+)?(\/[\w.-]+)*(:[\w.-]+)?(@sha256:[0-9a-f]{64})?["']?$/.test(
+    value
+  );
+}
+function isImageLine(line) {
+  const match = /^(-\s+)?image:\s*(\S+)(\s+#.*)?$/.exec(line);
+  return match !== null && isImageReference(match[2]);
+}
+function isImageTagLine(line) {
+  return /^(tag|digest):\s*["']?(v?\d[\w.+-]*|sha256:[0-9a-f]{64})["']?(\s+#.*)?$/.test(
+    line
+  );
+}
+function isDockerfileFromLine(line) {
+  const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
+    line
+  );
+  return match !== null && isImageReference(match[2]);
+}
+function isWorkflowPath(path, name) {
+  return path.startsWith(".github/workflows/") || path.startsWith(".github/actions/") || name === "action.yml" || name === "action.yaml";
+}
+function lineKind(path, name) {
+  if (LOCKFILE_BASENAMES.has(name)) {
+    return "lockfile";
+  }
+  if (MANIFEST_BASENAMES.has(name)) {
+    return (line) => isManifestLine(name, line);
+  }
+  if (REQUIREMENTS_FILE.test(name)) {
+    return isRequirementLine;
+  }
+  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+    return isDockerfileFromLine;
+  }
+  if (name.endsWith(".yml") || name.endsWith(".yaml")) {
+    if (isWorkflowPath(path, name)) {
+      return (line) => isActionPinLine(line) || isImageLine(line);
+    }
+    if (/^values[\w.-]*\.ya?ml$/.test(name)) {
+      return (line) => isImageLine(line) || isImageTagLine(line);
+    }
+    return isImageLine;
+  }
+  return null;
+}
+function isDependencyPinChange(file) {
+  if (file.submodule === true) {
+    return true;
+  }
+  const path = file.path.replace(/\\/g, "/").replace(/^\.\//, "");
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const kind = lineKind(path, name);
+  if (kind === null) {
+    return false;
+  }
+  if (kind === "lockfile") {
+    return true;
+  }
+  const lines = (file.changedLines ?? []).map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length === 0) {
+    return false;
+  }
+  return lines.every(kind);
+}
+
 // src/changeset.ts
 var CHANGESET_CLASSIFIER_VERSION = 1;
 var SMALL_CHANGE_LINE_LIMIT = 20;
@@ -17381,7 +17583,7 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   ".gitlab-ci.yml",
   ".platform-config.yml"
 ]);
-var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
+var REQUIREMENTS_FILE2 = /^requirements(-[^.]+)?\.txt$/;
 var SMALL_CHANGE_DEPENDENCY_BASENAMES = /* @__PURE__ */ new Set([
   "pnpm-workspace.yaml",
   "bun.lock",
@@ -17548,11 +17750,11 @@ function isFixture(path, name) {
   return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
 }
 function isConfig(path, name, extension) {
-  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE.test(name);
+  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE2.test(name);
 }
 function isDependencyFile(path) {
   const name = basename(normalizePath(path)).toLowerCase();
-  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
+  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE2.test(name);
 }
 function isSourceUnderTestPath(path, promptSurfaces) {
   const name = basename(path).toLowerCase();
@@ -17612,12 +17814,20 @@ function classifyFiles(files, options) {
   const classifications = [];
   let unsizedFiles = 0;
   let smallChangeLines = 0;
+  const dependencyPaths = [];
+  let otherSignificantFiles = 0;
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
+    }
+    const dependencyPin = classification.reviewSignificant && classification.class !== "test" && isDependencyPinChange(file);
+    if (dependencyPin) {
+      dependencyPaths.push(classification.path);
+    } else if (classification.reviewSignificant) {
+      otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
     if (!Number.isSafeInteger(file.added) || file.added < 0 || !Number.isSafeInteger(file.deleted) || file.deleted < 0) {
@@ -17632,7 +17842,7 @@ function classifyFiles(files, options) {
       fail(`changed file ${file.path} reports an invalid blank count`);
     }
     const counted = churn - blank;
-    if (isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
+    if (dependencyPin || isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
       unsizedFiles += 1;
     }
     if (classification.class === "app" || classification.class === "test" && isSourceUnderTestPath(classification.path, promptSurfaces)) {
@@ -17645,13 +17855,16 @@ function classifyFiles(files, options) {
       changeset.linesByLanguage[key] = (changeset.linesByLanguage[key] ?? 0) + counted;
     }
   }
+  const skip = changeset.reviewSignificantFiles === 0;
   return {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0,
+    skip,
     smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
-    smallChangeLines
+    smallChangeLines,
+    dependencyUpdate: !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0,
+    dependencyPaths
   };
 }
 function unquotePath(raw) {
@@ -17819,6 +18032,9 @@ function parseDiffPatch(patch) {
       current.added += 1;
     } else if (prefix2 === "-") {
       current.deleted += 1;
+    }
+    if (prefix2 === "+" || prefix2 === "-") {
+      (current.changedLines ??= []).push(rawLine.slice(1));
     }
     if ((prefix2 === "+" || prefix2 === "-") && rawLine.slice(1).trim() === "") {
       current.blank = (current.blank ?? 0) + 1;
@@ -20307,6 +20523,8 @@ function runCliCommand(argv) {
         smallChange: report.smallChange,
         smallChangeLines: report.smallChangeLines,
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
+        dependencyUpdate: report.dependencyUpdate,
+        dependencyPaths: report.dependencyPaths,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications
       });

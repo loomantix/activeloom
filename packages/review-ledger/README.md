@@ -304,6 +304,18 @@ line churn keeps a range out, and comment lines count until a lexer can exclude
 them. Test lines are outside the limit, so a test-only range of any size is
 small; a caller reports `linesChanged.test` beside `smallChangeLines`.
 
+A third gate answer, `dependencyUpdate`, is exclusive of both. It is true when
+every review-significant file is a dependency pin change — a lockfile, a
+manifest or workspace-catalog version line, a GitHub Actions `uses:` pin, a
+container image tag or digest, or a submodule gitlink — and the range gets a
+dependency analysis instead of a review chain. `dependencyPaths` lists the pin
+changes whether or not the range is dependency-only, so a non-empty list with
+`dependencyUpdate` false marks a mixed range. Recognition reads each file's
+changed lines and fails closed: a manifest with any non-version edit, a
+workflow with any line other than a `uses:` or `image:` pin, or a file of an
+unknown kind keeps the range on the normal route. A manifest under a test path
+is a fixture and is never a pin.
+
 The test class is assigned by path, and a directory named `test` is not always
 tests. A `test`-class file that also matches a config or prompt-surface rule,
 such as `infra/environments/test/main.tf`, keeps its class and counts toward the

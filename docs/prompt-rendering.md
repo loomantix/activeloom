@@ -64,7 +64,7 @@ the existing `<<KEY>>` profile substitutions, applied after composition.
 
 The initial shared policy covers the human-glance entry gate and workflow,
 findings before telemetry emission, finding severity, and tier non-triggers.
-The routine dependency recommendation lives only in `human-glance.hbs`.
+The dependency-update route lives only in `human-glance.hbs`.
 Different review lenses, launch instructions, and calibrated wording stay in the
 engine templates. The parity lint continues comparing these engine-specific
 outputs; composition does not exempt them from that check.

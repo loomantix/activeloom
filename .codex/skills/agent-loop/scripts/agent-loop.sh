@@ -2812,15 +2812,31 @@ budget_finish() {
 
 # A range with no review-significant file needs a human glance, not a review
 # chain. Classify before the first round so no hook, checkpoint, latch, or
-# marker is spent on it. Returns 0 only on a confident skip carrying at least
+# marker is spent on it. A dependency update stops the same way, for a
+# dependency analysis. Returns 0 only on a dependency update or a confident skip carrying at least
 # one file; an unreadable classification falls through to the normal review.
+human_glance_need() {
+    if [ "${HUMAN_GLANCE_KIND:-human-glance}" = dependency-update ]; then
+        echo "a dependency analysis"
+    else
+        echo "a human glance"
+    fi
+}
+
 human_glance_gate() {
     local base_sha="$1" head_sha="$2" report
     HUMAN_GLANCE_FILES=0
+    HUMAN_GLANCE_KIND=human-glance
     [ -n "$REVIEW_LEDGER" ] && [ -f "$REVIEW_LEDGER" ] || return 1
     command -v node >/dev/null 2>&1 || return 1
     report="$(node "$REVIEW_LEDGER" classify-changeset \
         --base "$base_sha" --head "$head_sha" 2>/dev/null)" || return 1
+    # A dependency update never gets a review chain; it waits for a dependency analysis.
+    if [ "$(jq -r '.dependencyUpdate // false' <<<"$report" 2>/dev/null)" = true ]; then
+        HUMAN_GLANCE_KIND=dependency-update
+        HUMAN_GLANCE_FILES="$(jq -r '.dependencyPaths | length' <<<"$report" 2>/dev/null)" || return 1
+        return 0
+    fi
     [ "$(jq -r '.skip // false' <<<"$report" 2>/dev/null)" = true ] || return 1
     HUMAN_GLANCE_FILES="$(jq -r '.classifications | length' <<<"$report" 2>/dev/null)" || return 1
     [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
@@ -4171,8 +4187,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
     if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
-        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
-        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain." human-glance
+        if [ "$HUMAN_GLANCE_KIND" = dependency-update ]; then
+            echo "Dependency update: $HUMAN_GLANCE_FILES dependency files, no review chain. Run the dependency analysis (dep-analysis)."
+        else
+            echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
+        fi
+        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs $(human_glance_need), not a review chain." human-glance
         exit 1
     fi
 

@@ -631,29 +631,35 @@ as `smallChangeLines`, T as `linesChanged.test`, M as
 Human glance recommended: N changed lines of code or config and T of tests in M files. Triggers: <matched triggers, or none>. Read the diff and merge, or ask for the review chain to run.
 ```
 
-**Routine dependency updates.** Before reviewer setup, an interactive entry
-may recommend human glance for a non-empty diff limited to patch bumps between
-stable versions of existing direct development dependencies and their lockfiles.
-Preserve dependency groups and version-range operators.
-Read the full manifest and lockfile diff: no other manifest fields or files may
-change. Inspect transitive updates, release notes and advisories for compatibility
-concerns, new install scripts, and changed package sources or registries.
-Require a successful frozen install, relevant tests/typecheck/build, and required
-CI at the current head; reuse existing evidence. Missing or failed validation,
-unexplained transitive changes, or unresolved concerns continue the normal review
-route. This recommendation does not apply to a PR with a tier marker, an explicit
-request to run review anyway, or a controller-scheduled pass. A reviewer launch
-failure never qualifies a change for it.
-
-When those conditions hold, summarize the dependency validation and print:
+**Dependency updates.** When the output has `"dependencyUpdate": true`, every
+review-significant file in the range is a dependency pin change: a lockfile, a
+manifest or workspace-catalog version line, a GitHub Actions version or SHA pin,
+a container image tag or digest, or a submodule gitlink. No review chain runs
+on it — not Lean, not Deep, not a human-glance recommendation, on any engine,
+and not on a request to review it anyway. Its risk is upstream code this
+repository does not contain, so it gets a dependency analysis instead: what
+could break, the existing tests that exercise it (run), the signal that would
+show a break after merge, and a verdict. Print this line, with N as the length
+of `dependencyPaths`, stop with the same absence of review artifacts, and run
+`dep-analysis`:
 
 ```text
-Use human glance. Routine development-dependency patch updates; dependency validation passed. No review chain needed.
+Dependency update: N dependency files, no review chain. Running the dependency analysis.
 ```
 
-Stop with the same absence of review artifacts as the recommendations above.
-This is an evidence-based recommendation; it does not change the classifier's
-`skip` or `smallChange` flags.
+A range with a non-empty `dependencyPaths` and `"dependencyUpdate": false` is
+**mixed**: a bump plus code. The code follows the normal route — this gate, then
+the tier from triggers 1–5 — and the chain's reviewers leave the dependency
+files to the analysis. `dep-analysis` covers `dependencyPaths` once the
+chain converges, at the converged head. A mixed PR is ready to ship only with
+both the chain's convergence and a `clear` analysis at the same head. Where the
+bump can stand alone, a separate PR for it is the simpler route.
+
+The analysis records its outcome as a PR comment whose first line is
+`<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->`.
+An orchestrator ship gate reads the latest one and requires `verdict=clear` at
+the exact current head. `gaps` recommends a separate issue documenting the test
+and telemetry gaps, to close before merge; re-run the analysis once it closes.
 
 No human-glance recommendation authorizes a merge. When the repository's own
 instructions gate merging the touched paths — a deploy on merge, an apply-before-merge order —
@@ -663,7 +669,8 @@ Otherwise continue the entry point unchanged. An empty range or a classifier
 that cannot run is not human glance; the entry point's own pre-flight handles it.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
-  anyway overrides the gate. For a range with no review-significant file, that
+  anyway overrides the gate, except on a dependency update, which always takes
+  the dependency analysis. For a range with no review-significant file, that
   request is trigger 6: the chain runs and the tier marker records it. For a
   small change, the next rule sets the tier. Typing a review skill's name, or
   asking to "review this PR" or "run the review chain", is not that request:
@@ -685,7 +692,7 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   full, small-change recommendation included, before it starts the runner: the
   human who asked is there to answer. `agent-loop` classifies before its first
   review round and has no human to act on a recommendation, so it gates on
-  `skip` alone and ignores `smallChange`.
+  `skip` and `dependencyUpdate` alone and ignores `smallChange`.
 - **Later pushes.** Every invocation classifies the whole range again. A push
   that adds a review-significant file takes the PR out of human glance, and tier
   resolution applies to the whole range.
@@ -711,8 +718,8 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger. Manifest or
-   lockfile-only dependency bumps do not select this trigger; see "What does not
+   bounded-repair exception below before selecting this trigger. A dependency
+   pin change never selects this trigger; see "What does not
    set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
@@ -761,17 +768,12 @@ does diff size — a large mechanical refactor is Lean unless it also trips
 trigger 4. Nor does topic adjacency: code _about_ security that does not itself
 enforce a sensitive boundary is not trigger 1.
 
-**Dependency version updates (manifest and lockfile changes) do not select Deep.**
-Upgrading an external dependency (e.g. updating `package.json`, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`) does not trip
-Trigger 1 or Trigger 4 simply because the package itself handles authentication,
-cryptography, validation, networking, or concurrency. A multi-lane code review
-inspects code diffs in this repository; it cannot critique external package
-source from a version bump diff. Dependency risk is properly addressed through
-upfront research, release notes, security advisories, and running the consumer test
-suite—not through a multi-lane code review chain. Dependency updates that
-proceed to review remain Lean unless accompanied by material application code
-changes that touch sensitive boundaries or non-obvious runtime behaviour.
+**Dependency updates take no tier.** A dependency-only range takes the
+dependency route in [Human glance](#human-glance) and never reaches tier
+resolution. In a mixed range the dependency files do not set the tier either:
+a package that handles authentication, cryptography, validation, networking, or
+concurrency does not trip trigger 1 or 4 by being bumped. The tier comes from
+the code changes alone, and the bump gets the dependency analysis.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI

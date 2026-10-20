@@ -45,11 +45,34 @@ def test_orchestrators_observe_the_glance_instead_of_dispatching_twice(root: str
 
     horch = skill("horch")
     assert "Do not launch a second auto-glance" in horch
-    assert "clean auto-glance → [Shipping]" in horch
+    assert "a clean auto-glance, or a `dependency-analysis:v1` comment at `verdict=clear` → [Shipping]" in horch
     assert "do not independently route it to auto-glance" in horch
     assert "prompt the same herder the `auto-glance` skill" not in horch
     hloop = skill("hloop")
     assert "`hreview` dispatches auto-glance itself" in hloop
-    assert "**converged or clean auto-glance** → step 5" in hloop
+    assert "**converged or clean auto-glance**, or a dependency analysis at `verdict=clear` → step 5" in hloop
     assert "do not launch another auto-glance or override the gate" in hloop
     assert "without starting a second glancer" in skill("hpromote")
+
+
+@pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
+def test_herd_skills_route_a_dependency_update_to_the_analysis(root: str) -> None:
+    def skill(name: str) -> str:
+        return " ".join((ROOT / root / "skills" / name / "SKILL.md").read_text().split())
+
+    hreview = skill("hreview")
+    assert "On `dependencyUpdate`, whatever the tier extensions, markers or request: start no chain." in hreview
+    assert hreview.index("On `dependencyUpdate`") < hreview.index("On `skip` or `smallChange`")
+    assert "run `" in hreview and "dep-analysis <n>` once the chain converges" in hreview
+    glance = skill("auto-glance")
+    assert glance.index("On `dependencyUpdate`, the PR gets a dependency analysis, not a glance") < glance.index(
+        "Continue only if `skip` or `smallChange` is true"
+    )
+    horch = skill("horch")
+    assert (
+        "reports `dependencyUpdate`, and its latest `dependency-analysis:v1` comment says `verdict=clear` at that exact head"
+        in horch
+    )
+    assert "**mixed range:**" in horch
+    assert "Never route a dependency update to a review chain or auto-glance" in horch
+    assert "Do not start a review chain on the dependency update" in skill("hloop")

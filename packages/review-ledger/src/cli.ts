@@ -1064,6 +1064,8 @@ function runCliCommand(argv: string[]): number {
         smallChange: report.smallChange,
         smallChangeLines: report.smallChangeLines,
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
+        dependencyUpdate: report.dependencyUpdate,
+        dependencyPaths: report.dependencyPaths,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications,
       });

@@ -185,6 +185,7 @@ Where it stops:
 - **Converged and CI green:** it marks the PR ready and tells you it is ready for final review and merge.
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
+- **Dependency update:** it runs `dep-analysis` in the same herder session instead of a chain, and reports the verdict. `horch` ships the PR on a `dependency-analysis:v1` comment at `verdict=clear` at the exact head.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
 - **Blocked:** anything it cannot decide within the rules.
 

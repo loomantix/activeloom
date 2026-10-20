@@ -1,3 +1,4 @@
+import { isDependencyPinChange } from './dependency.js';
 import { runGit } from './github.js';
 import { fail } from './errors.js';
 import { requireSha } from './hash.js';
@@ -510,6 +511,11 @@ function emptyChangeset(): Changeset {
  * reports `smallChangeLines` reports `linesChanged.test` beside it. The
  * exception is configuration or a prompt surface under a test-named directory:
  * it keeps its `test` class and also counts toward the limit.
+ *
+ * `dependencyUpdate` is a third gate answer, exclusive of the other two: every
+ * review-significant file is a dependency pin change, so the range gets a
+ * dependency analysis instead of a review chain. A pin change is unsized for
+ * `smallChange` as well, so a workflow pin bump is never a small change.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -519,12 +525,25 @@ export function classifyFiles(
   const classifications: FileClassification[] = [];
   let unsizedFiles = 0;
   let smallChangeLines = 0;
+  const dependencyPaths: string[] = [];
+  let otherSignificantFiles = 0;
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
+    }
+    // A manifest under a test path is a fixture, not a dependency of the
+    // project, so only a review-significant non-test file can be a pin.
+    const dependencyPin =
+      classification.reviewSignificant &&
+      classification.class !== 'test' &&
+      isDependencyPinChange(file);
+    if (dependencyPin) {
+      dependencyPaths.push(classification.path);
+    } else if (classification.reviewSignificant) {
+      otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
 
@@ -551,6 +570,7 @@ export function classifyFiles(
     // `classifierVersion` exists to record.
     const counted = churn - blank;
     if (
+      dependencyPin ||
       isDependencyFile(file.path) ||
       file.submodule === true ||
       (classification.reviewSignificant && churn === 0)
@@ -574,16 +594,20 @@ export function classifyFiles(
     }
   }
 
+  const skip = changeset.reviewSignificantFiles === 0;
   return {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0,
+    skip,
     smallChange:
       changeset.reviewSignificantFiles > 0 &&
       unsizedFiles === 0 &&
       smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
     smallChangeLines,
+    dependencyUpdate:
+      !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0,
+    dependencyPaths,
   };
 }
 
@@ -786,6 +810,9 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
       current.added += 1;
     } else if (prefix === '-') {
       current.deleted += 1;
+    }
+    if (prefix === '+' || prefix === '-') {
+      (current.changedLines ??= []).push(rawLine.slice(1));
     }
     if ((prefix === '+' || prefix === '-') && rawLine.slice(1).trim() === '') {
       current.blank = (current.blank ?? 0) + 1;
