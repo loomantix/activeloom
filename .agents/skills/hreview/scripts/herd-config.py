@@ -536,55 +536,127 @@ def read_user(path: Path) -> dict[str, Any]:
     return {"source": {"path": str(path), "present": True}, "config": effective}
 
 
-# Flags each CLI documents as turning a safety check off. A flag with a value
-# counts only with that value: `-s read-only` is a read-only session, not a risk.
-# The table only classifies flags and launches nothing; it is locked so that any
-# edit to it is reviewed (.claude/claude-cli-invocations.allowlist).
+# Flags each CLI documents as changing a safety check, by value. Each value maps
+# to (what it turns off, whether sessions stop asking); None for what it turns
+# off marks a value that turns nothing off, so `-s read-only` is recognized, not
+# a risk. A flag with no value is keyed by None. Codex `-c key=value` overrides
+# are classified by key. The tables only classify flags and launch nothing; they
+# are locked so that any edit to them is reviewed
+# (.claude/claude-cli-invocations.allowlist).
 # claude-cli-invocations:start
-PERMISSION_FLAGS: dict[str, dict[str, tuple[str | None, str]]] = {
+FlagValues = dict[str | None, tuple[str | None, bool]]
+CODEX_APPROVAL: FlagValues = {
+    "never": ("approval prompts", True),
+    "on-request": (None, False),
+    "on-failure": (None, False),
+    "untrusted": (None, False),
+}
+CODEX_SANDBOX: FlagValues = {
+    "danger-full-access": ("the sandbox", False),
+    "workspace-write": (None, False),
+    "read-only": (None, False),
+}
+CODEX_BYPASS: FlagValues = {None: ("approval prompts and the sandbox", True)}
+PERMISSION_FLAGS: dict[str, dict[str, FlagValues]] = {
     "claude": {
-        "--dangerously-skip-permissions": (None, "every permission check"),
-        "--permission-mode": ("bypassPermissions", "every permission check"),
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--permission-mode": {
+            "bypassPermissions": ("every permission check", True),
+            "auto": ("approval prompts; a classifier allows or refuses each action instead", True),
+            "dontAsk": ("approval prompts; anything not allowed in advance is refused", True),
+            "acceptEdits": ("approval prompts for file edits", False),
+            "manual": (None, False),
+            "plan": (None, False),
+        },
     },
     "codex": {
-        "--dangerously-bypass-approvals-and-sandbox": (None, "approval prompts and the sandbox"),
-        "-s": ("danger-full-access", "the sandbox"),
-        "--sandbox": ("danger-full-access", "the sandbox"),
-        "-a": ("never", "approval prompts"),
-        "--ask-for-approval": ("never", "approval prompts"),
+        "--dangerously-bypass-approvals-and-sandbox": CODEX_BYPASS,
+        "--yolo": CODEX_BYPASS,
+        "--approve-for-me": {
+            None: ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True)
+        },
+        # Removed from current CLIs; older ones read it as sandboxed auto-approval.
+        "--full-auto": {None: ("approval prompts for commands the workspace-write sandbox allows", False)},
+        "-a": CODEX_APPROVAL,
+        "--ask-for-approval": CODEX_APPROVAL,
+        "-s": CODEX_SANDBOX,
+        "--sandbox": CODEX_SANDBOX,
     },
     "gemini": {
-        "--dangerously-skip-permissions": (None, "every permission check"),
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--mode": {
+            "accept-edits": ("approval prompts for file edits", False),
+            "plan": (None, False),
+        },
     },
 }
+CODEX_CONFIG_KEYS: dict[str, FlagValues] = {
+    "approval_policy": CODEX_APPROVAL,
+    "sandbox_mode": CODEX_SANDBOX,
+    "approvals_reviewer": {
+        "auto_review": ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True),
+        "user": (None, False),
+    },
+    "sandbox_workspace_write.network_access": {
+        "true": ("the sandbox's network block", False),
+        "false": (None, False),
+    },
+}
+CODEX_CONFIG_FLAGS = ("-c", "--config")
 # claude-cli-invocations:end
+PERMISSION_SCOPE = "herd.json only; engine config files such as ~/.codex/config.toml and Claude settings are not read"
 
 
-def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str]]:
-    known = PERMISSION_FLAGS[engine]
+def _classify(engine: str, flag: str, value: str | None) -> tuple[str | None, bool] | None:
+    """What `flag value` turns off, or None when the table does not know it."""
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS and value is not None:
+        key, has_value, raw = value.partition("=")
+        if not has_value:
+            return None
+        # The CLI parses the value as TOML, so a quoted string is the same setting.
+        literal = raw.strip()
+        if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in "\"'":
+            literal = literal[1:-1]
+        return CODEX_CONFIG_KEYS.get(key.strip(), {}).get(literal)
+    return PERMISSION_FLAGS[engine].get(flag, {}).get(value)
+
+
+def _takes_value(engine: str, flag: str) -> bool:
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS:
+        return True
+    values = PERMISSION_FLAGS[engine].get(flag)
+    return values is not None and None not in values
+
+
+def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str], bool]:
+    """Flags that turn a check off, flags the table cannot classify, and
+    whether the recognized flags stop sessions asking."""
     found: list[dict[str, str]] = []
     unrecognized: list[str] = []
+    ends_prompts = False
     index = 0
     while index < len(args):
         arg = args[index]
         flag, has_inline, inline = arg.partition("=")
-        if flag not in known:
-            unrecognized.append(arg)
-            index += 1
-            continue
-        wanted, turns_off = known[flag]
-        if wanted is None:
-            found.append({"arg": arg, "turns_off": turns_off})
-            index += 1
-            continue
-        value = inline if has_inline else (args[index + 1] if index + 1 < len(args) else "")
-        shown = arg if has_inline else f"{arg} {value}".strip()
-        if value == wanted:
-            found.append({"arg": shown, "turns_off": turns_off})
-        else:
+        value: str | None = None
+        shown = arg
+        index += 1
+        if has_inline:
+            value = inline
+        elif _takes_value(engine, flag):
+            if index < len(args):
+                value = args[index]
+                shown = f"{arg} {value}"
+                index += 1
+        known = None if value is None and _takes_value(engine, flag) else _classify(engine, flag, value)
+        if known is None:
             unrecognized.append(shown)
-        index += 1 if has_inline else 2
-    return found, unrecognized
+            continue
+        turns_off, ends = known
+        ends_prompts = ends_prompts or ends
+        if turns_off is not None:
+            found.append({"arg": shown, "turns_off": turns_off})
+    return found, unrecognized, ends_prompts
 
 
 def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, Any]:
@@ -596,19 +668,15 @@ def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, A
     report: dict[str, Any] = {}
     for engine in engines:
         entry = loaded["config"]["engines"][engine]
-        turned_off, unrecognized = _turned_off(engine, entry["permission_off_args"])
-        in_launch, _ = _turned_off(engine, entry["launch_args"])
-        approval_off = any(
-            "approval prompts" in item["turns_off"] or item["turns_off"] == "every permission check"
-            for item in turned_off + in_launch
-        )
+        turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
+        in_launch, _, ends_launch = _turned_off(engine, entry["launch_args"])
         report[engine] = {
-            "stops_at_prompts": not approval_off,
+            "stops_at_prompts": not (ends_off or ends_launch),
             "turned_off": turned_off,
             "unrecognized": unrecognized,
             "turned_off_in_read_only": in_launch,
         }
-    return {"source": loaded["source"], "engines": report}
+    return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
 
 
 # --- state paths and locks -------------------------------------------------------
