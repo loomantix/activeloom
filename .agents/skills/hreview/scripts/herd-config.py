@@ -550,7 +550,9 @@ PERMISSION_FLAGS: dict[str, dict[str, tuple[str | None, str]]] = {
         "-a": ("never", "approval prompts"),
         "--ask-for-approval": ("never", "approval prompts"),
     },
-    "gemini": {},
+    "gemini": {
+        "--dangerously-skip-permissions": (None, "every permission check"),
+    },
 }
 
 
@@ -675,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     permissions.add_argument("--engine", required=True, choices=ENGINES, action="append")
     permissions.add_argument("--path", type=Path)
 
-    paths =commands.add_parser("paths", help="create and print per-repository state paths")
+    paths = commands.add_parser("paths", help="create and print per-repository state paths")
     lock = commands.add_parser("lock", help="take a per-repository lock (exit 3 if held)")
     unlock = commands.add_parser("unlock", help="release a per-repository lock")
     for command in (paths, lock, unlock):

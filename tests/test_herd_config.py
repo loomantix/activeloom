@@ -429,6 +429,13 @@ def test_approval_flag_in_launch_args_applies_to_editing_sessions(
     assert report["stops_at_prompts"] is False
 
 
+def test_agy_permission_flag_disables_approval_prompts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"gemini": {"permission_off_args": ["--dangerously-skip-permissions"]}}
+    report = permissions(tmp_path, capsys, engines, "gemini")["gemini"]
+    assert report["stops_at_prompts"] is False
+    assert report["unrecognized"] == []
+
+
 def test_permission_flag_in_launch_args_reaches_read_only_sessions(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
