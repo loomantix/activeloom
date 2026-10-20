@@ -121,6 +121,9 @@ skills:
   hpromote:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to run hpromote or a promotion on herdr.'
+  promote:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to promote, open a promotion PR, or dry-run a promotion from the repository recipe.'
 
 # --- prompt stack ------------------------------------------------------------
 # See `claude.yml` for what this block is and why it lives in the profile.

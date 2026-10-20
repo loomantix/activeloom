@@ -180,6 +180,11 @@ skills:
       disable-model-invocation: true
       argument-hint: '[--dry-run] | run [--dry-run] | merged'
     DESC_TRIGGER: ''
+  promote:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '[--dry-run] [--integration-branch <branch>] | merged | validate [<file>]'
+    DESC_TRIGGER: ''
 
 # --- prompt stack ------------------------------------------------------------
 # The review prompt files this harness's telemetry identity is computed over,

@@ -32,6 +32,8 @@ ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
 DEFAULT_HOLD_LABEL = "agent-bail: grill-review"
+# The generic recipe-driven skill; a repository may name its own instead.
+DEFAULT_PROMOTION_SKILL = "promote"
 
 REPO_SECTIONS = (
     "schema_version",
@@ -290,9 +292,9 @@ def validate_repo(config: Any) -> dict[str, Any]:
     else:
         allowed = ("skill", "production_branch", "risk_engine", "preflight", "deploy_workflows", "post_merge")
         _check_keys(promotion, allowed, "promotion", errors)
-        skill = promotion.get("skill")
+        skill = promotion.get("skill", DEFAULT_PROMOTION_SKILL)
         if not isinstance(skill, str) or not SKILL_RE.match(skill):
-            errors.append("promotion.skill: required; must be a skill name")
+            errors.append("promotion.skill: must be a skill name")
         production = promotion.get("production_branch")
         if not isinstance(production, str) or not BRANCH_RE.match(production):
             errors.append("promotion.production_branch: required; must be a branch name")

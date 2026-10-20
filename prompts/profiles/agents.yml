@@ -113,6 +113,9 @@ skills:
   hpromote:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to run hpromote or a promotion on herdr.'
+  promote:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to promote, open a promotion PR, or dry-run a promotion from the repository recipe.'
 
 # No `prompt_stack` block. This harness has no prompt-stack hasher yet, so
 # there is nothing to consume a manifest and no engine whose prompt generation
