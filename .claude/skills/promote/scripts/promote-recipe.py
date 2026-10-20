@@ -199,6 +199,10 @@ def _validate_pull_request(value: Any, errors: list[str]) -> dict[str, Any]:
         for field in re.findall(r"\{([^{}]*)\}", title):
             if field not in TITLE_FIELDS:
                 errors.append(f"pull_request.title: unknown field {{{field}}} (expected {', '.join(TITLE_FIELDS)})")
+        try:
+            title.format(integration="", production="", date="")
+        except (ValueError, KeyError, IndexError) as exc:
+            errors.append(f"pull_request.title: invalid format string ({exc})")
     method = pr.get("merge_method")
     if method is not None:
         _choice(method, MERGE_METHODS, "pull_request.merge_method", errors)
@@ -490,15 +494,25 @@ def read_recipe(repo_dir: Path, remote: str, default: str | None, fetch: bool) -
 def resolve(args: argparse.Namespace) -> dict[str, Any]:
     """The recipe file, else one synthesized from the herd config given with --herd."""
     herd = _load_json_arg(args.herd) if args.herd else None
+    config = herd.get("config", herd) if herd is not None else {}
     try:
-        loaded = read_recipe(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
+        loaded: dict[str, Any] | None = read_recipe(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
     except NoRecipe:
         if herd is None:
             raise
+        herd_branch = config.get("integration_branch")
+        if args.default_branch is None and isinstance(herd_branch, str):
+            try:
+                loaded = read_recipe(args.repo_dir, args.remote, herd_branch, not args.no_fetch)
+            except NoRecipe:
+                loaded = None
+        else:
+            loaded = None
+    if loaded is None:
+        assert herd is not None
         source = herd.get("source", {})
         return {"source": {"kind": "herd", "ref": source.get("ref"), "commit": source.get("commit")}, "recipe": from_herd(herd)}
     if herd is not None:
-        config = herd.get("config", herd)
         promotion = config.get("promotion") or {}
         recipe = loaded["recipe"]
         mismatches = [
@@ -606,7 +620,7 @@ def _capture(argv: list[str], cwd: Path, timeout: int | None) -> tuple[int, str]
         return 124, ""
     except OSError as exc:
         return 127, str(exc)
-    return result.returncode, result.stdout
+    return result.returncode, result.stdout or result.stderr
 
 
 def _say(text: str) -> None:
@@ -665,7 +679,7 @@ def watch_workflow(step: dict[str, Any], sha: str, cwd: Path, runner: Runner = _
                         "conclusion": newest.get("conclusion"), "run": newest.get("databaseId"),
                         "url": newest.get("url"), "seconds": round(elapsed)}
             _say(f"   {newest.get('status')} ({round(elapsed)}s)")
-        elif elapsed >= APPEAR_GRACE_SECONDS:
+        elif elapsed >= APPEAR_GRACE_SECONDS or clock() >= deadline:
             outcome = "skipped" if step["if_absent"] == "skip" else "absent"
             _say(f"   no run on {sha[:12]}: {outcome}")
             return {"step": step["id"], "outcome": outcome, "seconds": round(elapsed)}
@@ -693,16 +707,20 @@ def watch_checks(step: dict[str, Any], pr: int, sha: str, cwd: Path, runner: Run
         if step["checks"] == "required":
             checks_argv.append("--required")
         code, out = runner(checks_argv, cwd, 60)
-        try:
-            checks = json.loads(out or "[]")
-        except json.JSONDecodeError:
-            checks = None
+        if code == 1 and re.match(r"^no (?:required )?checks reported on the ", out.strip()):
+            checks: list[dict[str, Any]] | None = []
+        else:
+            try:
+                parsed = json.loads(out)
+                checks = parsed if isinstance(parsed, list) else None
+            except json.JSONDecodeError:
+                checks = None
         elapsed = clock() - started
         # `gh pr checks` exits 8 while checks are pending and 1 when one failed.
         if checks is None or code not in (0, 1, 8):
             return {"step": step["id"], "outcome": "failed", "detail": "gh pr checks failed"}
         pending = [c["name"] for c in checks if c.get("bucket") == "pending"]
-        failing = [c["name"] for c in checks if c.get("bucket") in ("fail", "cancel")]
+        failing = [c["name"] for c in checks if c.get("bucket") not in ("pass", "skipping", "pending")]
         if not pending:
             if not checks:
                 if elapsed < APPEAR_GRACE_SECONDS and clock() < deadline:

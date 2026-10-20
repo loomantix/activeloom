@@ -134,6 +134,7 @@ def test_minimal_recipe() -> None:
         ({"rollback": "../runbook.md"}, "without '..'"),
         ({"extra": 1}, "top level: unknown key 'extra'"),
         ({"pull_request": {"title": "Release {version}"}}, "unknown field {version}"),
+        ({"pull_request": {"title": "Promote {integration"}}, "invalid format string"),
         ({"pull_request": {"merge_method": "fast-forward"}}, "merge_method: must be one of"),
         ({"pull_request": {"surface": [{"name": "migrations", "globs": []}]}}, "must name at least one glob"),
     ],
@@ -398,7 +399,7 @@ def test_watch_workflow_waits_for_the_newest_run() -> None:
 def test_watch_workflow_absent(if_absent: str, outcome: str) -> None:
     clock = FakeClock()
     result = recipe_mod.watch_workflow(
-        workflow_step(if_absent=if_absent), SHA, Path("."), lambda *_: (0, "[]"), clock.sleep, clock
+        workflow_step(if_absent=if_absent, timeout_minutes=1), SHA, Path("."), lambda *_: (0, "[]"), clock.sleep, clock
     )
     assert result["outcome"] == outcome
 
@@ -408,19 +409,44 @@ def test_watch_checks_reports_failures_and_head_moves() -> None:
     assert step["kind"] == "watch_checks"
     clock = FakeClock()
     checks = iter([
-        (8, [{"name": "build", "bucket": "pending"}, {"name": "lint", "bucket": "pass"}]),
-        (1, [{"name": "build", "bucket": "fail"}, {"name": "lint", "bucket": "pass"}]),
+        (8, json.dumps([{"name": "build", "bucket": "pending"}, {"name": "lint", "bucket": "pass"}])),
+        (1, json.dumps([{"name": "build", "bucket": "fail"}, {"name": "lint", "bucket": "pass"}])),
     ])
 
     def runner(argv: list[str], cwd: Path, timeout: int | None) -> tuple[int, str]:
         if argv[:3] == ["gh", "pr", "view"]:
             return 0, json.dumps({"headRefOid": SHA})
         assert "--required" in argv
-        code, body = next(checks)
-        return code, json.dumps(body)
+        return next(checks)
 
     result = recipe_mod.watch_checks(step, 7, SHA, Path("."), runner, clock.sleep, clock)
     assert result["outcome"] == "failed" and result["failing"] == ["build"]
+
+    lookup_err = recipe_mod.watch_checks(
+        step,
+        7,
+        SHA,
+        Path("."),
+        lambda argv, *_: (0, json.dumps({"headRefOid": SHA})) if argv[:3] == ["gh", "pr", "view"] else (1, "HTTP 502"),
+        clock.sleep,
+        clock,
+    )
+    assert lookup_err["outcome"] == "failed" and lookup_err["detail"] == "gh pr checks failed"
+
+    no_checks = recipe_mod.watch_checks(
+        step,
+        7,
+        SHA,
+        Path("."),
+        lambda argv, *_: (
+            (0, json.dumps({"headRefOid": SHA}))
+            if argv[:3] == ["gh", "pr", "view"]
+            else (1, "no required checks reported on the 'develop' branch\n")
+        ),
+        clock.sleep,
+        clock,
+    )
+    assert no_checks["outcome"] == "absent"
 
     moved = recipe_mod.watch_checks(
         step, 7, SHA, Path("."), lambda *_: (0, json.dumps({"headRefOid": "b" * 40})), clock.sleep, clock
@@ -488,6 +514,21 @@ def test_show_falls_back_to_the_herd_config_and_checks_agreement(remote: tuple[P
     git(work, "push", "-q", "origin", "develop")
     done = show(work, "--herd", "-", stdin=json.dumps(herd_out))
     assert done.returncode == 1 and "disagree" in done.stderr
+    # When the default branch is production and has no recipe yet, --herd's
+    # authenticated integration branch still resolves its committed recipe.
+    git(work, "checkout", "-q", "-b", "main", "HEAD~1")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "remote", "set-head", "origin", "main")
+    herd_staging = {"source": {"ref": "origin/develop", "commit": "c"}, "config": herd.validate_repo(
+        {"schema_version": 1, "integration_branch": "develop",
+         "promotion": {"production_branch": "main"}}
+    )}
+    from_integration = subprocess.run(
+        ["python3", "-I", str(SOURCE / "promote-recipe.py"), "show", "--repo-dir", str(work), "--herd", "-"],
+        capture_output=True, text=True, check=False, input=json.dumps(herd_staging),
+    )
+    assert from_integration.returncode == 0, from_integration.stderr
+    assert json.loads(from_integration.stdout)["source"]["kind"] == "file"
 
 
 def test_documented_example_validates_and_lays_out_as_described() -> None:
