@@ -538,6 +538,9 @@ def read_user(path: Path) -> dict[str, Any]:
 
 # Flags each CLI documents as turning a safety check off. A flag with a value
 # counts only with that value: `-s read-only` is a read-only session, not a risk.
+# The table only classifies flags and launches nothing; it is locked so that any
+# edit to it is reviewed (.claude/claude-cli-invocations.allowlist).
+# claude-cli-invocations:start
 PERMISSION_FLAGS: dict[str, dict[str, tuple[str | None, str]]] = {
     "claude": {
         "--dangerously-skip-permissions": (None, "every permission check"),
@@ -554,6 +557,7 @@ PERMISSION_FLAGS: dict[str, dict[str, tuple[str | None, str]]] = {
         "--dangerously-skip-permissions": (None, "every permission check"),
     },
 }
+# claude-cli-invocations:end
 
 
 def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str]]:
