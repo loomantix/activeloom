@@ -371,6 +371,22 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .claude/skills/promote/SKILL.md
+        destination: .claude/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .claude/skills/promote/scripts/promote-recipe.py
+        destination: .claude/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/promote/scripts/promote-recipe.schema.json
+        destination: .claude/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
       - source: .claude/references/herdr.md
         destination: .claude/references/herdr.md
         substitutions: []
@@ -941,6 +957,22 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .codex/skills/promote/SKILL.md
+        destination: .codex/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .codex/skills/promote/scripts/promote-recipe.py
+        destination: .codex/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/promote/scripts/promote-recipe.schema.json
+        destination: .codex/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
       - source: .codex/references/herdr.md
         destination: .codex/references/herdr.md
         substitutions: []
@@ -1444,6 +1476,22 @@ harnesses:
 
       - source: .agents/skills/hreview/scripts/herd-user.schema.json
         destination: .agents/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .agents/skills/promote/SKILL.md
+        destination: .agents/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .agents/skills/promote/scripts/promote-recipe.py
+        destination: .agents/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/promote/scripts/promote-recipe.schema.json
+        destination: .agents/skills/promote/scripts/promote-recipe.schema.json
         substitutions: []
         mode: '0644'
 

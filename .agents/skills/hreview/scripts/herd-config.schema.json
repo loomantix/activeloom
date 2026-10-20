@@ -173,12 +173,13 @@
     "promotion": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["skill", "production_branch"],
+      "required": ["production_branch"],
       "description": "Present: hpromote may run. Absent: hpromote refuses.",
       "properties": {
         "skill": {
           "$ref": "#/$defs/skill",
-          "description": "The repository's own promotion skill."
+          "default": "promote",
+          "description": "The promotion skill. Default: the generic recipe-driven `promote`. Keep it explicit while checkouts older than that default read this file."
         },
         "production_branch": { "$ref": "#/$defs/branch" },
         "risk_engine": {

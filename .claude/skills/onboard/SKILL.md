@@ -18,8 +18,9 @@ If it exists, work out what is still outstanding before doing anything:
 
 - `TODO(activeloom):` markers in the config — steps 1, 2, and 4.
 - `agent-loop.config` that has not been checked against this machine — step 3. Step 3 always confirms the required CLIs are present, whatever the config already contains; on some harnesses it also fills keys that ship empty.
+- Missing `.activeloom-herd.json` or an absent `glance.auto` choice — step 3a, even when all project markers are already filled.
 
-Report which of the two apply and do only those. If neither applies, say the repository is already onboarded and stop. Never rewrite a value a human chose.
+Report which apply and do only those. If none applies, say the repository is already onboarded and stop. Never rewrite a value a human chose.
 
 ## 1. Read before you draft
 
@@ -67,6 +68,10 @@ hook flags and required environment variables:
 
 If either CLI is unavailable, say `agent-loop` cannot run and leave the
 review configuration empty. Do not write half a roster.
+
+## 3a. Repository auto-glance
+
+Follow `/review-setup`'s **Repository auto-glance** section in the same conversation. It recommends a choice, asks before writing the consumer-owned `.activeloom-herd.json` with `glance.auto` and `integration_branch`, and validates with `herd-config.py validate`. An explicit `false` is a settled choice; preserve it. A deferred choice leaves this part of onboarding pending without blocking the project facts below.
 
 ## 4. Present for confirmation
 

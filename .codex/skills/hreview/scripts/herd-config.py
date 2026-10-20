@@ -32,6 +32,8 @@ ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
 DEFAULT_HOLD_LABEL = "agent-bail: grill-review"
+# The generic recipe-driven skill; a repository may name its own instead.
+DEFAULT_PROMOTION_SKILL = "promote"
 
 REPO_SECTIONS = (
     "schema_version",
@@ -290,9 +292,9 @@ def validate_repo(config: Any) -> dict[str, Any]:
     else:
         allowed = ("skill", "production_branch", "risk_engine", "preflight", "deploy_workflows", "post_merge")
         _check_keys(promotion, allowed, "promotion", errors)
-        skill = promotion.get("skill")
+        skill = promotion.get("skill", DEFAULT_PROMOTION_SKILL)
         if not isinstance(skill, str) or not SKILL_RE.match(skill):
-            errors.append("promotion.skill: required; must be a skill name")
+            errors.append("promotion.skill: must be a skill name")
         production = promotion.get("production_branch")
         if not isinstance(production, str) or not BRANCH_RE.match(production):
             errors.append("promotion.production_branch: required; must be a branch name")
@@ -536,6 +538,149 @@ def read_user(path: Path) -> dict[str, Any]:
     return {"source": {"path": str(path), "present": True}, "config": effective}
 
 
+# Flags each CLI documents as changing a safety check, by value. Each value maps
+# to (what it turns off, whether sessions stop asking); None for what it turns
+# off marks a value that turns nothing off, so `-s read-only` is recognized, not
+# a risk. A flag with no value is keyed by None. Codex `-c key=value` overrides
+# are classified by key. The tables only classify flags and launch nothing; they
+# are locked so that any edit to them is reviewed
+# (.claude/claude-cli-invocations.allowlist).
+# claude-cli-invocations:start
+FlagValues = dict[str | None, tuple[str | None, bool]]
+CODEX_APPROVAL: FlagValues = {
+    "never": ("approval prompts", True),
+    "on-request": (None, False),
+    "on-failure": (None, False),
+    "untrusted": (None, False),
+}
+CODEX_SANDBOX: FlagValues = {
+    "danger-full-access": ("the sandbox", False),
+    "workspace-write": (None, False),
+    "read-only": (None, False),
+}
+CODEX_BYPASS: FlagValues = {None: ("approval prompts and the sandbox", True)}
+PERMISSION_FLAGS: dict[str, dict[str, FlagValues]] = {
+    "claude": {
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--permission-mode": {
+            "bypassPermissions": ("every permission check", True),
+            "auto": ("approval prompts; a classifier allows or refuses each action instead", True),
+            "dontAsk": ("approval prompts; anything not allowed in advance is refused", True),
+            "acceptEdits": ("approval prompts for file edits", False),
+            "manual": (None, False),
+            "plan": (None, False),
+        },
+    },
+    "codex": {
+        "--dangerously-bypass-approvals-and-sandbox": CODEX_BYPASS,
+        "--yolo": CODEX_BYPASS,
+        "--approve-for-me": {
+            None: ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True)
+        },
+        # Removed from current CLIs; older ones read it as sandboxed auto-approval.
+        "--full-auto": {None: ("approval prompts for commands the workspace-write sandbox allows", False)},
+        "-a": CODEX_APPROVAL,
+        "--ask-for-approval": CODEX_APPROVAL,
+        "-s": CODEX_SANDBOX,
+        "--sandbox": CODEX_SANDBOX,
+    },
+    "gemini": {
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--mode": {
+            "accept-edits": ("approval prompts for file edits", False),
+            "plan": (None, False),
+        },
+    },
+}
+CODEX_CONFIG_KEYS: dict[str, FlagValues] = {
+    "approval_policy": CODEX_APPROVAL,
+    "sandbox_mode": CODEX_SANDBOX,
+    "approvals_reviewer": {
+        "auto_review": ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True),
+        "user": (None, False),
+    },
+    "sandbox_workspace_write.network_access": {
+        "true": ("the sandbox's network block", False),
+        "false": (None, False),
+    },
+}
+CODEX_CONFIG_FLAGS = ("-c", "--config")
+# claude-cli-invocations:end
+PERMISSION_SCOPE = "herd.json only; engine config files such as ~/.codex/config.toml and Claude settings are not read"
+
+
+def _classify(engine: str, flag: str, value: str | None) -> tuple[str | None, bool] | None:
+    """What `flag value` turns off, or None when the table does not know it."""
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS and value is not None:
+        key, has_value, raw = value.partition("=")
+        if not has_value:
+            return None
+        # The CLI parses the value as TOML, so a quoted string is the same setting.
+        literal = raw.strip()
+        if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in "\"'":
+            literal = literal[1:-1]
+        return CODEX_CONFIG_KEYS.get(key.strip(), {}).get(literal)
+    return PERMISSION_FLAGS[engine].get(flag, {}).get(value)
+
+
+def _takes_value(engine: str, flag: str) -> bool:
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS:
+        return True
+    values = PERMISSION_FLAGS[engine].get(flag)
+    return values is not None and None not in values
+
+
+def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str], bool]:
+    """Flags that turn a check off, flags the table cannot classify, and
+    whether the recognized flags stop sessions asking."""
+    found: list[dict[str, str]] = []
+    unrecognized: list[str] = []
+    ends_prompts = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        flag, has_inline, inline = arg.partition("=")
+        value: str | None = None
+        shown = arg
+        index += 1
+        if has_inline:
+            value = inline
+        elif _takes_value(engine, flag):
+            if index < len(args):
+                value = args[index]
+                shown = f"{arg} {value}"
+                index += 1
+        known = None if value is None and _takes_value(engine, flag) else _classify(engine, flag, value)
+        if known is None:
+            unrecognized.append(shown)
+            continue
+        turns_off, ends = known
+        ends_prompts = ends_prompts or ends
+        if turns_off is not None:
+            found.append({"arg": shown, "turns_off": turns_off})
+    return found, unrecognized, ends_prompts
+
+
+def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, Any]:
+    """What a session that edits will and won't be asked about, per engine.
+
+    `launch_args` reach read-only sessions too, so a flag there that turns a
+    check off is reported separately: it defeats the read-only launch.
+    """
+    report: dict[str, Any] = {}
+    for engine in engines:
+        entry = loaded["config"]["engines"][engine]
+        turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
+        in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
+        report[engine] = {
+            "stops_at_prompts": not (ends_off or ends_launch),
+            "turned_off": turned_off,
+            "unrecognized": unknown_launch + unrecognized,
+            "turned_off_in_read_only": in_launch,
+        }
+    return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
+
+
 # --- state paths and locks -------------------------------------------------------
 
 
@@ -602,6 +747,10 @@ def main(argv: list[str] | None = None) -> int:
     user_args.add_argument("--read-only", action="store_true", help="omit permission-off arguments")
     user_args.add_argument("--path", type=Path)
 
+    permissions = commands.add_parser("permissions", help="what editing sessions will and won't be asked, per engine")
+    permissions.add_argument("--engine", required=True, choices=ENGINES, action="append")
+    permissions.add_argument("--path", type=Path)
+
     paths = commands.add_parser("paths", help="create and print per-repository state paths")
     lock = commands.add_parser("lock", help="take a per-repository lock (exit 3 if held)")
     unlock = commands.add_parser("unlock", help="release a per-repository lock")
@@ -630,6 +779,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "user-args":
             entry = read_user(args.path or user_config_path())["config"]["engines"][args.engine]
             _emit(entry["launch_args"] + ([] if args.read_only else entry["permission_off_args"]))
+        elif args.command == "permissions":
+            _emit(permission_report(read_user(args.path or user_config_path()), list(dict.fromkeys(args.engine))))
         else:
             resolved = state_paths(args.repo, args.skill, args.key)
             if args.command == "paths":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -43,6 +44,27 @@ def load() -> ModuleType:
 
 
 herd = load()
+
+
+def test_getting_started_auto_glance_example_validates(tmp_path: Path) -> None:
+    guide = (ROOT / "docs/getting-started.md").read_text()
+    section = guide.split("### Choose auto-glance\n", 1)[1]
+    example = re.search(r"```json\n(.*?)\n```", section, re.S)
+    assert example
+    config = json.loads(example.group(1))
+    for enabled in (True, False):
+        config["glance"]["auto"] = enabled
+        path = tmp_path / ".activeloom-herd.json"
+        path.write_text(json.dumps(config))
+        result = subprocess.run(
+            ["python3", "-I", str(SOURCE / "herd-config.py"), "validate", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        effective = json.loads(result.stdout)
+        assert effective["glance"]["auto"] is enabled
+        assert effective["integration_branch"] == "main"
 
 
 def fixture(kind: str, name: str) -> Any:
@@ -370,6 +392,164 @@ def test_user_args_omit_permission_flags_for_read_only(tmp_path: Path, capsys: p
 def test_unknown_user_engine_is_rejected() -> None:
     with pytest.raises(herd.ConfigError, match="unknown key 'agy'"):
         herd.validate_user({"schema_version": 1, "engines": {"agy": {}}})
+
+
+def permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], *names: str) -> Any:
+    path = tmp_path / "herd.json"
+    path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
+    argv = ["permissions", "--path", str(path)]
+    for name in names:
+        argv += ["--engine", name]
+    assert herd.main(argv) == 0
+    return json.loads(capsys.readouterr().out)["engines"]
+
+
+def test_engine_without_permission_flags_stops_at_prompts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report = permissions(tmp_path, capsys, {}, "codex")
+    assert report == {
+        "codex": {"stops_at_prompts": True, "turned_off": [], "unrecognized": [], "turned_off_in_read_only": []}
+    }
+
+
+def test_permission_flags_name_what_they_turn_off(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {
+        "claude": {"permission_off_args": ["--permission-mode=bypassPermissions"]},
+        "codex": {"permission_off_args": ["-a", "never", "--sandbox", "danger-full-access"]},
+    }
+    report = permissions(tmp_path, capsys, engines, "claude", "codex")
+    assert report["claude"]["stops_at_prompts"] is False
+    assert report["claude"]["turned_off"] == [
+        {"arg": "--permission-mode=bypassPermissions", "turns_off": "every permission check"}
+    ]
+    assert report["codex"]["turned_off"] == [
+        {"arg": "-a never", "turns_off": "approval prompts"},
+        {"arg": "--sandbox danger-full-access", "turns_off": "the sandbox"},
+    ]
+    assert report["codex"]["unrecognized"] == []
+
+
+def test_safe_value_of_a_known_flag_is_not_a_risk(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"codex": {"permission_off_args": ["-s", "workspace-write", "--search"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["turned_off"] == []
+    assert report["unrecognized"] == ["--search"]
+
+
+@pytest.mark.parametrize("flag", ["--dangerously-bypass-approvals-and-sandbox", "--yolo"])
+def test_codex_bypass_flag_alone_ends_prompts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+    report = permissions(tmp_path, capsys, {"codex": {"permission_off_args": [flag]}}, "codex")["codex"]
+    assert report["stops_at_prompts"] is False
+    assert report["turned_off"] == [{"arg": flag, "turns_off": "approval prompts and the sandbox"}]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "approval_policy=never"],
+        ["-c", 'approval_policy="never"'],
+        ["--config=approval_policy='never'"],
+    ],
+)
+def test_codex_config_override_is_classified_by_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], args: list[str]
+) -> None:
+    report = permissions(tmp_path, capsys, {"codex": {"permission_off_args": args}}, "codex")["codex"]
+    assert report["stops_at_prompts"] is False
+    assert [item["turns_off"] for item in report["turned_off"]] == ["approval prompts"]
+    assert report["unrecognized"] == []
+
+
+def test_unknown_codex_config_key_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"codex": {"permission_off_args": ["-c", "model_verbosity=low", "-s", "read-only"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["unrecognized"] == ["-c model_verbosity=low"]
+    assert report["turned_off"] == []
+
+
+@pytest.mark.parametrize(
+    ("engine", "args", "stops"),
+    [
+        ("codex", ["--approve-for-me"], False),
+        ("codex", ["-c", "approvals_reviewer=auto_review"], False),
+        ("codex", ["--full-auto"], True),
+        ("claude", ["--permission-mode", "auto"], False),
+        ("claude", ["--permission-mode", "acceptEdits"], True),
+        ("gemini", ["--mode", "accept-edits"], True),
+    ],
+)
+def test_narrower_modes_are_recognized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str, args: list[str], stops: bool
+) -> None:
+    report = permissions(tmp_path, capsys, {engine: {"permission_off_args": args}}, engine)[engine]
+    assert report["stops_at_prompts"] is stops
+    assert report["unrecognized"] == []
+    assert len(report["turned_off"]) == 1
+
+
+def test_value_flag_without_a_value_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report = permissions(tmp_path, capsys, {"codex": {"permission_off_args": ["-s"]}}, "codex")["codex"]
+    assert report["unrecognized"] == ["-s"]
+    assert report["stops_at_prompts"] is True
+
+
+def test_valueless_flag_given_a_value_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report = permissions(tmp_path, capsys, {"codex": {"permission_off_args": ["--yolo=1"]}}, "codex")["codex"]
+    assert report["unrecognized"] == ["--yolo=1"]
+    assert report["stops_at_prompts"] is True
+
+
+def test_repeated_engine_is_reported_once(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert sorted(permissions(tmp_path, capsys, {}, "codex", "codex", "claude")) == ["claude", "codex"]
+
+
+def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "herd.json"
+    path.write_text(json.dumps({"schema_version": 1}))
+    assert herd.main(["permissions", "--engine", "codex", "--path", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["scope"].startswith("herd.json only")
+
+
+def test_unknown_flag_in_launch_args_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report = permissions(tmp_path, capsys, {"claude": {"launch_args": ["--verbose"]}}, "claude")["claude"]
+    assert report["turned_off_in_read_only"] == []
+    assert report["unrecognized"] == ["--verbose"]
+    assert report["stops_at_prompts"] is True
+
+
+def test_sandbox_only_flag_does_not_disable_approval_prompts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"codex": {"permission_off_args": ["-s", "danger-full-access"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["stops_at_prompts"] is True
+
+
+def test_approval_flag_in_launch_args_applies_to_editing_sessions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"codex": {"launch_args": ["-a", "never"]}}
+    report = permissions(tmp_path, capsys, engines, "codex")["codex"]
+    assert report["stops_at_prompts"] is False
+
+
+def test_agy_permission_flag_disables_approval_prompts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"gemini": {"permission_off_args": ["--dangerously-skip-permissions"]}}
+    report = permissions(tmp_path, capsys, engines, "gemini")["gemini"]
+    assert report["stops_at_prompts"] is False
+    assert report["unrecognized"] == []
+
+
+def test_permission_flag_in_launch_args_reaches_read_only_sessions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engines = {"claude": {"launch_args": ["--dangerously-skip-permissions"]}}
+    report = permissions(tmp_path, capsys, engines, "claude")["claude"]
+    assert report["stops_at_prompts"] is False
+    assert report["turned_off_in_read_only"] == [
+        {"arg": "--dangerously-skip-permissions", "turns_off": "every permission check"}
+    ]
 
 
 # --- state paths and locks ----------------------------------------------------------------

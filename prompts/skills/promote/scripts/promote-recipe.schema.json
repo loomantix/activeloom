@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/loomantix/activeloom/promote-recipe.schema.json",
+  "title": ".activeloom-promote.json",
+  "description": "A repository's promotion recipe. For editors; promote-recipe.py is the gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "integration_branch",
+    "production_branch",
+    "steps"
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1, "pattern": "^[^\\n\\u0000]+$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+    "branch": { "type": "string", "pattern": "^[A-Za-z0-9._/-]{1,200}$" },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\\\\\n][^\\\\\\n]*$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/text" }
+    },
+    "engine": { "enum": ["claude", "codex", "gemini"] },
+    "phase": { "enum": ["preflight", "pre_merge", "post_merge"] },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "phase", "run"],
+      "description": "Run an argv in the inspection worktree at the pinned head.",
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "kind": { "const": "command" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "lane": { "$ref": "#/$defs/slug", "default": "main" },
+        "run": { "$ref": "#/$defs/argv" },
+        "fix": {
+          "oneOf": [{ "$ref": "#/$defs/argv" }, { "type": "null" }],
+          "description": "Deterministic fix to run in a fix worktree and ship as a PR to the integration branch."
+        },
+        "on_fail": { "enum": ["block", "hold", "warn"], "default": "block" },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 240,
+          "default": 30
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "phase", "brief"],
+      "description": "A session follows a repository brief, such as dependency PR triage.",
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "kind": { "const": "task" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "lane": { "$ref": "#/$defs/slug" },
+        "brief": { "$ref": "#/$defs/path" },
+        "writes": { "type": "boolean", "default": false }
+      }
+    },
+    "risk_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "phase"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "kind": { "const": "risk_review" },
+        "phase": { "const": "pre_merge" },
+        "lane": { "$ref": "#/$defs/slug" },
+        "engine": {
+          "oneOf": [{ "$ref": "#/$defs/engine" }, { "type": "null" }],
+          "default": null
+        },
+        "focus": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "watch_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "phase"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "kind": { "const": "watch_checks" },
+        "phase": { "const": "pre_merge" },
+        "lane": { "$ref": "#/$defs/slug" },
+        "checks": { "enum": ["required", "all"], "default": "required" },
+        "rerun_flakes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2,
+          "default": 1
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 360,
+          "default": 60
+        }
+      }
+    },
+    "watch_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "phase", "workflow"],
+      "description": "Wait for the newest run of a workflow on the phase's commit: the integration head, the promotion PR head, or the merge commit.",
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "kind": { "const": "watch_workflow" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "lane": { "$ref": "#/$defs/slug" },
+        "workflow": { "$ref": "#/$defs/text" },
+        "if_absent": { "enum": ["fail", "skip"], "default": "fail" },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 360,
+          "default": 60
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "integration_branch": { "$ref": "#/$defs/branch" },
+    "production_branch": { "$ref": "#/$defs/branch" },
+    "guide": {
+      "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }],
+      "description": "Repository promotion notes read before every run: known failures and their fixes."
+    },
+    "rollback": {
+      "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }],
+      "description": "Rollback runbook linked from the PR and from any post-merge failure."
+    },
+    "blocker_issues": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "labels": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/text" }
+            }
+          }
+        },
+        { "type": "null" }
+      ],
+      "description": "Present: a blocker no fix can clear is filed as an issue with these labels."
+    },
+    "pull_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/text",
+          "default": "Promote {integration} → {production} — {date}"
+        },
+        "merge_method": {
+          "oneOf": [
+            { "enum": ["merge", "squash", "rebase"] },
+            { "type": "null" }
+          ],
+          "description": "Told to the approver; the skill never merges."
+        },
+        "labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "close_stale": { "type": "boolean", "default": false },
+        "surface": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "globs"],
+            "properties": {
+              "name": { "$ref": "#/$defs/slug" },
+              "globs": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/text" }
+              }
+            }
+          }
+        },
+        "after_merge": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/command" },
+          { "$ref": "#/$defs/task" },
+          { "$ref": "#/$defs/risk_review" },
+          { "$ref": "#/$defs/watch_checks" },
+          { "$ref": "#/$defs/watch_workflow" }
+        ]
+      }
+    }
+  }
+}

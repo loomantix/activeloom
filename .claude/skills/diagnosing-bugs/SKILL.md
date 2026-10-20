@@ -7,7 +7,7 @@ description: Disciplined diagnosis loop for hard bugs and performance regression
 
 A discipline for bugs that did not fall to the first read. The whole skill is Phase 1; everything after it is mechanical.
 
-Skip a phase only when you can say why.
+Skip a phase only when you can say why. Phase 0 applies to production incidents only.
 
 ## Handling what the loop captures
 
@@ -22,6 +22,26 @@ Two consequences worth stating outright, because they are where this usually goe
 - **Temporary production instrumentation is the last resort, and it logs identifiers only.** Adding a log line that dumps a free-form value into a telemetry sink is the exact failure a default-deny logging rule exists to prevent. If the diagnosis genuinely requires seeing a real value, that is a conversation with the user, not a patch.
 
 If redaction leaves you without enough signal to diagnose, say so and ask.
+
+## Phase 0 — production incident: reconstruct it before you reproduce it
+
+Applies when the bug is something that happened to a real user and all you hold is telemetry. Skip it when you can already trigger the bug at will.
+
+The error message is where the failure surfaced, not where it began. Build the loop from the error string alone and you reproduce the nearest bug with that message — often one that already has a passing test.
+
+Before Phase 1, write the incident as a timeline from evidence (logs, error tracker, request logs), one machine and one session at a time:
+
+- **Split by machine and session first.** One user ID can be several browsers on several machines. A timeline that merges them produces false causes.
+- **Work backwards from every duration in the code.** For a timeout observed at T with a 15 s budget, T − 15 s is a starting estimate: scheduling delays or suspension can put the actual start earlier. Corroborate it with timer creation timestamps and lifecycle evidence before assigning the failure to an older object.
+- **List every fact that does not fit** — a wrong ID on the event, a request against an unrelated record, a window that closed before the error. These are the leads. Do not file one as a separate cosmetic bug until the diagnosis explains it.
+- **Note what never happened.** A missing request is evidence: name the call the happy path makes and confirm whether it was made.
+- **A matching open issue is a hypothesis, not a diagnosis.** Read it to the end. Check whether its fix reached the incident's actual build and code path, and whether it covers the observed sequence. A shipped fix can be absent, incomplete or regressed; rule out the original cause with evidence.
+
+Quote the timeline under the same rules as everything else the loop captures: opaque IDs, timings and error codes, never user content.
+
+Reading code in this phase is allowed for one purpose: learning what a log line means and what durations the code uses. Theories about the cause still wait for the loop.
+
+Phase 0 is done when the timeline says, in order, what the user and the system did, and the Phase 1 loop can be written to **replay that sequence** rather than to provoke that error.
 
 ## Phase 1 — build a feedback loop
 
@@ -109,6 +129,17 @@ Every probe maps to a specific prediction from Phase 3. **Change one variable at
 
 **Performance regressions branch here.** Logs are usually the wrong tool. Establish a baseline measurement — timing harness, profiler, query plan — then bisect against it. Measure first, fix second.
 
+## The root-cause bar
+
+Check this before Phase 5, and before reporting a cause to anyone. "Root cause" is claimed only when all four hold:
+
+- [ ] **Reproduced** — the loop goes red on the user's exact symptom; for an incident, on the incident's own sequence from Phase 0.
+- [ ] **Flipped** — changing one variable turns it green, and reverting turns it red again. Tag that experiment `[DEBUG-...]`; it is a probe, not the fix.
+- [ ] **Nothing left over** — every observed fact, including every item on the Phase 0 list, is explained by the mechanism. One unexplained fact means there is a second cause or the wrong one.
+- [ ] **Three answers, kept separate** — the _mechanism_ (what in the code turns the trigger into the failure), the _trigger_ (what the user or system did to reach it), and _why nothing caught it_ (the missing guard, test or alert).
+
+Report each of the three as proven, inferred or unknown, in those words. A proven mechanism with an unknown trigger is a legitimate place to stop, provided the report says so and names the evidence that would settle it. A cause that is only consistent with the logs is a hypothesis; say "consistent with", not "caused by".
+
 ## Phase 5 — fix, with a regression test
 
 Write the regression test **before** the fix, if there is a **correct seam** for it.
@@ -135,6 +166,8 @@ Before declaring done:
 - [ ] Throwaway harnesses deleted, or moved somewhere clearly marked.
 - [ ] No captured artifact containing real data survives in the working tree.
 - [ ] The hypothesis that turned out correct is stated in the commit or PR body, so the next person debugging this learns something.
+
+**When the fix is not yours to make** — it needs a design decision, a different review tier, or sign-off — stop after the root-cause bar and leave three things: the red test (uncommitted or on a branch, never merged red), the experiment removed from source and kept as a patch, and a write-up of mechanism, trigger and why-not-caught with the candidate fixes. Say plainly that nothing is fixed.
 
 **Then ask what would have prevented it.** If the answer is a missing test seam, tangled callers, or hidden coupling, that is a cleanup with a scope of its own — file it, or hand it to `/refactorpass` on the follow-up PR with the specifics. Make that call **after** the fix is in; you know more now than when you started.
 

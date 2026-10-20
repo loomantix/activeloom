@@ -358,6 +358,8 @@ else
   echo "Done: $installed installed, $replaced replaced, $pruned pruned, $skipped left alone."
   echo "Run \`git pull\` in $UPSTREAM_ROOT to update — no re-install needed."
   echo "Re-run this script after a pull that adds, renames, or retires a skill."
+  echo 'Next: run review-setup for personal review settings and the repository auto-glance choice (one local non-author reviewer for small changes).'
+  echo 'glance.auto is opt-in in each repository, not a personal setting; setup asks before writing it.'
 fi
 
 if [ "$missing_src" -gt 0 ]; then

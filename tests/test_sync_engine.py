@@ -1478,6 +1478,35 @@ def test_main_create_if_missing_preserves_consumer_edits(
     assert "preserved" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("harness", ["claude", "codex", "gemini"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_promote_skill_sync_preserves_consumer_ownership(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    existing: bool,
+) -> None:
+    manifest = yaml.safe_load((Path(__file__).resolve().parents[1] / "scripts/sync-targets.yml").read_text())
+    harness_config = manifest["harnesses"][harness]
+    target = next(t for t in harness_config["targets"] if t.get("source", "").endswith("/promote/SKILL.md"))
+    source = upstream_repo / target["source"]
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("Generic promotion recipe\n")
+    destination = consumer_dir / target["destination"]
+    if existing:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("Repository-specific release gates\n")
+    _write_yaml(upstream_repo / "scripts/sync-targets.yml", {
+        "harnesses": {harness: {"root": harness_config["root"], "targets": [target]}},
+    })
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"harnesses": [harness]})
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
+    expected = "Repository-specific release gates\n" if existing else "Generic promotion recipe\n"
+    assert destination.read_text() == expected
+
+
 def test_main_create_if_missing_preserves_dangling_symlink(
     sync_engine: ModuleType,
     upstream_repo: Path,

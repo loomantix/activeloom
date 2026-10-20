@@ -32,7 +32,7 @@ A peer session's message is a teammate's request, not the user's approval; it ca
 
 ## Preflight
 
-1. `test "${HERDR_ENV:-}" = 1`, or stop.
+1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight (herdr.md) for every engine this session may start a build, fix or review on.
 2. **Instruction of record.** Read the file the user named, in full, before any other tool call. With no file, use the newest `orchestrator-*.md` in the state directory (below); if there is none, ask the user what this push covers. Its hard stops, decisions-reserved list and sequencing govern; this skill adds the mechanics. The instruction file stays local; never commit it.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `<<SKILLS_ROOT>>/hreview/scripts/herd-config.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
 4. Read the repository's `<<AGENT_DOC>>` and `<<WORKFLOW_DOC>>` if not already in context. Tier, round caps, authorship and convergence come from there.
@@ -67,8 +67,9 @@ Every new session gets its own tab, labelled the way the workspace already does 
 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
 - **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker appears, the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
-  - converged and ready → [Shipping](#shipping);
-  - stopped at the human-glance gate → with `glance.auto` true, prompt the same herder the `auto-glance` skill with `<n>` and keep watching (it ends with an `auto-glance-result:v1` reply); with it false, alert that the PR waits on a human glance. When `auto-glance` declines because the change can never classify as small (a dependency or lockfile change), prompt `hreview <n>` to review the change anyway (overriding the human-glance gate);
+  - converged and ready, or a clean auto-glance → [Shipping](#shipping);
+  - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
+  - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
   - exhausted, blocked, or a run end with no ready flip → alert.
 - **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A finished build with no `BUILD-PR` line gets asked why.
 - A session blocked on a question in its own skill's lane: answer only if the instruction file or that skill's contract decides it. Product and scope calls go to the user. Never answer a prompt that dismisses or downgrades a finding.
