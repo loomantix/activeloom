@@ -669,11 +669,11 @@ def permission_report(loaded: dict[str, Any], engines: list[str]) -> dict[str, A
     for engine in engines:
         entry = loaded["config"]["engines"][engine]
         turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
-        in_launch, _, ends_launch = _turned_off(engine, entry["launch_args"])
+        in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
         report[engine] = {
             "stops_at_prompts": not (ends_off or ends_launch),
             "turned_off": turned_off,
-            "unrecognized": unrecognized,
+            "unrecognized": unknown_launch + unrecognized,
             "turned_off_in_read_only": in_launch,
         }
     return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}

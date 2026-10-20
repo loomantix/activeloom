@@ -489,9 +489,10 @@ def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert json.loads(capsys.readouterr().out)["scope"].startswith("herd.json only")
 
 
-def test_unknown_flag_in_launch_args_turns_nothing_off(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_unknown_flag_in_launch_args_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     report = permissions(tmp_path, capsys, {"claude": {"launch_args": ["--verbose"]}}, "claude")["claude"]
     assert report["turned_off_in_read_only"] == []
+    assert report["unrecognized"] == ["--verbose"]
     assert report["stops_at_prompts"] is True
 
 

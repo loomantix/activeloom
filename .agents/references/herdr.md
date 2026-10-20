@@ -28,7 +28,7 @@ State files hold identifiers only: pane and tab IDs, PR and issue numbers, heads
 
 ## Permissions preflight
 
-Every herd skill runs this before its first engine launch. Run `permissions` with an `--engine` for every engine this run may start in a session that edits; a session the skill starts read-only takes `user-args --read-only` and needs no preflight. Act on each engine's entry before launching anything.
+Every herd skill runs this before its first engine launch. Run `permissions` with an `--engine` for every engine this run may start. A session the skill starts read-only takes `user-args --read-only`, which still passes `launch_args`: for an engine this run starts only read-only, act on `turned_off_in_read_only` and `unrecognized` and make no offer. Act on each engine's entry before launching anything.
 
 The report reads `herd.json` only, as its `scope` says. An engine's own config, such as Codex `~/.codex/config.toml` or Claude settings, can turn a check off without showing here, so never present an empty `turned_off` as proof that every check is on.
 
