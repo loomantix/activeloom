@@ -32,10 +32,10 @@ The error message is where the failure surfaced, not where it began. Build the l
 Before Phase 1, write the incident as a timeline from evidence (logs, error tracker, request logs), one machine and one session at a time:
 
 - **Split by machine and session first.** One user ID can be several browsers on several machines. A timeline that merges them produces false causes.
-- **Work backwards from every duration in the code.** A timeout that fired at T with a 15 s budget began waiting at T − 15 s. Find what the system was doing _then_. If that is before the failing object existed, the failure belongs to something older.
+- **Work backwards from every duration in the code.** For a timeout observed at T with a 15 s budget, T − 15 s is a starting estimate: scheduling delays or suspension can put the actual start earlier. Corroborate it with timer creation timestamps and lifecycle evidence before assigning the failure to an older object.
 - **List every fact that does not fit** — a wrong ID on the event, a request against an unrelated record, a window that closed before the error. These are the leads. Do not file one as a separate cosmetic bug until the diagnosis explains it.
 - **Note what never happened.** A missing request is evidence: name the call the happy path makes and confirm whether it was made.
-- **A matching open issue is a hypothesis, not a diagnosis.** Read it to the end. Check whether its fix already shipped; if it did, this is a different bug wearing the same message.
+- **A matching open issue is a hypothesis, not a diagnosis.** Read it to the end. Check whether its fix reached the incident's actual build and code path, and whether it covers the observed sequence. A shipped fix can be absent, incomplete or regressed; rule out the original cause with evidence.
 
 Quote the timeline under the same rules as everything else the loop captures: opaque IDs, timings and error codes, never user content.
 
