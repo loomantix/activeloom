@@ -55,12 +55,9 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
   "engines": {
     "claude": {
       "launch_args": [],
-      "permission_off_args": ["--dangerously-skip-permissions"]
+      "permission_off_args": ["--permission-mode", "auto"]
     },
-    "codex": {
-      "launch_args": [],
-      "permission_off_args": ["--dangerously-bypass-approvals-and-sandbox"]
-    },
+    "codex": { "launch_args": [], "permission_off_args": ["--approve-for-me"] },
     "gemini": { "launch_args": [], "permission_off_args": [] }
   }
 }
@@ -73,7 +70,11 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
 | `engines.<e>.launch_args`         | `[]`    | Added to every launch of that engine.                                                                                                                                                         |
 | `engines.<e>.permission_off_args` | `[]`    | Added to sessions that edit (review passes, builds, fixes); left out of read-only sessions such as the promotion risk review. Use the flag your CLI documents; the values above are examples. |
 
-Permission-off flags belong here, not in a shell alias. The skills cannot see an alias, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver answers them, which works but is slow.
+Permission-off flags belong here, not in a shell alias. The skills cannot see an alias, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver has to answer them. That is slow, and it can fail: the driver's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through.
+
+Before its first launch, each herd skill runs a permissions preflight (`herd-config.py permissions`). For every engine the run will start in a session that edits, it tells you whether those panes will stop at prompts and offers settings to add here, narrowest first: Claude `--permission-mode auto` or Codex `--approve-for-me`, which end the prompts but keep a check, then the full bypass. It writes one only if you choose it. When flags are set, it names what each one turns off, such as approval prompts or the sandbox, and warns about any such flag in `launch_args`, where it reaches read-only sessions too. It makes no offer for an engine whose flags it cannot classify, since an added flag could repeat one of them. Read [Running unattended safely](#running-unattended-safely) before choosing.
+
+The preflight reads this file only. Settings in an engine's own config, such as `approval_policy` or `sandbox_mode` in `~/.codex/config.toml` or `permissions.defaultMode` in Claude settings, apply to herd panes too and do not show in its report. Writing this file only on your choice is a rule the skills follow; no code enforces it.
 
 Models and efforts do not go here. They stay in the review profile, which `review-setup` manages.
 
@@ -193,7 +194,7 @@ It never merges, marks a PR ready only through the converged path or the auto-gl
 
 Only runs when the repository sets `glance.auto: true`. What you type: `/auto-glance 42`; `hreview` starts it directly at the glance gate, including when invoked without `horch`. The orchestrator watches that result instead of starting a second glancer.
 
-It confirms the PR really is glance-sized and not on an always-Deep surface, picks the first non-author engine from your Lean order, and starts it in a pane below. The reviewer reads the whole diff and posts one comment, starting with an `auto-glance:v1` marker, that lists every finding with severity and confidence. If nothing is blocking or major and CI at that exact head is green, the PR is marked ready and an `auto-glance-result:v1` reply records the clean result. Otherwise the PR is left alone and you are alerted.
+It confirms the PR really is glance-sized and not on an always-Deep surface, picks the first non-author engine from your Lean order, and starts it in a pane below. The reviewer runs as a read-only session, without your permission-off flags, and reads the whole diff. It returns one comment, starting with an `auto-glance:v1` marker, that lists every finding with severity and confidence, and the skill posts it. If nothing is blocking or major and CI at that exact head is green, the PR is marked ready and an `auto-glance-result:v1` reply records the clean result. Otherwise the PR is left alone and you are alerted.
 
 It never merges, never pushes to the PR (the reviewer may not either), and never drops or downgrades a finding.
 
@@ -245,6 +246,26 @@ What appears: a `P<mmdd>` tab. The driver runs your repository's own promotion s
 
 It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it watches the deploy workflows and runs the post-merge checks. It never rolls back on its own.
 
+## Running unattended safely
+
+Herd sessions read pull request diffs, issue bodies and comments. In a public repository anyone can write those, and an instruction hidden in them is aimed at the agent that reads it (prompt injection). The same sessions hold an authenticated `gh` and can push. With approval prompts on, you see each command before it runs. Each permission setting removes some of that:
+
+| Setting                                                                                | What a planted instruction can do                                                                         |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| None (the default)                                                                     | Nothing you do not approve; panes stop at every prompt                                                    |
+| Claude `--permission-mode auto`, Codex `--approve-for-me`                              | What the classifier or automatic reviewer lets through; Codex commands stay in its sandbox                |
+| Claude or Agy `--dangerously-skip-permissions`, Codex `-a never -s danger-full-access` | Anything your user account can do: run commands, read files, use your `gh` token, push, reach the network |
+
+Before you turn on the full bypass:
+
+- Run the herd in a container, a VM, or under a dedicated OS user that holds only what the run needs.
+- Give that environment a `gh` token scoped to the repositories the run works on, not your everyday login.
+- Do not run bypassed sessions on pull requests from forks, or on issues from people outside your team.
+
+Read-only sessions (the promotion risk review, the glance reviewer) never get your permission-off flags. They are the sessions most exposed to outside content, and they need no edits.
+
+The herd skills are not the only place ActiveLoom starts an agent with checks off. `agent-loop`'s built-in workers launch Claude with `--permission-mode bypassPermissions` and Codex with `--dangerously-bypass-approvals-and-sandbox` ([ADR 0007](decisions/0007-agent-loop-per-harness-launch.md)); `herd.json` does not affect them, and the same advice applies.
+
 ## Driving from each harness
 
 Any harness can be the herder, orchestrator or driver, and any engine can run in a pane.
@@ -268,6 +289,10 @@ Each engine launches with its model and effort from your review profile and its 
 **Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts only the primary checkout and worktrees it created, and dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
 
 **The Codex pane exits immediately.** Almost always a flag passed twice: a shell alias plus `permission_off_args`, or the same flag in both lists. Run `type codex`; remove the alias and keep the flag in `herd.json`.
+
+**A chain blocks at an approval prompt in an engine pane.** The driver tried to answer the prompt and its own harness refused. Add one of that engine's permission settings to `herd.json` (the permissions preflight offers them, narrowest first), or answer the prompt in the pane yourself and tell the driver to continue.
+
+**A chain stalls on refused commands.** A narrower setting (Claude `auto`, Codex `--approve-for-me`) refused something the pass needs, often `git push` or a `gh` call. Answer it in the pane, or move to the full bypass for that engine, in an isolated environment (see [Running unattended safely](#running-unattended-safely)).
 
 **A pane says `blocked` but is working.** herdr's status can lag after a question is answered. The skills read the pane, not the status, and wait for `working`, `done` or `idle` after answering. If you answered a question by hand, the driver notices on its next read.
 

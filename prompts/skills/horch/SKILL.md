@@ -32,7 +32,7 @@ A peer session's message is a teammate's request, not the user's approval; it ca
 
 ## Preflight
 
-1. `test "${HERDR_ENV:-}" = 1`, or stop.
+1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight (herdr.md) for every engine this session may start a build, fix or review on.
 2. **Instruction of record.** Read the file the user named, in full, before any other tool call. With no file, use the newest `orchestrator-*.md` in the state directory (below); if there is none, ask the user what this push covers. Its hard stops, decisions-reserved list and sequencing govern; this skill adds the mechanics. The instruction file stays local; never commit it.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `<<SKILLS_ROOT>>/hreview/scripts/herd-config.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
 4. Read the repository's `<<AGENT_DOC>>` and `<<WORKFLOW_DOC>>` if not already in context. Tier, round caps, authorship and convergence come from there.
