@@ -41,7 +41,7 @@ For a Claude pane, also set the pane environment when splitting it: `--env ANTHR
 - Read every ID from JSON: `herdr tab create` returns `.result.root_pane.pane_id` and `.result.tab.tab_id`; `herdr pane split` returns `.result.pane.pane_id`. Never act on the UI-focused pane, and pass `--no-focus`.
 - New tab: `herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd <dir> --label "<label>" --no-focus`.
 - A row below this pane: `herdr pane split "$HERDR_PANE_ID" --direction down --cwd <dir> --no-focus`. More panes in the row: `herdr pane split <previous> --direction right --cwd <dir> --ratio <1/k> --no-focus`, where k is the number of panes still to fit (three panes: `0.3333`, then `0.5`).
-- Titles: `herdr pane rename <id> "<title>"`, `herdr tab rename <tab> "<label>"`. Keep tab labels short (number and mark). Marks: `▶` running, `✓` done, `⚠` needs the user, `⏸` waiting on a human action.
+- Titles: `herdr pane rename <id> "<title>"`, `herdr tab rename <tab id> "<label>"`. Address tabs and panes by the IDs you recorded at creation, never by label: a session can rename its own tab. Keep tab labels short (number and mark). Marks: `▶` running, `✓` done, `⚠` needs the user, `⏸` waiting on a human action.
 - Work only in this session's workspace (`$HERDR_WORKSPACE_ID`). Read other workspaces for awareness; never prompt, split, rename or close anything in them.
 
 ## Starting a session
@@ -61,6 +61,7 @@ For a Claude pane, also set the pane environment when splitting it: `--env ANTHR
 
 - Always `herdr agent prompt <name> "<text>" --wait --timeout <ms>`. Without `--wait`, text can be dropped while an input box is still loading; `--timeout` is accepted only with `--wait`.
 - `--wait` can time out while the session is already working. Before resending, count the prompt's first line in `herdr agent read <name> --source recent-unwrapped --lines 400`; resend only when it is absent.
+- Text on screen is not proof of submission: a multi-line prompt can sit in the input box as a collapsed paste (`[Pasted text #1 +12 lines]`) and match a check for its own text. After prompting, confirm the session is working (a spinner, `Working`, a tool call `Running…`). If the input box still holds your paste, submit it with `herdr agent send-keys <name> enter`; it is your own text, not an autosuggestion.
 - `agent_blocked` means the session is waiting on a question: read and answer it first.
 - A greyed suggestion in an input box is the client's autosuggestion, not input. Never send `tab` or `right` to a session; they accept it.
 - Free text goes through `agent prompt`; menu choices through `herdr agent send-keys <name> <keys>`.
@@ -84,7 +85,8 @@ One rule on every harness: run the wait as a blocking command. If the harness mo
 - A session: `herdr agent wait <name> --until <state> [--until <state>] --timeout 600000`.
 - After answering a blocked UI, wait with `--until working --until done --until idle`. A bare wait matches the stale `blocked` at once.
 - State that only `gh` shows: one shell loop that checks the condition every 300 seconds and exits when it holds, run the same way.
-- A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its label in the same kind of loop.
+- A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its tab ID's label in the same kind of loop.
+- To stop a background wait, stop that task by its ID. Never `pkill -f <pattern>`: the pattern can match your own command or a sibling wait and kill it too.
 
 ## Stalls and crashes
 

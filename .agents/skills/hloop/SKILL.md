@@ -9,6 +9,7 @@ Usage:
 
 - `hloop next <k>`: the top `k` ready agent issues.
 - `hloop <n> [<m> ...]`: the named issues.
+- `hloop` alone: the ready agent issues at the highest priority present in the queue, shown in the plan for the user to adjust before anything launches.
 - `--concurrency <c>`: builds running at once. Default 3.
 
 This session is the **orchestrator** and follows the `horch` skill (`.agents/skills/horch/SKILL.md`) for everything this file does not change: preflight, scope, state file, starting sessions, watching, shipping, alerts and handoff. Read it first. This file adds the batch: picking, ordering, and the build → review → ship pipeline for each issue. Mechanics: [`herdr.md`](../../references/herdr.md).
@@ -24,9 +25,9 @@ This session is the **orchestrator** and follows the `horch` skill (`.agents/ski
 
 ## 1. Pick
 
-1. **Queue.** `python3 -I .agents/skills/issues/scripts/ready.py --agent --limit 30 --json` for `next <k>`; otherwise the named issues. A single bare number names one issue, never a batch size.
+1. **Queue.** `python3 -I .agents/skills/issues/scripts/ready.py --agent --limit 30 --json` for `next <k>` or no arguments; otherwise the named issues. A single bare number names one issue, never a batch size.
 2. **Skip**, and say why, any issue that:
-   - is assigned to someone else;
+   - is assigned to someone other than the invoking user (an issue assigned to that user stays in the batch);
    - carries an `agent-bail:` label, or a label `ready.py` hard-excludes;
    - lacks `agent: refined` (offer `backlog-refinement` for those);
    - already has a merged `Refs` PR, which means it waits on the user's check of the integration environment.
@@ -68,7 +69,7 @@ Read the herder's pane, then:
 
 ## 5. Ship
 
-1. **Tests at the head.** CI on PRs to the integration branch may skip test jobs, so run, in the PR's worktree at its head, the specs the PR added or changed, and the full suite when the PR changes shared logic or a dependency. The repository's `AGENTS.md` names the commands and any environment the database-backed tests need. Check the skipped count: tests that skip for a missing environment are not a pass. If the build session removed its worktree, use a detached one at the head under `worktree_root` and remove it afterwards. A failure is a block.
+1. **Tests at the head.** CI on PRs to the integration branch may skip test jobs, so run, in the PR's worktree at its head, the specs the PR added or changed, and the full suite when the PR changes shared logic or a dependency. The repository's `AGENTS.md` names the commands and any environment the database-backed tests need. Check the skipped count: tests that skip for a missing environment are not a pass. Give each database-backed lane its own fresh database with migrations applied before the run; a lane whose setup fails reports its tests as skipped next to a `FAIL` line, so read the skipped count of each target file, not the run's total. If the build session removed its worktree, use a detached one at the head under `worktree_root` and remove it afterwards. A failure is a block.
 2. **Ship** through `horch`'s Shipping (if the converged PR is still in draft, mark it ready with `gh pr ready <pr>` first), with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
 3. **Deferred findings.** A herder's final report can list findings the reviewers deferred. For the ones that are confirmed and user-visible, file one follow-up issue per PR, quoting each comment's file and line, with acceptance criteria. Label it `dev: agent` but **not** `agent: refined`, so the next batch skips it until it is refined. Test gaps go in the same issue. First search open issues for the PR number and each finding's file: the herder may already have filed it.
 4. **Clean up.** Remove the build worktree and its local branch, skipping whatever the merge already removed. Leave the review tab as `horch` says.
