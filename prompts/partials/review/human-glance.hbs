@@ -145,7 +145,10 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   full, small-change recommendation included, before it starts the runner: the
   human who asked is there to answer. `agent-loop` classifies before its first
   review round and has no human to act on a recommendation, so it gates on
-  `skip` and `dependencyUpdate` alone and ignores `smallChange`. On a mixed
+  `skip` and `dependencyUpdate` alone and ignores `smallChange`. It does not
+  resolve the dependency review override, so it stops a dependency update even
+  when an override applies; run the chain from an interactive or herd entry
+  point instead. On a mixed
   range it leaves the converged PR in draft and names `dep-analysis` instead of
   marking it ready.
 - **Later pushes.** Every invocation classifies the whole range again. A push

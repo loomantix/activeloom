@@ -318,8 +318,10 @@ line pattern cannot prove that a change is dependency-only.
 `--force-review` is the review override: on a range that would be a
 dependency update it reports `dependencyUpdate: false` and
 `dependencyReviewForced: true`, keeps `dependencyPaths`, and so sends the range
-down the mixed-range route. Entry points pass it on a human's direct request to
-review a dependency update anyway or on the PR's `review: full` label. A manifest under a test path
+down the mixed-range route. Entry points pass it under the workflow's durable
+dependency review override: a direct human request, a current or previously
+applied `review: full` label, or a matching always-Deep repository tier
+extension. A manifest under a test path
 is a fixture and is never a pin.
 
 YAML pins require a recognized schema location: workflow/composite-action

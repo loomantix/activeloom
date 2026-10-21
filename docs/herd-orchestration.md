@@ -185,11 +185,11 @@ Where it stops:
 - **Converged and CI green:** it marks the PR ready and tells you it is ready for final review and merge.
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
-- **Dependency update:** it runs `dep-analysis` in the same herder session instead of a chain, and reports the verdict. `horch` ships the PR on a `dependency-analysis:v1` comment at `verdict=clear` at the exact head.
+- **Dependency update:** it runs `dep-analysis` in the same herder session instead of a chain, and reports the verdict. `dep-analysis` marks it ready once CI is green, and `horch` ships it on a `dependency-analysis:v1` comment at `verdict=clear` at the exact head: the authenticated actor's latest report, unedited. A dependency review override (a `review: full` label, even one since removed, or an always-Deep extension) sends it down the chain instead.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
 - **Blocked:** anything it cannot decide within the rules.
 
-It never merges, marks a PR ready only through the converged path or the auto-glance clean-result and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
+It never merges, marks a PR ready only through the converged path, the auto-glance clean-result and CI gate, or a `clear` dependency analysis and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
 
 ### `auto-glance <pr>` — one model instead of a human glance
 
