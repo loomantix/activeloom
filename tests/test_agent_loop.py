@@ -798,6 +798,35 @@ def test_v3_clean_results_attest_and_converge(
     assert "local-review-pass:v3 engine=claude round=1" in comments
 
 
+def test_mixed_dependency_range_converges_but_stays_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Code plus a lockfile: the chain converges, but readiness needs a
+    # dependency analysis that agent-loop does not run.
+    worker = (
+        "printf 'done\\n' > result.py; printf 'lock\\n' > yarn.lock; "
+        "git add result.py yarn.lock; git commit -m 'fix: worker'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "31"],
+        issues=[_issue(31)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            worker_hook=worker,
+            codex_review_hook=_clean_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
+    assert result.returncode != 0
+    assert not (consumer[3] / "pr-ready").exists()
+    assert "Run the dependency analysis (dep-analysis)" in result.stderr
+    assert "local-review-pass:v3 engine=claude round=1" in (
+        consumer[3] / "pr-comments.log"
+    ).read_text(encoding="utf-8")
+
+
 def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,

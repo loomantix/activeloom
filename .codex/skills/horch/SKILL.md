@@ -67,7 +67,7 @@ Every new session gets its own tab, labelled the way the workspace already does 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
 - **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker appears, the herder's pane shows a question, or the herder is idle and the PR has no `local-review-run:v1` marker. Then read the pane:
   - converged and ready, a clean auto-glance, or a `dependency-analysis:v1` comment at `verdict=clear` → [Shipping](#shipping);
-  - a dependency analysis at `gaps`, `broken` or `blocked` → alert with its report. Never route a dependency update to a review chain or auto-glance yourself; a human's `review: full` label is the herder's to apply;
+  - a dependency analysis at `gaps`, `broken` or `blocked` → alert with its report. Never route a dependency update to a review chain or auto-glance yourself; only a human applies the `review: full` label, and the herder honours it;
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
   - exhausted, blocked, or a run end with no ready flip → alert.

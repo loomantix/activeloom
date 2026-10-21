@@ -764,7 +764,7 @@ stop_resumed_human_glance() {
     local head="$1" base
     base="$(jq -er '.baseSha' <<<"$RESUME_STATE_JSON")" || return 1
     human_glance_gate "$base" "$head" || return 0
-    recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+    recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
     return 1
 }
 
@@ -778,7 +778,7 @@ refuse_unfinished_batch_child() {
         base="$(jq -er '.baseSha' <<<"$child_json")" || return 1
         head="$(jq -er '.headSha' <<<"$child_json")" || return 1
         human_glance_gate "$base" "$head" || return 0
-        recovery_message "Batch issue #$issue stopped for a human glance and starts no review chain; read its draft PR before explicitly bailing it." human-glance
+        recovery_message "Batch issue #$issue stopped for $(human_glance_need) and starts no review chain; read its draft PR before explicitly bailing it." human-glance
         print_batch_bail_command "$issue" active
         return 1
     fi
@@ -830,7 +830,7 @@ resume_initial_publication() {
         return 1
     }
     if human_glance_gate "$base" "$(git rev-parse HEAD)"; then
-        recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+        recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
         return 1
     fi
 }
@@ -2753,6 +2753,16 @@ finalize_pr() {
     attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
     verify_local_review_threads || return 1
     verify_converged_review_outcomes || return 1
+    # A mixed range is ready only with a clear dependency analysis at this head,
+    # which agent-loop does not run: leave the PR in draft for it. A range that
+    # cannot be classified stays in draft too.
+    local dependency_report
+    dependency_report="$(node "$REVIEW_LEDGER" classify-changeset \
+        --base "$REVIEWED_BASE_SHA" --head "$final_sha" 2>/dev/null)" &&
+        [ "$(jq -r '.dependencyPaths | length' <<<"$dependency_report" 2>/dev/null)" = 0 ] || {
+        recovery_message "Review converged at $final_sha, but the range changes dependency files or could not be classified. Run the dependency analysis (dep-analysis) at that head before marking PR $AGENT_LOOP_PR_URL ready; it stays in draft." human-glance
+        return 1
+    }
     update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
         "$final_sha" || {
         recovery_message "Could not checkpoint the finalizing review state."

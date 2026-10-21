@@ -159,9 +159,12 @@ Dependency update: N dependency files, no review chain. Running the dependency a
 A range with a non-empty `dependencyPaths` and `"dependencyUpdate": false` is
 **mixed**: a bump plus code. The code follows the normal route — this gate, then
 the tier from triggers 1–5 — and the chain's reviewers leave the dependency
-files to the analysis, except under the dependency review override. `/dep-analysis` covers `dependencyPaths` once the
-chain converges, at the converged head. A mixed PR is ready to ship only with
-both the chain's convergence and a `clear` analysis at the same head. Where the
+files to the analysis, except under the dependency review override. Once the
+chain converges, the session that ends the run — the auto controller, the
+herder, or the human who ran the last pass — runs `/dep-analysis` on
+`dependencyPaths` at the converged head before marking the PR ready. A mixed PR
+is ready to ship only with both the chain's convergence and a `clear` analysis
+at the same head. Where the
 bump can stand alone, a separate PR for it is the simpler route.
 
 The analysis records its outcome as a PR comment whose first line is
@@ -221,7 +224,9 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   full, small-change recommendation included, before it starts the runner: the
   human who asked is there to answer. `agent-loop` classifies before its first
   review round and has no human to act on a recommendation, so it gates on
-  `skip` and `dependencyUpdate` alone and ignores `smallChange`.
+  `skip` and `dependencyUpdate` alone and ignores `smallChange`. On a mixed
+  range it leaves the converged PR in draft and names `dep-analysis` instead of
+  marking it ready.
 - **Later pushes.** Every invocation classifies the whole range again. A push
   that adds a review-significant file takes the PR out of human glance, and tier
   resolution applies to the whole range.
@@ -248,8 +253,8 @@ Resolve the changed-file list once with
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
    bounded-repair exception below before selecting this trigger. A dependency
-   pin change never selects this trigger; see "What does not
-   set the tier".
+   pin change never selects this trigger, except under the dependency review
+   override; see "What does not set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.
