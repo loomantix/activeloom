@@ -329,8 +329,8 @@ into every harness root. Invoke this root's copy:
 
 Every root's copy is the same bytes, so an engine reviewing from another root
 runs the same controller against the same markers. Its commands are `start-run`, `next-pass`,
-`authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
+`authorize-pass`, `finish-run`, `post-handoff`, `show-handoff`, and the read-only `run-state`
+(latest run state, restart and scope-decision requirements). It implements neither `status` nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts

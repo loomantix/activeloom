@@ -212,6 +212,7 @@ Where it stops:
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
+- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the run controller will ask for one (six or more feat/fix/perf commits, or a changed file GitHub shows without a patch). Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so.
 - **Blocked:** anything it cannot decide within the rules.
 
 It never merges, marks a PR ready only through the converged path or the auto-glance clean-result and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
@@ -249,6 +250,8 @@ It inventories every tab and session in the workspace, checks your instruction f
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
 - hands production-lane work to the configured engine and queues the result for your approval;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
+
+Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts no herder, because only your words in the herder's tab can authorize a restart. It alerts you instead with the exact words to type into a fresh session in a new tab, including the scope decision when the run controller will ask for one, and adopts that tab once the run starts.
 
 It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
 
@@ -434,6 +437,8 @@ Each engine launches with its model and effort from your review profile and its 
 **`herd-config.py` exits 1 or 2.** 1 is an invalid config (the message names every problem); 2 is a git problem, often a missing `origin/HEAD`. Pass `--default-branch <name>` or run `git remote set-head origin --auto`.
 
 **A ship refuses.** Read the gate line in the alert. Common causes: a required check still pending, no required checks with `ship.checks: required`, a CI run still running, or `ship-staging` refusing on its own guardrails (it currently ships only to `staging` and needs its `status: on-staging` label and webhook). The PR is left as it was.
+
+**A review run ended and the orchestrator will not restart it.** By design. Open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`. The orchestrator cannot pass your approval on for you.
 
 **A lock is held.** `hgrill` and `hpromote` lock per issue and per day. A block leaves the lock on purpose. Once you have dealt with the block, release it with `herd-config.py unlock` using the same `--repo`, `--skill` and `--key`.
 
