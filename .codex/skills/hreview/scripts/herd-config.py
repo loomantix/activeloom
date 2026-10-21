@@ -788,7 +788,7 @@ def alias_report(
             "cli": cli,
             "checked": False,
             "kind": None,
-            "definition": None,
+            "flags": [],
             "repeats": [],
             "read_only_repeats": [],
             "turned_off": [],
@@ -828,7 +828,9 @@ def alias_report(
         "cli": cli,
         "checked": True,
         "kind": parsed["kind"],
-        "definition": parsed["definition"],
+        # Flag names only: an alias body can carry inline credentials
+        # (`KEY=... claude`), and flag values can too.
+        "flags": sorted({arg.split("=", 1)[0] for arg in alias_args if arg.startswith("-")}),
         "repeats": repeats,
         "read_only_repeats": sorted(
             {_canonical(engine, arg) for arg in added} & read_only_configured
@@ -907,6 +909,27 @@ def rule_covers(rule: str, command: str) -> bool:
     )
 
 
+def rule_restricts(rule: str, command: str) -> bool:
+    """Whether a deny or ask rule could match some invocation `command ...`.
+
+    Unlike an allow rule, a restriction need not cover the whole family to
+    refuse a herd command: `Bash(herdr agent start * --yolo*)` refuses only
+    some launches, and those may be the ones the herd makes.
+    """
+    if rule_covers(rule, command):
+        return True
+    match = re.fullmatch(r"Bash\((.*)\)", rule.strip(), re.S)
+    if not match:
+        return False
+    body = match.group(1).strip()
+    if body.endswith(":*"):
+        body = body[:-2] + " *"
+    prefix, star, _ = body.partition("*")
+    if star and (command + " ").startswith(prefix):
+        return True
+    return prefix.startswith(command + " ")
+
+
 def _names(text: str, term: str) -> bool:
     """Whether a prose rule names `term`; a flag or value must appear as a whole word."""
     return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text) is not None
@@ -931,7 +954,7 @@ def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
 HERD_COMMANDS = ("herdr agent start", "herdr agent read", "herdr agent send-keys")
 
 
-def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]]:
+def _required(loaded: dict[str, Any], engines: list[str], read_only: bool = False) -> list[dict[str, Any]]:
     required: list[dict[str, Any]] = [
         {
             "setting": "permissions.allow",
@@ -951,7 +974,8 @@ def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]
         entry = loaded["config"]["engines"][engine]
         hits, _, _ = _turned_off(engine, entry["launch_args"])
         in_launch = [word for hit in hits for word in hit["arg"].split(" ", 1)]
-        args = [*in_launch, *entry["permission_off_args"]]
+        # Read-only sessions get launch_args but never permission_off_args.
+        args = [*in_launch, *([] if read_only else entry["permission_off_args"])]
         if args:
             flags[engine] = args
     if flags:
@@ -972,13 +996,14 @@ def _auto_mode_reasons(
     loaded: dict[str, Any],
     engines: list[str],
     settings: dict[str, dict[str, Any] | None],
+    read_only: bool = False,
 ) -> list[str]:
     reasons: list[str] = []
     if session_mode == "auto":
         reasons.append("this session runs in auto mode")
     if "claude" in engines:
         entry = loaded["config"]["engines"]["claude"]
-        args = entry["launch_args"] + entry["permission_off_args"]
+        args = entry["launch_args"] + ([] if read_only else entry["permission_off_args"])
         flag, mode = CLAUDE_AUTO_MODE
         pairs = zip(args, [*args[1:], None])
         if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
@@ -1014,6 +1039,7 @@ def auto_mode_report(
     session_mode: str | None,
     project_dir: Path | None,
     draft_path: Path,
+    read_only: bool = False,
 ) -> dict[str, Any]:
     """Which Claude settings entries the herd needs in auto mode, and a draft that adds the missing ones."""
     user_path = claude_config_dir() / "settings.json"
@@ -1022,7 +1048,7 @@ def auto_mode_report(
         paths["project"] = project_dir / ".claude" / "settings.json"
         paths["local"] = project_dir / ".claude" / "settings.local.json"
     settings = {scope: _read_settings(path) for scope, path in paths.items()}
-    reasons = _auto_mode_reasons(session_mode, loaded, engines, settings)
+    reasons = _auto_mode_reasons(session_mode, loaded, engines, settings, read_only)
 
     allow = [rule for value in settings.values() for rule in _string_entries(value, "permissions", "allow")]
     restrictions = {
@@ -1035,14 +1061,15 @@ def auto_mode_report(
 
     missing: list[dict[str, str]] = []
     conflicts: list[dict[str, str]] = []
+    partial: list[dict[str, str]] = []
     for command in HERD_COMMANDS:
         for kind, rules in restrictions.items():
-            conflicts.extend(
-                {"setting": f"permissions.{kind}", "entry": rule, "blocks": command}
-                for rule in rules
-                if rule_covers(rule, command)
-            )
-    for item in _required(loaded, engines):
+            for rule in rules:
+                if rule_covers(rule, command):
+                    conflicts.append({"setting": f"permissions.{kind}", "entry": rule, "blocks": command})
+                elif rule_restricts(rule, command):
+                    partial.append({"setting": f"permissions.{kind}", "entry": rule, "may_block": command})
+    for item in _required(loaded, engines, read_only):
         shown = {key: item[key] for key in ("setting", "entry", "why")}
         if item["setting"] == "permissions.allow":
             if not any(rule_covers(rule, item["command"]) for rule in allow):
@@ -1065,8 +1092,12 @@ def auto_mode_report(
         "files": {scope: {"path": str(path), "present": settings[scope] is not None} for scope, path in paths.items()},
         "missing": missing,
         "conflicts": conflicts,
+        "partial_conflicts": partial,
         "defaults": defaults,
-        "ready": not in_use or not (missing or conflicts),
+        # A deny rule refuses the command in every permission mode; the rest
+        # matter only to auto mode's classifier.
+        "ready": not any(item["setting"] == "permissions.deny" for item in conflicts)
+        and (not in_use or not (missing or conflicts)),
         "draft": None,
     }
     if not (in_use and missing):
@@ -1185,6 +1216,11 @@ def main(argv: list[str] | None = None) -> int:
         help="checkout whose .claude/settings*.json also apply",
     )
     automode.add_argument("--draft", type=Path, help="where to write the draft settings file")
+    automode.add_argument(
+        "--read-only",
+        action="store_true",
+        help="every session this run starts is read-only, so permission_off_args are never passed",
+    )
 
 
     paths = commands.add_parser("paths", help="create and print per-repository state paths")
@@ -1228,7 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
             draft = args.draft or tmp / "activeloom-herd" / "claude-settings.draft.json"
             loaded = read_user(args.path or user_config_path())
             engines = list(dict.fromkeys(args.engine))
-            _emit(auto_mode_report(loaded, engines, args.session_mode, args.project_dir, draft))
+            _emit(auto_mode_report(loaded, engines, args.session_mode, args.project_dir, draft, args.read_only))
         else:
             resolved = state_paths(args.repo, args.skill, args.key)
             if args.command == "paths":
