@@ -364,6 +364,13 @@ function contentSkeleton(
   if (name.endsWith('.json')) return jsonSkeleton(name, content);
   // JSONC needs a structural parser before it can safely bypass review.
   if (name.endsWith('.jsonc')) return null;
+  // Executable manifests need a language parser to distinguish dependency calls
+  // from arbitrary methods and string bodies.
+  if (
+    name.startsWith('build.gradle') ||
+    ['gemfile', 'podfile', 'mix.exs'].includes(name)
+  )
+    return null;
   // Multiline bodies can contain instruction-shaped data. Unsupported syntax
   // must not let the line scanner mistake that data for dependency declarations.
   if (
@@ -378,10 +385,12 @@ function contentSkeleton(
   const yaml = /\.ya?ml$/.test(name);
   let scalarIndent: number | undefined;
   let unsupportedQuotes = false;
+  const yamlParents: { key: string; indent: number }[] = [];
   const skeleton = content
     .split('\n')
     .map((raw) => {
       const line = raw.trim();
+      let yamlPath: string[] = [];
       if (yaml) {
         const indent = raw.length - raw.trimStart().length;
         if (scalarIndent !== undefined) {
@@ -399,6 +408,17 @@ function contentSkeleton(
         ) {
           scalarIndent = indent;
           return raw;
+        }
+        const entry = /^(\s*)(-\s+)?([\w.-]+):(?:\s|$)/.exec(raw);
+        const entryIndent = indent + (entry?.[2]?.length ?? 0);
+        while (
+          yamlParents.length &&
+          yamlParents[yamlParents.length - 1]!.indent >= entryIndent
+        )
+          yamlParents.pop();
+        if (entry) {
+          yamlPath = [...yamlParents.map((parent) => parent.key), entry[3]!];
+          yamlParents.push({ key: entry[3]!, indent: entryIndent });
         }
       }
       if (MANIFEST_BASENAMES.has(name)) {
@@ -462,14 +482,25 @@ function contentSkeleton(
       if (isDockerfileFromLine(line)) {
         return raw.replace(/(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i, '$1<pin>');
       }
-      if (isWorkflowPath(path, name) && isActionPinLine(line)) {
+      const workflow = isWorkflowPath(path, name);
+      const keys = yamlPath.join('/');
+      if (
+        workflow &&
+        /^(?:jobs\/[^/]+\/steps|runs\/steps)\/uses$/.test(keys) &&
+        isActionPinLine(line)
+      ) {
         return raw
           .replace(/(@)([^\s"']+)/, '$1<pin>')
           .replace(/\s+#.*$/, ' #<comment>');
       }
-      if (isImageLine(line)) return raw.replace(/(image:\s*)(\S+)/, '$1<pin>');
-      if (/^values[\w.-]*\.ya?ml$/.test(name) && isImageTagLine(line))
-        return raw.replace(/((?:tag|digest):\s*)(\S+)/, '$1<pin>');
+      const imageContext = workflow
+        ? /^(?:jobs\/[^/]+\/(?:container|services\/[^/]+)\/image|runs\/image)$/.test(
+            keys,
+          )
+        : /^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$/.test(name) &&
+          /^services\/[^/]+\/image$/.test(keys);
+      if (imageContext && isImageLine(line))
+        return raw.replace(/(image:\s*)(\S+)/, '$1<pin>');
       return raw;
     })
     .join('\n');

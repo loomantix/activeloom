@@ -11,6 +11,70 @@ import {
 } from '../index.js';
 
 const cases: [string, string, string, string, boolean][] = [
+  ...['image', 'uses'].map((key): [string, string, string, string, boolean] => [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    env:\n      ${key}: example/policy:1\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "$${key}"\n`,
+    'example/policy:1',
+    'example/policy:2',
+    false,
+  ]),
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    env:\n      image: node:22\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "$image"\n',
+    'node:22\n    steps:\n      - uses: actions/checkout@v4',
+    'node:23\n    steps:\n      - uses: actions/checkout@v5',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    container:\n      image: node:22\n    steps:\n      - run: echo ready\n',
+    'node:22',
+    'node:23',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    services:\n      db:\n        image: postgres:17\n',
+    'postgres:17',
+    'postgres:18',
+    true,
+  ],
+  [
+    'action.yml',
+    'runs:\n  using: composite\n  steps:\n    - name: Checkout\n      uses: actions/checkout@v4\n',
+    '@v4',
+    '@v5',
+    true,
+  ],
+  ['values.yaml', 'retention:\n  tag: "1.0"\n', '1.0', '2.0', false],
+  [
+    'app.yaml',
+    'policy:\n  image: example:1\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'build.gradle',
+    `def payload = '''\nimplementation("com.example:policy:1.0")\n'''\ntasks.register('writePolicy') { doLast { file('policy.txt').text = payload } }\n`,
+    '1.0',
+    '2.0',
+    false,
+  ],
+  [
+    'build.gradle.kts',
+    'println("com.example:policy:1.0")\n',
+    '1.0',
+    '2.0',
+    false,
+  ],
+  [
+    'Gemfile',
+    `payload = <<~TEXT\ngem 'rails', '7.1'\nTEXT\nFile.write('policy.txt', payload)\n`,
+    '7.1',
+    '7.2',
+    false,
+  ],
   ...['\\', '`'].map((escape): [string, string, string, string, boolean] => [
     'Dockerfile',
     `# escape=${escape}\nFROM node:22\nRUN printf "%s" ${escape}\nFROM example:1\n`,
@@ -122,7 +186,7 @@ const cases: [string, string, string, string, boolean][] = [
   ['go.mod', 'require example.com/lib/v2 v2.1.0', 'v2.1.0', 'v2.2.0', true],
   [
     '.github/workflows/ci.yml',
-    'steps:\n  - uses: actions/checkout@v4 # v4',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4 # v4',
     '@v4 # v4',
     '@v5 # v5',
     true,
@@ -140,9 +204,9 @@ const cases: [string, string, string, string, boolean][] = [
     'implementation("com.squareup.okio:okio:3.9.1")',
     '3.9.1',
     '3.9.2',
-    true,
+    false,
   ],
-  ['Gemfile', "gem 'rails', '~> 7.2.1'", '7.2.1', '7.2.2', true],
+  ['Gemfile', "gem 'rails', '~> 7.2.1'", '7.2.1', '7.2.2', false],
   [
     '.github/workflows/ci.yml',
     'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@' +
@@ -193,7 +257,7 @@ const cases: [string, string, string, string, boolean][] = [
     '17.2',
     true,
   ],
-  ['charts/app/values.yaml', 'image:\n  tag: "1.4.2"', '1.4.2', '1.4.3', true],
+  ['charts/app/values.yaml', 'image:\n  tag: "1.4.2"', '1.4.2', '1.4.3', false],
   [
     'docker-compose.yml',
     'services:\n  app:\n    image: node:22\n  db:\n    image: postgres:17',

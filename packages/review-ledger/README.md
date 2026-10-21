@@ -316,6 +316,12 @@ workflow with any line other than a `uses:` or `image:` pin, or a file of an
 unknown kind keeps the range on the normal route. A manifest under a test path
 is a fixture and is never a pin.
 
+YAML pins require a recognized schema location: workflow/composite-action
+steps, workflow containers and services, Docker actions, or Compose services.
+Arbitrary YAML mappings (including Helm values) remain on the review route.
+Gradle, Ruby, and Elixir manifests also remain on that route until their
+executable context can be parsed; a version-shaped line alone is insufficient.
+
 The test class is assigned by path, and a directory named `test` is not always
 tests. A `test`-class file that also matches a config or prompt-surface rule,
 such as `infra/environments/test/main.tf`, keeps its class and counts toward the

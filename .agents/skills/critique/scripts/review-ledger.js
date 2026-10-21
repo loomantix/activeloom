@@ -17562,6 +17562,8 @@ function jsonSkeleton(name, content) {
 function contentSkeleton(path, name, content) {
   if (name.endsWith(".json")) return jsonSkeleton(name, content);
   if (name.endsWith(".jsonc")) return null;
+  if (name.startsWith("build.gradle") || ["gemfile", "podfile", "mix.exs"].includes(name))
+    return null;
   if ((/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) && (content.includes("<<") || /[\\`]\s*$/m.test(content)))
     return null;
   if ((name.endsWith(".toml") || name === "pipfile") && /'''|"""/.test(content))
@@ -17571,8 +17573,10 @@ function contentSkeleton(path, name, content) {
   const yaml = /\.ya?ml$/.test(name);
   let scalarIndent;
   let unsupportedQuotes = false;
+  const yamlParents = [];
   const skeleton = content.split("\n").map((raw) => {
     const line = raw.trim();
+    let yamlPath = [];
     if (yaml) {
       const indent = raw.length - raw.trimStart().length;
       if (scalarIndent !== void 0) {
@@ -17586,6 +17590,14 @@ function contentSkeleton(path, name, content) {
       if (/(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)) {
         scalarIndent = indent;
         return raw;
+      }
+      const entry = /^(\s*)(-\s+)?([\w.-]+):(?:\s|$)/.exec(raw);
+      const entryIndent = indent + (entry?.[2]?.length ?? 0);
+      while (yamlParents.length && yamlParents[yamlParents.length - 1].indent >= entryIndent)
+        yamlParents.pop();
+      if (entry) {
+        yamlPath = [...yamlParents.map((parent) => parent.key), entry[3]];
+        yamlParents.push({ key: entry[3], indent: entryIndent });
       }
     }
     if (MANIFEST_BASENAMES.has(name)) {
@@ -17634,12 +17646,16 @@ function contentSkeleton(path, name, content) {
     if (isDockerfileFromLine(line)) {
       return raw.replace(/(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i, "$1<pin>");
     }
-    if (isWorkflowPath(path, name) && isActionPinLine(line)) {
+    const workflow = isWorkflowPath(path, name);
+    const keys = yamlPath.join("/");
+    if (workflow && /^(?:jobs\/[^/]+\/steps|runs\/steps)\/uses$/.test(keys) && isActionPinLine(line)) {
       return raw.replace(/(@)([^\s"']+)/, "$1<pin>").replace(/\s+#.*$/, " #<comment>");
     }
-    if (isImageLine(line)) return raw.replace(/(image:\s*)(\S+)/, "$1<pin>");
-    if (/^values[\w.-]*\.ya?ml$/.test(name) && isImageTagLine(line))
-      return raw.replace(/((?:tag|digest):\s*)(\S+)/, "$1<pin>");
+    const imageContext = workflow ? /^(?:jobs\/[^/]+\/(?:container|services\/[^/]+)\/image|runs\/image)$/.test(
+      keys
+    ) : /^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$/.test(name) && /^services\/[^/]+\/image$/.test(keys);
+    if (imageContext && isImageLine(line))
+      return raw.replace(/(image:\s*)(\S+)/, "$1<pin>");
     return raw;
   }).join("\n");
   return unsupportedQuotes ? null : skeleton;
