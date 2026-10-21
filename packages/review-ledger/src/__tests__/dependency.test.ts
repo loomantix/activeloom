@@ -190,6 +190,23 @@ describe('classifyFiles dependency-update gate', () => {
     expect(report.dependencyPaths).toEqual([]);
   });
 
+  it('keeps generated or vendored code beside a lockfile off the dependency route', () => {
+    const lockfile = { path: 'pnpm-lock.yaml', added: 30, deleted: 30 };
+    for (const path of ['dist/index.js', 'vendor/x/y.go']) {
+      const report = classifyFiles([
+        lockfile,
+        { path, added: 1, deleted: 0, blank: 0 },
+      ]);
+      expect(report.dependencyUpdate).toBe(false);
+      expect(report.dependencyPaths).toEqual(['pnpm-lock.yaml']);
+    }
+    const withDocs = classifyFiles([
+      lockfile,
+      { path: 'docs/notes.md', added: 1, deleted: 0, blank: 0 },
+    ]);
+    expect(withDocs.dependencyUpdate).toBe(true);
+  });
+
   it('routes a submodule gitlink bump even under vendor/', () => {
     const report = classifyFiles([
       { path: 'vendor/lib', added: 1, deleted: 1, submodule: true },

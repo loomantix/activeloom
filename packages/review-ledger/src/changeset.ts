@@ -556,7 +556,12 @@ export function classifyFiles(
       isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
-    } else if (classification.reviewSignificant) {
+    } else if (
+      classification.reviewSignificant ||
+      classification.class !== 'docsConfig'
+    ) {
+      // Generated or vendored code beside a pin (`dist/`, `vendor/`) is not
+      // read by the dependency analysis, so it keeps the range off that route.
       otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
