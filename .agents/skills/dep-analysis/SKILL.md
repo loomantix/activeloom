@@ -81,7 +81,7 @@ Done when the comment is posted and its marker names the PR's current head (re-r
 
 ### 6. Ready
 
-For a dependency update (not a mixed range) with verdict `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. For a mixed range the review chain owns readiness. Any other verdict leaves the PR as it is.
+For a dependency update (not a mixed range) with verdict `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` immediately before readiness and require it to equal the analyzed `<head>`. If it moved during the wait, restart at step 1. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range the review chain owns readiness. Any other verdict leaves the PR as it is.
 
 Report under 150 words: verdict, head, dependencies analysed, test commands and results, signals or gaps, and whether the PR was marked ready.
 

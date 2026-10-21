@@ -305,15 +305,155 @@ function lineKind(
   return null;
 }
 
+export function dependencyNeedsContent(path: string): boolean {
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
+  const kind = lineKind(path, name);
+  return kind !== null && kind !== 'lockfile';
+}
+
+function jsonSkeleton(name: string, content: string): string | null {
+  try {
+    const value: unknown = JSON.parse(content);
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return null;
+    const document = value as Record<string, unknown>;
+    const sections =
+      name === 'package.json'
+        ? [
+            'dependencies',
+            'devDependencies',
+            'peerDependencies',
+            'optionalDependencies',
+            'engines',
+          ]
+        : name === 'composer.json'
+          ? ['require', 'require-dev']
+          : ['imports'];
+    for (const section of sections) {
+      const entries = document[section];
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+        continue;
+      for (const [key, pin] of Object.entries(entries)) {
+        if (
+          typeof pin === 'string' &&
+          isVersionValue(JSON.stringify(pin), true)
+        ) {
+          (entries as Record<string, unknown>)[key] = '<pin>';
+        }
+      }
+    }
+    if (
+      name === 'package.json' &&
+      typeof document.packageManager === 'string' &&
+      AT_VERSION_VALUE.test(document.packageManager)
+    ) {
+      document.packageManager = '<pin>';
+    }
+    return JSON.stringify(document);
+  } catch {
+    return null;
+  }
+}
+
+/** Preserve every byte except a recognized pin in a dependency context. */
+function contentSkeleton(
+  path: string,
+  name: string,
+  content: string,
+): string | null {
+  if (name.endsWith('.json')) return jsonSkeleton(name, content);
+  // JSONC needs a structural parser before it can safely bypass review.
+  if (name.endsWith('.jsonc')) return null;
+  let section = '';
+  let yamlSection = '';
+  return content
+    .split('\n')
+    .map((raw) => {
+      const line = raw.trim();
+      if (MANIFEST_BASENAMES.has(name)) {
+        if (
+          name.endsWith('.toml') ||
+          name === 'pipfile' ||
+          name === 'setup.cfg'
+        ) {
+          const header = /^\[([^\]]+)\]$/.exec(line);
+          if (line.startsWith('[')) section = header?.[1] ?? '';
+          const dependencySection =
+            name === 'cargo.toml'
+              ? /^(?:(?:target\..+\.)?(?:dependencies|dev-dependencies|build-dependencies))$/.test(
+                  section,
+                )
+              : name === 'pipfile'
+                ? /^(packages|dev-packages)$/.test(section)
+                : /^tool\.poetry\.(?:group\.[^.]+\.)?(?:dependencies|dev-dependencies)$/.test(
+                    section,
+                  );
+          if (!dependencySection) return raw;
+        }
+        if (name.endsWith('.yaml')) {
+          const header = /^(\w+):\s*$/.exec(raw);
+          if (header) yamlSection = header[1]!;
+          else if (/^\S/.test(raw) && line && !line.startsWith('#'))
+            yamlSection = '';
+          if (
+            !(
+              name === 'pnpm-workspace.yaml'
+                ? /^(catalog|catalogs)$/
+                : /^(dependencies|dev_dependencies|dependency_overrides)$/
+            ).test(yamlSection)
+          )
+            return raw;
+        }
+        if (!isManifestPinLine(name, line)) return raw;
+        if (line.includes('{')) {
+          return raw.replace(
+            /(\bversion\s*=\s*)("[^"]*"|'[^']*')/,
+            '$1"<pin>"',
+          );
+        }
+        if (name === 'go.mod' || name === 'go.work')
+          return raw.replace(/(^|\s)(?:go)?v?\d[\w.+-]*(?=\s|$)/, '$1<pin>');
+        if (name === 'pom.xml')
+          return raw.replace(/(<version>).*?(<\/version>)/, '$1<pin>$2');
+        if (name.startsWith('build.gradle'))
+          return raw.replace(/(:)v?\d[\w.+-]*(["'])/, '$1<pin>$2');
+        if (name === 'gemfile' || name === 'podfile' || name === 'mix.exs')
+          return raw.replace(/["'][~<>=!\s\d.]+["']/g, '"<pin>"');
+        return raw.replace(/([:=]\s*)(.+?)(,?\s*)$/, '$1<pin>$3');
+      }
+      if (REQUIREMENTS_FILE.test(name)) {
+        if (isRequirementPinLine(line))
+          return raw.replace(/(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+/g, '<pin>');
+        if (/^--hash=/.test(line))
+          return raw.replace(/--hash=\S+/, '--hash=<pin>');
+        return raw;
+      }
+      if (isDockerfileFromLine(line)) {
+        return raw.replace(/(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i, '$1<pin>');
+      }
+      if (isWorkflowPath(path, name) && isActionPinLine(line)) {
+        return raw
+          .replace(/(@)([^\s"']+)/, '$1<pin>')
+          .replace(/\s+#.*$/, ' #<comment>');
+      }
+      if (isImageLine(line)) return raw.replace(/(image:\s*)(\S+)/, '$1<pin>');
+      if (/^values[\w.-]*\.ya?ml$/.test(name) && isImageTagLine(line))
+        return raw.replace(/((?:tag|digest):\s*)(\S+)/, '$1<pin>');
+      return raw;
+    })
+    .join('\n');
+}
+
 /**
  * Whether one changed file is a dependency pin change and nothing else.
  *
  * `changedLines` holds the added and deleted lines without their diff prefix;
  * blank lines are ignored. A lockfile qualifies on its name, and a submodule
- * gitlink on its mode. Every other kind needs its lines, and a file with no
- * lines supplied, or with no changed line at all, does not qualify.
+ * gitlink on its mode. Every other kind also needs complete pinned before/after
+ * content so version-shaped script/config values cannot qualify by themselves.
  */
 export function isDependencyPinChange(file: ChangedFile): boolean {
+  if (file.metadataChanged) return false;
   if (file.submodule === true) {
     return true;
   }
@@ -326,11 +466,20 @@ export function isDependencyPinChange(file: ChangedFile): boolean {
   if (kind === 'lockfile') {
     return true;
   }
+  if (file.beforeContent === undefined || file.afterContent === undefined)
+    return false;
   const lines = (file.changedLines ?? [])
     .map((line) => line.trim())
     .filter((line) => line !== '');
   if (lines.length === 0) {
     return false;
   }
-  return lines.every(kind.isAllowed) && lines.some(kind.isPin);
+  if (!lines.every(kind.isAllowed) || !lines.some(kind.isPin)) return false;
+  const before = contentSkeleton(path, name, file.beforeContent);
+  const after = contentSkeleton(path, name, file.afterContent);
+  return (
+    before !== null &&
+    before === after &&
+    file.beforeContent !== file.afterContent
+  );
 }

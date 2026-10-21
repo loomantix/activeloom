@@ -1,4 +1,4 @@
-import { isDependencyPinChange } from './dependency.js';
+import { dependencyNeedsContent, isDependencyPinChange } from './dependency.js';
 import { runGit } from './github.js';
 import { fail } from './errors.js';
 import { requireSha } from './hash.js';
@@ -774,6 +774,14 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
     if (current === null) {
       continue;
     }
+    if (
+      !inHunk &&
+      /^(old mode |new mode |rename from |rename to |copy from |copy to )/.test(
+        rawLine,
+      )
+    ) {
+      current.metadataChanged = true;
+    }
     if (!inHunk && GITLINK_HEADER.test(rawLine)) {
       current.submodule = true;
       continue;
@@ -873,5 +881,21 @@ export function classifyRange(params: {
     '--ignore-submodules=none',
     `${params.base}..${params.head}`,
   ]);
-  return classifyFiles(parseDiffPatch(patch), params.options);
+  const files = parseDiffPatch(patch);
+  for (const file of files) {
+    if (
+      !dependencyNeedsContent(file.path) ||
+      file.submodule ||
+      file.metadataChanged
+    )
+      continue;
+    // Added/deleted files have no pair to compare and stay on the normal route.
+    try {
+      file.beforeContent = runGit(['show', `${params.base}:${file.path}`]);
+      file.afterContent = runGit(['show', `${params.head}:${file.path}`]);
+    } catch {
+      // Missing or unreadable content cannot prove a pin-only change.
+    }
+  }
+  return classifyFiles(files, params.options);
 }

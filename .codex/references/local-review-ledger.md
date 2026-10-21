@@ -238,9 +238,12 @@ The file and size rules above are executable: `review-ledger classify-changeset
 with `dependencyPaths` alongside per-file classifications, and every entry point
 uses those flags for the file, size, and dependency gates. A file is a dependency
 pin change only when its kind is known and every changed line is a recognised
-version, pin, tag, or digest line; anything else fails closed to the normal
-route. Neither a dependency filename alone nor a bot author makes a range a
-dependency update.
+version, pin, tag, or digest line, with complete pinned before/after contents
+proving that non-pin fields and structure stayed unchanged. Missing context or
+unsupported syntax fails closed to the normal route. Lockfiles and gitlinks
+are the content-independent exceptions; renames and mode transitions still
+take the normal route. Neither a manifest filename alone nor a bot author
+makes a range a dependency update.
 
 The same call returns the class each file's churn belongs to — `app`, `test`,
 `docsConfig`, `generated` — which is a separate axis from whether the file is

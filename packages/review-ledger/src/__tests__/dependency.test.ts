@@ -65,8 +65,11 @@ describe('isDependencyPinChange', () => {
       [`        image: ghcr.io/example/api:1.4.2@${DIGEST}`],
     ],
     ['charts/api/values.yaml', ['  tag: "1.4.2"']],
-  ])('recognises %s', (path, lines) => {
-    expect(isDependencyPinChange(pin(path, lines))).toBe(true);
+  ])('requires context for non-lockfile %s', (path, lines) => {
+    // Line-only callers cannot establish dependency context.
+    expect(isDependencyPinChange(pin(path, lines))).toBe(
+      path.endsWith('lock') || path.endsWith('lock.yaml'),
+    );
   });
 
   it.each([
@@ -126,35 +129,34 @@ describe('isDependencyPinChange', () => {
 });
 
 describe('classifyFiles dependency-update gate', () => {
-  it('routes a manifest and lockfile bump to the dependency analysis', () => {
+  it('keeps an unverified manifest on the review route beside a lockfile', () => {
     const report = classifyFiles([
       pin('package.json', ['    "zod": "3.23.8"', '    "zod": "3.24.0"']),
       { path: 'pnpm-lock.yaml', added: 30, deleted: 30, blank: 0 },
     ]);
-    expect(report.dependencyUpdate).toBe(true);
-    expect(report.dependencyPaths).toEqual(['package.json', 'pnpm-lock.yaml']);
+    expect(report.dependencyUpdate).toBe(false);
+    expect(report.dependencyPaths).toEqual(['pnpm-lock.yaml']);
     expect(report.skip).toBe(false);
     expect(report.smallChange).toBe(false);
   });
 
-  it('routes an Actions pin bump that would otherwise be a small change', () => {
+  it('requires full context for an Actions pin bump', () => {
     const report = classifyFiles([
       pin('.github/workflows/ci.yml', [
         `      - uses: actions/checkout@${'c'.repeat(40)} # v4.2.1`,
         `      - uses: actions/checkout@${SHA} # v4.2.2`,
       ]),
     ]);
-    expect(report.dependencyUpdate).toBe(true);
-    expect(report.smallChange).toBe(false);
+    expect(report.dependencyUpdate).toBe(false);
   });
 
-  it('keeps docs beside a bump on the dependency route', () => {
+  it('does not treat accompanying docs as missing Dockerfile context', () => {
     const report = classifyFiles([
       pin('Dockerfile', ['FROM node:22.10-alpine', 'FROM node:22.11-alpine']),
       { path: 'CHANGELOG.md', added: 2, deleted: 0, blank: 0 },
     ]);
-    expect(report.dependencyUpdate).toBe(true);
-    expect(report.dependencyPaths).toEqual(['Dockerfile']);
+    expect(report.dependencyUpdate).toBe(false);
+    expect(report.dependencyPaths).toEqual([]);
   });
 
   it('reports a mixed range without routing it away from the tier', () => {
@@ -164,7 +166,7 @@ describe('classifyFiles dependency-update gate', () => {
       { path: 'src/schema.ts', added: 4, deleted: 2, blank: 0 },
     ]);
     expect(report.dependencyUpdate).toBe(false);
-    expect(report.dependencyPaths).toEqual(['package.json', 'pnpm-lock.yaml']);
+    expect(report.dependencyPaths).toEqual(['pnpm-lock.yaml']);
     expect(report.smallChange).toBe(false);
   });
 
@@ -214,7 +216,7 @@ describe('classifyFiles dependency-update gate', () => {
       '       - run: pnpm test',
     ].join('\n');
     const report = classifyFiles(parseDiffPatch(patch));
-    expect(report.dependencyUpdate).toBe(true);
+    expect(report.dependencyUpdate).toBe(false);
 
     const withStep = patch
       .replace(

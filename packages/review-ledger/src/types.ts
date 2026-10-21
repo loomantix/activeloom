@@ -519,6 +519,11 @@ export interface ChangedFile {
    * file cannot be recognised as a pin change.
    */
   changedLines?: string[] | undefined;
+  /** Pinned complete blobs; required to prove that only pin values changed. */
+  beforeContent?: string | undefined;
+  afterContent?: string | undefined;
+  /** A rename, copy, or file-mode transition needs the normal review route. */
+  metadataChanged?: boolean | undefined;
 }
 
 /** How one path classified, on both the value axis and the review axis. */
