@@ -34,7 +34,7 @@ Comment ids are far longer than issue numbers in practice, so the length rule is
 
 ```bash
 gh api repos/{owner}/{repo}/issues/<N>/comments --paginate \
-  --jq '[.[] | select(.body | contains("<!-- handoff:v1"))] | last | .body'
+  | jq -sr '[.[][] | select(.body | contains("<!-- handoff:v1"))] | last | .body'
 ```
 
 Fall back to the most recent comment only when no comment carries the marker, and say so — "no marked handoff, using the most recent comment" — because position drifts the moment anyone else comments, and acting on a superseded handoff is the failure this skill exists to prevent.
