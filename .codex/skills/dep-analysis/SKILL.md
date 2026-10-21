@@ -19,7 +19,7 @@ It writes no ledger run, roster, tier marker, attestation, or review telemetry r
 - **Mixed range** — `dependencyUpdate` is false and `dependencyPaths` is non-empty. The code part follows the normal review tier; this analysis covers only `dependencyPaths`. Run it after the chain converges, at the head the chain converged on, so the result names the head that ships.
 - **Neither** — no dependency pin in the range: say so, hand back to the review entry point, and stop.
 
-The classifier decides the route. When it reports a file as a pin change that is not one, or misses one, continue on its answer and open an issue naming the path and the rule.
+The classifier decides the route, and a session never overrules it on its own reading of the diff. When it misses a pin change, continue on its answer and open an issue naming the path and the rule. When it reports a file as a pin change that is not one — a changed line that alters behaviour, configuration or a dependency's identity rather than its version, tag, digest or SHA — open the same issue, post verdict `blocked` naming the path and line, and ask a human to apply the `review: full` label. Never mark a range you believe was misrouted ready.
 
 ## Steps
 
@@ -42,11 +42,14 @@ For each dependency the range changes — every direct entry, and every transiti
 
 - **From → to.** The exact versions, tags, SHAs or digests on both sides.
 - **What changed upstream.** Release notes or changelog for every version in between; breaking changes, deprecations and removals; security advisories fixed or introduced. A major bump, or a minor bump below 1.0, is presumed breaking until the notes say otherwise. For an Actions pin, the tag or commit range of the action and any change to its inputs, outputs or runtime. For a container image, the base OS and runtime versions inside the tag or digest, and whether the tag moved to a new digest.
+- **Provenance.** Whether the dependency's source, registry, protocol or integrity hash changed beyond what its version change implies; whether it adds an install script; whether it moves from an immutable pin (a digest, commit SHA or hash) to a mutable one; and, for an Actions or submodule SHA, whether that SHA is reachable from the upstream tag or branch it names (`git ls-remote` of the tag, or the commit on an upstream branch). Any of these is a provenance change.
 - **Who consumes it.** Search this repository for imports, call sites, configuration, workflows that use the action, and Dockerfiles, compose files, manifests and deploys that use the image. Name the tier each consumer sits in: build or CI only, development tooling, runtime of a service, a deployed image.
 
-Done when every changed dependency has a from → to, an upstream summary with its source, and a consumer list (or "no consumer found", with the search that showed it).
+Done when every changed dependency has a from → to, an upstream summary with its source, a provenance result, and a consumer list (or "no consumer found", with the search that showed it).
 
 ### 3. Tests
+
+Skip this step when step 2 found a provenance change: installing would run code no human has accepted.
 
 Find the existing tests that exercise the consumer paths from step 2: unit, integration, smoke, end-to-end. Verify `git rev-parse HEAD` equals `<head>` and `git status --porcelain` is empty, then run them at `<head>`, in a clean worktree on the PR branch, with the repository's own gate commands for each touched tier as AGENTS.md and the CI workflows define them — a frozen install first, then the typecheck, build and test commands those tiers use. A tier that cannot run locally (a deployed end-to-end suite) is covered by a CI run at the exact head; name the run.
 
@@ -64,10 +67,10 @@ Done when each consumer path has a named signal or is recorded as a gap.
 
 Pick the verdict:
 
-- `clear` — no unaddressed breaking change, every consumer path is exercised by a test that passed at the head, and each has a named signal.
+- `clear` — no provenance change, no unaddressed breaking change, every consumer path is exercised by a test that passed at the head, and each has a named signal.
 - `gaps` — nothing failed, but a consumer path has no exercising test or no signal. Recommend a separate issue documenting each gap, to close before merge.
 - `broken` — a test failed, or an upstream breaking change reaches a consumer here without a fix in the range.
-- `blocked` — the analysis could not finish: tests could not run, or upstream notes could not be read.
+- `blocked` — the analysis could not finish: tests could not run, or upstream notes could not be read; or it found a provenance change, which a human must accept (name it), or a misrouted file.
 
 Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`, using the same authenticated GitHub actor as the consuming readiness or shipping session. Consumers apply the workflow's Dependency updates evidence rule: select the latest analysis from that actor, ignoring other commenters. Before posting, verify both `git rev-parse HEAD` and `gh pr view <pr> --json headRefOid -q .headRefOid` still equal `<head>` (if either moved, start over from step 1 and do not post a comment for a stale or unverified SHA). Its first line is the marker, with the exact head the analysis ran at:
 
