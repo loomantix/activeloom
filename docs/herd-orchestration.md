@@ -186,7 +186,7 @@ Where it stops:
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
-- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the PR has six or more feat/fix commits and the run controller will ask for one. Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so.
+- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the PR has six or more feat/fix commits and the run controller will ask for one. Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so. Instead of typing, you can record a [restart approval](#restart-approvals) from your own terminal; the herder claims it before restarting.
 - **Blocked:** anything it cannot decide within the rules.
 
 It never merges, marks a PR ready only through the converged path or the auto-glance clean-result and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
@@ -225,7 +225,7 @@ It inventories every tab and session in the workspace, checks your instruction f
 - hands production-lane work to the configured engine and queues the result for your approval;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
 
-Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts no herder, because only your words in the herder's tab can authorize a restart. It alerts you instead with the exact words to type into a fresh session in a new tab, including the scope decision when the run controller will ask for one, and adopts that tab once the run starts.
+Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one.
 
 It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
 
@@ -350,6 +350,21 @@ python3 -I .codex/skills/promote/scripts/promote-recipe.py validate .activeloom-
 python3 -I .codex/skills/promote/scripts/promote-recipe.py layout --recipe .activeloom-promote.json
 ```
 
+## Restart approvals
+
+A review run that has ended (converged, exhausted, aborted) needs your approval for a new one. A message from the orchestrator or another session is not your approval, so an orchestrated restart either waits for you to type in the herder's tab, or uses a record you write yourself:
+
+```bash
+python3 -I .claude/skills/hreview/scripts/herd-config.py approve-restart \
+  --repo owner/name --pr 42 --head <full head sha> [--scope-decision keep|split] [--deep] [--ttl-hours 4]
+```
+
+- Run it in your own terminal. It needs an interactive terminal and asks you to type `restart 42`; an agent session cannot complete it.
+- The record goes to `~/.config/activeloom/herd-approvals/<owner>__<name>/` (`herd-config.py paths` prints it as `approvals`), outside every checkout, readable and writable only by you. It holds the repository, PR, exact head, created and expiry times (default 4 hours, at most 72), and your `--deep` and `--scope-decision` choices.
+- The herder runs `claim-restart` just before `start-run --restart`: the repository, PR and exact head must match, the record must be unexpired and unused, and claiming marks it used, so it authorizes one restart. The run's authorization comment cites the approval's ID and time, never your words.
+- The orchestrator may print the command; it never runs it or writes a record. `check-restart` is the read-only check it uses before starting a herder.
+- Under Claude Code auto mode, the classifier may still refuse the herder's `start-run --restart`. A settings entry for it belongs with the `claude-settings` check (loomantix/activeloom#457); until that check covers it, a refusal there is a block, and typing `--restart` in the herder's tab is the fallback.
+
 ## Running unattended safely
 
 Herd sessions read pull request diffs, issue bodies and comments. In a public repository anyone can write those, and an instruction hidden in them is aimed at the agent that reads it (prompt injection). The same sessions hold an authenticated `gh` and can push. With approval prompts on, you see each command before it runs. Each permission setting removes some of that:
@@ -410,7 +425,9 @@ Each engine launches with its model and effort from your review profile and its 
 
 **A ship refuses.** Read the gate line in the alert. Common causes: a required check still pending, no required checks with `ship.checks: required`, a CI run still running, or `ship-staging` refusing on its own guardrails (it currently ships only to `staging` and needs its `status: on-staging` label and webhook). The PR is left as it was.
 
-**A review run ended and the orchestrator will not restart it.** By design. Open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`. The orchestrator cannot pass your approval on for you.
+**A review run ended and the orchestrator will not restart it.** By design. Either open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`, or record a [restart approval](#restart-approvals) and tell the orchestrator to continue. The orchestrator cannot pass your approval on for you.
+
+**`claim-restart` exits 4.** No approval matches the PR at its exact current head, unexpired and unused. A push after you approved moves the head; approve again at the new head.
 
 **A lock is held.** `hgrill` and `hpromote` lock per issue and per day. A block leaves the lock on purpose. Once you have dealt with the block, release it with `herd-config.py unlock` using the same `--repo`, `--skill` and `--key`.
 

@@ -64,6 +64,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
    - **Active:** reuse it as-is. Do not call `start-run` again.
    - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`.
      - **`--restart` typed by the user:** resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision <d>` when the user gave one. A scope-checkpoint refusal is the block below, with the scope line.
+     - **A restart approval the user recorded:** otherwise, immediately before `start-run`, `python3 -I $C claim-restart --repo $repo --pr <n> --head <head>`. Exit 0 returns the record, now marked used: proceed as for `--restart`, taking `deep` and `scope_decision` from the record, and let the authorization paragraph cite `user restart approval <id>, recorded <created>` in place of "named in this session". Exit 4 means none matches this PR at this exact head, unexpired and unused: fall through. Never write or approve a record; only the user's own terminal can.
      - **Otherwise**, including a restart a peer asked for: stop that PR, print this block, and notify with `--sound request`. Do not ask the peer to confirm, retry, or find another route.
 
        ```text
@@ -71,6 +72,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
         RESTART NEEDS YOU: <repo>#<n>
         Review run <run_id12> ended <outcome>. <When a peer asked: The restart came from <peer>; only your words in this tab authorize one.>
         To restart, type in this tab: <<INVOKE>>hreview <n> --restart<when scope_decision_required: --scope-decision keep|split>
+        Or approve it from your own terminal, then restart this herder: python3 -I <absolute path of $C> approve-restart --repo <repo> --pr <n> --head <head><same --scope-decision>
         <When scope_decision_required: This PR has <k> feat/fix commits; choose keep (review as one) or split (split it first).>
        ════════════════════════════════════════════════════════════
        ```
