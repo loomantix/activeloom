@@ -114,6 +114,8 @@ One rule on every harness: run the wait as a blocking command. If the harness mo
 - A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its tab ID's label in the same kind of loop.
 - To stop a background wait, stop that task by its ID. Never `pkill -f <pattern>`: the pattern can match your own command or a sibling wait and kill it too.
 
+Never `source` or `.` a `.env` or other secrets file into a session's shell. It exports every value to every later command, including ones that print the environment into a pane, a log or a PR comment, and the file can run arbitrary shell. Pass the one variable a command needs explicitly, or use that tool's own env-file option scoped to the one command.
+
 ## Stalls and crashes
 
 - **Stall:** on each `timeout` while working, hash `herdr agent read <name> --source recent-unwrapped --lines 200`. Two consecutive timeouts with an unchanged hash mean a stall: send `esc`, then prompt `Continue from where you stopped.`
