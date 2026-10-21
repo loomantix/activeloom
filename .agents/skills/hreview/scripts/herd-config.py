@@ -792,7 +792,7 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
     }
     added = [arg for arg in alias_args if arg.startswith("-") and arg.split("=", 1)[0] not in repeatable]
     repeats = sorted({_canonical(engine, arg) for arg in added} & configured)
-    turned_off, _, _ = _turned_off(engine, alias_args) if alias_args else ([], [], False)
+    turned_off, _, _ = _turned_off(engine, alias_args)
     return {
         "cli": cli,
         "checked": True,
@@ -805,6 +805,8 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
 
 # --- Claude settings for auto mode ----------------------------------------------------
 
+# Claude Code ignores autoMode in shared project settings.
+AUTO_MODE_SCOPES = ("user", "local")
 AUTO_MODE_SCOPE = (
     "Claude user, project and local settings; autoMode is read from user and local settings only, "
     "as Claude Code ignores it in shared project settings; managed settings are not read"
@@ -985,7 +987,7 @@ def auto_mode_report(
         for kind in ("deny", "ask")
     }
     auto_allow = [
-        rule for scope in ("user", "local") for rule in _string_entries(settings.get(scope), "autoMode", "allow")
+        rule for scope in AUTO_MODE_SCOPES for rule in _string_entries(settings.get(scope), "autoMode", "allow")
     ]
 
     missing: list[dict[str, str]] = []
@@ -1015,8 +1017,7 @@ def auto_mode_report(
         isinstance(value, dict)
         and isinstance(value.get("autoMode"), dict)
         and isinstance(value["autoMode"].get("allow"), list)
-        for scope, value in settings.items()
-        if scope != "project"
+        for value in (settings.get(scope) for scope in AUTO_MODE_SCOPES)
     )
     defaults = "not set" if not any_auto_allow else ("kept" if "$defaults" in auto_allow else "replaced")
 
