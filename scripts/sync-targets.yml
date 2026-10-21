@@ -273,6 +273,11 @@ harnesses:
         destination: .claude/skills/feature-dev/SKILL.md
         substitutions: []
 
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .claude/skills/handoff/SKILL.md
+        destination: .claude/skills/handoff/SKILL.md
+        substitutions: []
+
       # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
       # model-invoked: its whole value is firing on "this is broken" before the
       # session has already guessed at a cause.
@@ -985,6 +990,11 @@ harnesses:
         destination: .codex/skills/feature-dev/SKILL.md
         substitutions: []
 
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .codex/skills/handoff/SKILL.md
+        destination: .codex/skills/handoff/SKILL.md
+        substitutions: []
+
       # diagnosing-bugs — debugging discipline gated on a tight, deterministic
       # feedback loop that goes red on the user's exact symptom before any
       # hypothesis is entertained.
@@ -1505,6 +1515,11 @@ harnesses:
 
       - source: .agents/skills/feature-dev/SKILL.md
         destination: .agents/skills/feature-dev/SKILL.md
+        substitutions: []
+
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .agents/skills/handoff/SKILL.md
+        destination: .agents/skills/handoff/SKILL.md
         substitutions: []
 
       - source: .agents/skills/diagnosing-bugs/SKILL.md

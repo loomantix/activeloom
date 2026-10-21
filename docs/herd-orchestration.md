@@ -23,6 +23,7 @@ You need:
 - **ActiveLoom installed in the repository** with the harnesses you use, plus the **Codex harness** even if you never drive from Codex: the review run controller lives at `.codex/skills/critique/scripts/local-review-handoff.py`, the path the review workflow already names. See [Getting started](getting-started.md).
 - **The review profile** set up (`review-setup`). The herd skills take every model, effort and engine order from it.
 - **An authenticated `gh`**, plus `git`, `jq` and Python 3.
+- If you run Claude Code in **auto mode**, or start herd panes with `--permission-mode auto`: a few entries in your Claude settings. The skills check for them before the first launch and draft them for you; see [Claude settings for auto mode](#claude-settings-for-auto-mode).
 - For `horch` to merge anything: the `ship-staging` skill installed (today it ships in the Codex and Gemini/Agy roots; a Claude-driven `horch` reads the Codex copy) and a `ship` section in the repository's config. Without both, `horch` stops at "ready to ship" and merges nothing.
 
 Check what is installed:
@@ -70,13 +71,38 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
 | `engines.<e>.launch_args`         | `[]`    | Added to every launch of that engine.                                                                                                                                                         |
 | `engines.<e>.permission_off_args` | `[]`    | Added to sessions that edit (review passes, builds, fixes); left out of read-only sessions such as the promotion risk review. Use the flag your CLI documents; the values above are examples. |
 
-Permission-off flags belong here, not in a shell alias. The skills cannot see an alias, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver has to answer them. That is slow, and it can fail: the driver's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through.
+Permission-off flags belong here, not in a shell alias. The skills can see an alias but not what a shell function adds, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver has to answer them. That is slow, and it can fail: the driver's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through.
 
 Before its first launch, each herd skill runs a permissions preflight (`herd-config.py permissions`). For every engine the run will start in a session that edits, it tells you whether those panes will stop at prompts and offers settings to add here, narrowest first: Claude `--permission-mode auto` or Codex `--approve-for-me`, which end the prompts but keep a check, then the full bypass. It writes one only if you choose it. When flags are set, it names what each one turns off, such as approval prompts or the sandbox, and warns about any such flag in `launch_args`, where it reaches read-only sessions too. It makes no offer for an engine whose flags it cannot classify, since an added flag could repeat one of them. Read [Running unattended safely](#running-unattended-safely) before choosing.
 
-The preflight reads this file only. Settings in an engine's own config, such as `approval_policy` or `sandbox_mode` in `~/.codex/config.toml` or `permissions.defaultMode` in Claude settings, apply to herd panes too and do not show in its report. Writing this file only on your choice is a rule the skills follow; no code enforces it.
+The preflight reads this file and, for aliases, your shell. Settings in an engine's own config, such as `approval_policy` or `sandbox_mode` in `~/.codex/config.toml` or `permissions.defaultMode` in Claude settings, apply to herd panes too and do not show in its report; Claude settings are checked separately when auto mode is in use (below). Writing this file only on your choice is a rule the skills follow; no code enforces it.
+
+The preflight also runs `type` for each engine's CLI in your interactive shell. An alias that adds a flag the herd also passes blocks that engine, and an alias that turns a check off is reported, since it reaches read-only sessions too.
 
 Models and efforts do not go here. They stay in the review profile, which `review-setup` manages.
+
+### Claude settings for auto mode
+
+Claude Code's auto mode puts a classifier in front of every action. Out of the box it refuses two things the herd does all the time: starting a Codex or Agy session with the permission-off flags from `herd.json` (it reads as creating an unsafe agent), and reading or answering a pane's startup dialog (it reads as bypassing auto mode). The chain then stops partway through a run.
+
+Before the first launch, each herd skill runs `herd-config.py claude-settings`. It counts auto mode as in use when the driving session runs in it, when `herd.json` starts Claude panes with `--permission-mode auto` (those panes drive sessions of their own), or when your settings set `permissions.defaultMode` to `auto`. It then reads your user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`) and the checkout's `.claude/settings.json` and `.claude/settings.local.json`. `autoMode` counts only from user and local settings, because Claude Code ignores it in shared project settings. The entries it needs:
+
+| Setting             | Entry                                                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `permissions.allow` | `Bash(herdr agent read:*)`                                                                                                                                                                                      |
+| `autoMode.allow`    | A sentence saying that, while a herd skill runs, starting sessions with `herdr agent start` and the permission-off flags in `herd.json` (in either list) is expected, naming each flag. Only when you set some. |
+| `autoMode.allow`    | A sentence saying that reading a pane the session started and answering its startup dialog with `herdr agent send-keys` is expected. It excludes approving another session's permission prompts.                |
+
+A broader allow rule you already have, such as `Bash(herdr:*)`, counts. Launches are deliberately not pre-allowed: a `Bash(herdr agent start:*)` rule would approve any command line after `--`, in every session, without the classifier, so the launch sentence leaves each launch to the classifier instead. A deny or ask rule on a `herdr agent` command the herd runs also blocks the run; a deny rule blocks it in every permission mode, so the check reports one even when auto mode is off. A rule that matches only some invocations, such as `Bash(herdr agent start * --yolo*)`, is listed separately as one that may block the run. Those rules are yours to change, and the draft never removes them. When something is missing, the skill stops before launching anything and shows you what is missing and why. It writes a draft of your user settings file with only those entries added, and gives you one command that backs up your settings file, validates the draft with `jq -e`, then copies it into place. Read the draft, run the command yourself, and rerun the skill. The skills never edit your Claude settings. A new `autoMode.allow` list starts with `"$defaults"` so Claude's built-in rules stay on; if your list already leaves `$defaults` out, the draft keeps it that way. The settings apply without a restart.
+
+The launch sentence names your current permission-off flags, so set up `herd.json` first. If you change those flags later, the check fails again and drafts a new sentence.
+
+Run it yourself at any time:
+
+```bash
+python3 -I .codex/skills/hreview/scripts/herd-config.py claude-settings \
+  --engine claude --engine codex --engine gemini --session-mode auto --project-dir .
+```
 
 ### Per-repository settings: `.activeloom-herd.json`
 
@@ -392,7 +418,9 @@ Each engine launches with its model and effort from your review profile and its 
 
 **Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts only the primary checkout and worktrees it created, and dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
 
-**The Codex pane exits immediately.** Almost always a flag passed twice: a shell alias plus `permission_off_args`, or the same flag in both lists. Run `type codex`; remove the alias and keep the flag in `herd.json`.
+**The Codex pane exits immediately.** Almost always a flag passed twice: a shell alias plus `permission_off_args`, or the same flag in both lists. The permissions preflight reports the alias; `type codex` shows it too. Remove the flag from the alias and keep it in `herd.json`.
+
+**Auto mode refuses a launch or a pane read.** The Claude settings entries are missing or stale. Rerun the skill; its auto-mode check drafts what is missing (see [Claude settings for auto mode](#claude-settings-for-auto-mode)). If a refusal names a compound command, the driver wrapped a herdr command in others; each herdr command should run on its own.
 
 **A chain blocks at an approval prompt in an engine pane.** The driver tried to answer the prompt and its own harness refused. Add one of that engine's permission settings to `herd.json` (the permissions preflight offers them, narrowest first), or answer the prompt in the pane yourself and tell the driver to continue.
 
