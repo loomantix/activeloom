@@ -899,6 +899,7 @@ def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]
         {
             "setting": "autoMode.allow",
             "entry": DIALOG_RULE,
+            "command": "herdr agent send-keys",
             "names": ["herdr agent send-keys"],
             "why": "answering a startup dialog in a pane the run started",
         },
@@ -979,7 +980,10 @@ def auto_mode_report(
     reasons = _auto_mode_reasons(session_mode, loaded, engines, settings)
 
     allow = [rule for value in settings.values() for rule in _string_entries(value, "permissions", "allow")]
-    deny = [rule for value in settings.values() for rule in _string_entries(value, "permissions", "deny")]
+    restrictions = {
+        kind: [rule for value in settings.values() for rule in _string_entries(value, "permissions", kind)]
+        for kind in ("deny", "ask")
+    }
     auto_allow = [
         rule for scope in ("user", "local") for rule in _string_entries(settings.get(scope), "autoMode", "allow")
     ]
@@ -988,17 +992,18 @@ def auto_mode_report(
     conflicts: list[dict[str, str]] = []
     for item in _required(loaded, engines):
         shown = {key: item[key] for key in ("setting", "entry", "why")}
-        if item["setting"] == "permissions.allow":
-            denied = [rule for rule in deny if rule_covers(rule, item["command"])]
-            if denied:
+        if "command" in item:
+            for kind, rules in restrictions.items():
                 conflicts.extend(
                     {
-                        "setting": "permissions.deny",
+                        "setting": f"permissions.{kind}",
                         "entry": rule,
                         "blocks": item["command"],
                     }
-                    for rule in denied
+                    for rule in rules
+                    if rule_covers(rule, item["command"])
                 )
+        if item["setting"] == "permissions.allow":
             if not any(rule_covers(rule, item["command"]) for rule in allow):
                 missing.append(shown)
         elif not any(all(_names(rule, name) for name in item["names"]) for rule in auto_allow):

@@ -710,6 +710,28 @@ def test_settings_with_every_entry_are_ready(
     assert report["defaults"] == "kept"
 
 
+@pytest.mark.parametrize("kind", ["deny", "ask"])
+@pytest.mark.parametrize("command", ["start", "read", "send-keys"])
+def test_restrictive_rules_block_complete_settings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    command: str,
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    rule = f"Bash(herdr agent {command}:*)"
+    settings["permissions"][kind] = [rule]
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert report["ready"] is False
+    assert report["missing"] == []
+    assert report["draft"] is None
+    assert report["conflicts"] == [
+        {"setting": f"permissions.{kind}", "entry": rule, "blocks": f"herdr agent {command}"}
+    ]
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == settings
+
+
 def test_missing_entries_block_and_get_a_draft(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
