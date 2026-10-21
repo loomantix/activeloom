@@ -364,18 +364,21 @@ function contentSkeleton(
   if (name.endsWith('.json')) return jsonSkeleton(name, content);
   // JSONC needs a structural parser before it can safely bypass review.
   if (name.endsWith('.jsonc')) return null;
-  // Heredocs can contain instruction-shaped data; a line scanner cannot
-  // establish Docker instruction boundaries in their presence.
+  // Multiline bodies can contain instruction-shaped data. Unsupported syntax
+  // must not let the line scanner mistake that data for dependency declarations.
   if (
     (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) &&
-    content.includes('<<')
+    (content.includes('<<') || /[\\`]\s*$/m.test(content))
   )
+    return null;
+  if ((name.endsWith('.toml') || name === 'pipfile') && /'''|"""/.test(content))
     return null;
   let section = '';
   let yamlSection = '';
   const yaml = /\.ya?ml$/.test(name);
   let scalarIndent: number | undefined;
-  return content
+  let unsupportedQuotes = false;
+  const skeleton = content
     .split('\n')
     .map((raw) => {
       const line = raw.trim();
@@ -384,6 +387,12 @@ function contentSkeleton(
         if (scalarIndent !== undefined) {
           if (!line || indent > scalarIndent) return raw;
           scalarIndent = undefined;
+        }
+        // Reject quotes that do not close on this physical line. Balanced
+        // single-line strings remain supported; block scalar bodies stay literal.
+        if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) {
+          unsupportedQuotes = true;
+          return raw;
         }
         if (
           /(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)
@@ -464,6 +473,7 @@ function contentSkeleton(
       return raw;
     })
     .join('\n');
+  return unsupportedQuotes ? null : skeleton;
 }
 
 /**

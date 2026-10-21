@@ -11,6 +11,27 @@ import {
 } from '../index.js';
 
 const cases: [string, string, string, string, boolean][] = [
+  ...['\\', '`'].map((escape): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    `# escape=${escape}\nFROM node:22\nRUN printf "%s" ${escape}\nFROM example:1\n`,
+    'FROM node:22\nRUN printf "%s" ' + escape + '\nFROM example:1',
+    'FROM node:23\nRUN printf "%s" ' + escape + '\nFROM example:2',
+    false,
+  ]),
+  ...['"', "'"].map((quote): [string, string, string, string, boolean] => [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: ${quote}echo\n          image: node:22\n          ${quote}\n`,
+    `@v4\n      - run: ${quote}echo\n          image: node:22`,
+    `@v5\n      - run: ${quote}echo\n          image: node:23`,
+    false,
+  ]),
+  ...["'''", '"""'].map((quote): [string, string, string, string, boolean] => [
+    'pyproject.toml',
+    `[tool.example]\nscript = ${quote}\n[tool.poetry.dependencies]\nhttpx = '0.27.0'\n${quote}\n`,
+    '0.27.0',
+    '0.28.0',
+    false,
+  ]),
   [
     '.github/workflows/ci.yml',
     'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n          cat > config.yml <<EOF\n          image: node:22\n          EOF\n',
