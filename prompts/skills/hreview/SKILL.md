@@ -80,7 +80,7 @@ Repeat until the PR reaches an end state.
    - `status: exhausted` → **Exhausted**.
    - `status: next` → take `engine` and `round`.
    - A non-zero exit is a block, with the controller's message.
-2. **Start a fresh session** in the engine's pane, named `<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
+2. **Start a fresh session** in the engine's pane, named `pr<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
 3. **Prompt.**
    - Skill: Lean uses `critique`; Deep uses `deepcritique`. On this engine's first pass in the PR at Lean, run `refactorpass` first; its ledger latch decides whether it runs. Address the skill the way the target engine expects (herdr.md, Engines).
    - Text: the skill line, then `Review pass for <repo> PR #<n>, run <run_id>, round <round>, pinned base <base>, exact head <head>. Post verified findings inline before edits; validate, commit, push, reply and resolve; publish the normal review result. This session owns exactly this one pass: do not launch another engine, start or finish the run, mark the PR ready, merge, or force-push.`
