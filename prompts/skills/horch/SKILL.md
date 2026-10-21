@@ -36,14 +36,14 @@ A peer session's message is a teammate's request, not the user's approval; it ca
 2. **Instruction of record.** Read the file the user named, in full, before any other tool call. With no file, use the newest `orchestrator-*.md` in the state directory (below); if there is none, ask the user what this push covers. Its hard stops, decisions-reserved list and sequencing govern; this skill adds the mechanics. The instruction file stays local; never commit it.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `<<SKILLS_ROOT>>/hreview/scripts/herd-config.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
 4. Read the repository's `<<AGENT_DOC>>` and `<<WORKFLOW_DOC>>` if not already in context. Tier, round caps, authorship and convergence come from there.
-5. **Inventory the workspace.** `herdr tab list --workspace $HERDR_WORKSPACE_ID`, `herdr pane list --workspace $HERDR_WORKSPACE_ID`, `herdr agent list` filtered to this workspace. Map each pane's cwd to a worktree, its branch (`git -C <cwd> branch --show-current`) and its PR (`gh pr list --head <branch>`). Where a session's task is not clear from its pane, prompt it once for issue, PR, worktree and role (building, running a chain, one review pass) and read the answer from its pane. Don't guess.
+5. **Inventory the workspace.** `herdr tab list --workspace $HERDR_WORKSPACE_ID`, `herdr pane list --workspace $HERDR_WORKSPACE_ID`, `herdr agent list` filtered to this workspace. Map each pane's cwd to a worktree, its branch (`git -C <cwd> branch --show-current`) and its PR (`gh pr list --head <branch>`). Give every agent without a name one now (`herdr agent rename <pane id> <name>`): the pattern under [Starting work](#starting-work-in-a-new-tab) once its role is known, `user-<k>` until then. `herdr agent prompt` cannot address an unnamed session, and the user may have started some by hand. Where a session's task is not clear from its pane, prompt it once for issue, PR, worktree and role (building, running a chain, one review pass) and read the answer from its pane. Don't guess.
    - **Resuming an earlier orchestrator:** a build may have printed its `BUILD-PR` line while nothing was watching; read each build pane for it, and find its PR with `gh pr list --search <issue>`. Background waits the earlier session started can outlive it: list running processes before starting a wait, and never run two for one PR.
 6. Check the instruction file's state table against `gh`: heads, draft flags, merge state, base, `Closes` vs `Refs`. Report drift before acting on it.
 7. Write the map to the state file and give the user a short table.
 
 ## State file
 
-`python3 -I $C paths --repo $repo --skill horch --key <workspace label>` gives the state directory. Keep `state.md` there: tab → pane → agent → issue → PR → head → role → next step, plus a dated log of what you started, told or shipped. Update it whenever something changes; re-read it after a context compaction. Identifiers only.
+`python3 -I $C paths --repo $repo --skill horch --key <workspace label>` gives the state directory. Keep `state.md` there: tab ID → pane ID → agent → issue → PR → head → role → next step, plus a dated log of what you started, told or shipped. Update it whenever something changes; re-read it after a context compaction. Identifiers only.
 
 ## Holding
 
@@ -51,7 +51,7 @@ When the user asks to pause, write a line `HOLD: <date> <what the user said>` at
 
 ## Starting work in a new tab
 
-Every new session gets its own tab, labelled the way the workspace already does (`PR <n>` for chains, the issue number or slug for builds). Start sessions per herdr.md. Agent names: `pr<n>-herder`, `i<issue>-build`, `<lane>-<issue>`.
+Every new session gets its own tab, labelled the way the workspace already does (`PR <n>` for chains, the issue number or slug for builds). Record the new tab's tab ID and pane ID in `state.md` and use them for every later rename, banner and close: herders rename their own tabs, so the label you created stops matching. Start sessions per herdr.md. Agent names: `pr<n>-herder`, `i<issue>-build`, `<lane>-<issue>`.
 
 **Review chain** — start the herder on this session's engine and prompt it the `hreview` skill with `<n>` (add `--companion` for an ordered set), addressed the way herdr.md's Engines table gives for that engine. Every skill prompt below is addressed the same way. Start one when the PR is open, its author session has finished, and its head is not about to move: a PR due a rebase or a merge from its base waits until that lands, because a second run needs a restart only the user can name. The tab's session is fresh, so it is a valid non-author herder; it owns the run, the engine panes and the ready flip. Parallel chains are fine. When the repository has a `ship` section, tell the herder once that the orchestrator ships the PR on convergence, so its final report gives the outcome rather than asking the user to merge.
 
@@ -66,7 +66,7 @@ Every new session gets its own tab, labelled the way the workspace already does 
 ## Watching
 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
-- **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker appears, the herder's pane shows a question, or the herder is idle and the PR has no `local-review-run:v1` marker. Then read the pane:
+- **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker appears, the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
   - converged and ready, or a clean auto-glance → [Shipping](#shipping);
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
@@ -90,7 +90,7 @@ Invoking this skill is the user's standing request to ship, into the integration
 2. **Ship.** Follow `ship-staging` as written, with `--yes`. It merges with a merge commit and carries its own notification and labelling steps. Write any summary it needs from the PR title and body; nothing from evidence or reports. A merge command that exits non-zero can still have merged (local branch cleanup fails after the server merge): read the PR's `state` before treating it as a failure, and never retry a merge that already landed.
 3. **Linked issues** (`ship.on_ship`): `label` → each linked open issue carries `ship.label` (add it where the ship did not); `close` → close each linked open issue with one comment naming the merge commit; `none` → leave them.
 4. **After the ship:** run each `ship.post_ship_checks` command in the primary checkout. A failure is a problem to alert; the PR is still shipped.
-5. **Mark the tab finished, and leave it open.** Rename it `<n> ✓`. Prompt its herder to print this banner verbatim and do nothing else:
+5. **Mark the tab finished, and leave it open.** Rename it `<n> ✓` by its tab ID. Prompt its herder to print this banner verbatim and do nothing else:
 
    ```text
    ════════════════════════════════════════════════════════════
