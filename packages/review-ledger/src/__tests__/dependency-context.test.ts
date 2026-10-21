@@ -407,6 +407,35 @@ const cases: [string, string, string, string, boolean][] = [
     '  db:\n    image: node:23',
     false,
   ],
+  // Blank and comment-only lines keep the YAML parent path.
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: actions/setup-node@v4\n',
+    'setup-node@v4',
+    'setup-node@v5',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    "jobs:\n  build:\n    steps:\n# don't cache\n      - uses: actions/setup-node@v4\n",
+    'setup-node@v4',
+    'setup-node@v5',
+    true,
+  ],
+  [
+    'docker-compose.yml',
+    'services:\n  app:\n    image: node:22\n\n  db:\n    image: postgres:17\n',
+    'postgres:17',
+    'postgres:18',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    env:\n\n      image: node:22\n    steps:\n      - run: echo "$image"\n',
+    'node:22',
+    'node:23',
+    false,
+  ],
 ];
 
 describe('dependency pin context', () => {

@@ -17608,6 +17608,7 @@ function contentSkeleton(path, name, content) {
         if (!line || indent > scalarIndent) return raw;
         scalarIndent = void 0;
       }
+      if (!line || line.startsWith("#")) return raw;
       if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ""))) {
         unsupportedQuotes = true;
         return raw;

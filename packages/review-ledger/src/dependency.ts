@@ -436,6 +436,9 @@ function contentSkeleton(
           if (!line || indent > scalarIndent) return raw;
           scalarIndent = undefined;
         }
+        // Blank and comment-only lines carry no structure; they must not pop
+        // the parent path of the entries that follow them.
+        if (!line || line.startsWith('#')) return raw;
         // Reject quotes that do not close on this physical line. Balanced
         // single-line strings remain supported; block scalar bodies stay literal.
         if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) {
