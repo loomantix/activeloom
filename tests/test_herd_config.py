@@ -738,7 +738,7 @@ def test_missing_entries_block_and_get_a_draft(
 def test_copy_command_backs_up_validates_and_copies(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = {"permissions": {"allow": []}}
+    original: dict[str, Any] = {"permissions": {"allow": []}}
     report = claude_settings(tmp_path, capsys, monkeypatch, original, "--session-mode", "auto")
     target = tmp_path / "claude/settings.json"
     command = report["draft"]["copy_command"]
@@ -776,13 +776,15 @@ def test_not_in_auto_mode_is_ready_but_still_lists_entries(
 
 
 @pytest.mark.parametrize("args", [["--permission-mode", "auto"], ["--permission-mode=auto"]])
+@pytest.mark.parametrize("location", ["launch_args", "permission_off_args"])
 def test_claude_panes_in_auto_mode_need_the_entries(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, args: list[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, args: list[str], location: str
 ) -> None:
-    engines = {**LAUNCH_FLAGS, "claude": {"permission_off_args": args}}
+    engines = {**LAUNCH_FLAGS, "claude": {location: args}}
     report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines=engines)
     assert report["auto_mode"]["because"] == ["herd.json starts Claude sessions in auto mode"]
     assert report["ready"] is False
+    assert report["draft"] is not None
 
 
 def test_default_mode_in_settings_counts_as_auto_mode(

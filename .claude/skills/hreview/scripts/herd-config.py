@@ -931,7 +931,8 @@ def _auto_mode_reasons(
     if session_mode == "auto":
         reasons.append("this session runs in auto mode")
     if "claude" in engines:
-        args = loaded["config"]["engines"]["claude"]["permission_off_args"]
+        entry = loaded["config"]["engines"]["claude"]
+        args = entry["launch_args"] + entry["permission_off_args"]
         flag, mode = CLAUDE_AUTO_MODE
         pairs = zip(args, [*args[1:], None])
         if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
