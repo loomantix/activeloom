@@ -868,9 +868,7 @@ def rule_covers(rule: str, command: str) -> bool:
 
 
 def _names(text: str, term: str) -> bool:
-    """Whether a prose rule names `term`; a flag must appear as a whole word."""
-    if not term.startswith("-"):
-        return term in text
+    """Whether a prose rule names `term`; a flag or value must appear as a whole word."""
     return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text) is not None
 
 
@@ -911,7 +909,7 @@ def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]
         if args:
             flags[engine] = args
     if flags:
-        named = [arg for args in flags.values() for arg in args if arg.startswith("-")]
+        named = [arg for args in flags.values() for arg in args]
         required.append(
             {
                 "setting": "autoMode.allow",

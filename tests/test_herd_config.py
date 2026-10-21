@@ -728,11 +728,11 @@ def test_missing_entries_block_and_get_a_draft(
     assert draft["model"] == "opus"
     assert draft["permissions"]["allow"][0] == "Bash(git status:*)"
     assert draft["autoMode"]["allow"][0] == "$defaults"
+    # The user's own settings are never written.
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == existing
     # The draft is complete: checking it as the user's settings finds nothing missing.
     rerun = claude_settings(tmp_path, capsys, monkeypatch, draft, "--session-mode", "auto")
     assert rerun["ready"] is True
-    # The user's own settings are never written.
-    assert json.loads((tmp_path / "claude/settings.json").read_text()) == draft
 
 
 def test_copy_command_backs_up_validates_and_copies(
@@ -802,6 +802,24 @@ def test_launch_rule_must_name_every_configured_flag(
     report = claude_settings(tmp_path, capsys, monkeypatch, stale, "--session-mode", "auto")
     assert [item["setting"] for item in report["missing"]] == ["autoMode.allow"]
     assert "--dangerously-skip-permissions for agy" in report["missing"][0]["entry"]
+
+    stale_value = json.loads(json.dumps(COMPLETE))
+    stale_value["autoMode"]["allow"][1] = (
+        "Starting claude sessions with `herdr agent start` using --permission-mode auto is expected."
+    )
+    value_report = claude_settings(
+        tmp_path,
+        capsys,
+        monkeypatch,
+        stale_value,
+        "--engine",
+        "claude",
+        "--session-mode",
+        "auto",
+        engines={"claude": {"permission_off_args": ["--permission-mode", "bypassPermissions"]}},
+    )
+    assert [item["setting"] for item in value_report["missing"]] == ["autoMode.allow"]
+    assert "--permission-mode bypassPermissions for claude" in value_report["missing"][0]["entry"]
 
 
 def test_no_launch_rule_without_permission_flags(
