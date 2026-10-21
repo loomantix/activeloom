@@ -17367,6 +17367,30 @@ var VERSION_VALUE = new RegExp(
 );
 var PROTOCOL_VALUE = /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
 var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
+function maskVersionValue(value) {
+  const alias = /^((?:npm|jsr):@?[\w./-]+@)/.exec(value);
+  if (alias) return `${alias[1]}<pin>`;
+  if (value.startsWith("workspace:")) return "workspace:<pin>";
+  if (value.startsWith("catalog:")) return value;
+  const named = /^(@?[\w./-]+@)v?\d/.exec(value);
+  if (named) return `${named[1]}<pin>`;
+  return "<pin>";
+}
+function maskQuotedVersion(raw) {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  return quoted ? `${quoted[1]}${maskVersionValue(quoted[2])}${quoted[1]}` : maskVersionValue(raw);
+}
+function maskImageReference(raw) {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  const reference = (quoted ? quoted[2] : raw).replace(
+    /@sha256:[0-9a-f]{64}$/,
+    ""
+  );
+  const tag = reference.lastIndexOf(":");
+  const repository = tag > reference.lastIndexOf("/") ? reference.slice(0, tag) : reference;
+  const quote = quoted?.[1] ?? "";
+  return `${quote}${repository}@<pin>${quote}`;
+}
 var STRUCTURE_ONLY = /^[[\]{}(),]*$/;
 function requiresQuotedManifestValue(name) {
   return name.endsWith(".json") || name.endsWith(".jsonc") || name.endsWith(".toml") || name === "pipfile";
@@ -17547,12 +17571,12 @@ function jsonSkeleton(name, content) {
         continue;
       for (const [key, pin] of Object.entries(entries)) {
         if (typeof pin === "string" && isVersionValue(JSON.stringify(pin), true)) {
-          entries[key] = "<pin>";
+          entries[key] = maskVersionValue(pin);
         }
       }
     }
     if (name === "package.json" && typeof document.packageManager === "string" && AT_VERSION_VALUE.test(document.packageManager)) {
-      document.packageManager = "<pin>";
+      document.packageManager = maskVersionValue(document.packageManager);
     }
     return JSON.stringify(document);
   } catch {
@@ -17570,6 +17594,7 @@ function contentSkeleton(path, name, content) {
     return null;
   let section = "";
   let yamlSection = "";
+  let mavenArtifact = false;
   const yaml = /\.ya?ml$/.test(name);
   let scalarIndent;
   let unsupportedQuotes = false;
@@ -17601,6 +17626,13 @@ function contentSkeleton(path, name, content) {
       }
     }
     if (MANIFEST_BASENAMES.has(name)) {
+      if (name === "pom.xml") {
+        if (/^<(dependency|plugin|extension)>$/.test(line))
+          mavenArtifact = true;
+        else if (/^<\/(dependency|plugin|extension)>$/.test(line))
+          mavenArtifact = false;
+        if (!mavenArtifact) return raw;
+      }
       if (name.endsWith(".toml") || name === "pipfile" || name === "setup.cfg") {
         const header = /^\[([^\]]+)\]$/.exec(line);
         if (line.startsWith("[")) section = header?.[1] ?? "";
@@ -17630,7 +17662,10 @@ function contentSkeleton(path, name, content) {
         return raw.replace(/(^|\s)(?:go)?v?\d[\w.+-]*(?=\s|$)/, "$1<pin>");
       if (name === "pom.xml")
         return raw.replace(/(<version>).*?(<\/version>)/, "$1<pin>$2");
-      return raw.replace(/([:=]\s*)(.+?)(,?\s*)$/, "$1<pin>$3");
+      return raw.replace(
+        /([:=]\s*)(.+?)(,?\s*)$/,
+        (_, prefix2, value, suffix) => `${prefix2}${maskQuotedVersion(value)}${suffix}`
+      );
     }
     if (REQUIREMENTS_FILE.test(name)) {
       if (isRequirementPinLine(line))
@@ -17640,7 +17675,10 @@ function contentSkeleton(path, name, content) {
       return raw;
     }
     if (isDockerfileFromLine(line)) {
-      return raw.replace(/(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i, "$1<pin>");
+      return raw.replace(
+        /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+        (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+      );
     }
     const workflow = isWorkflowPath(path, name);
     const keys = yamlPath.join("/");
@@ -17651,7 +17689,10 @@ function contentSkeleton(path, name, content) {
       keys
     ) : /^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$/.test(name) && /^services\/[^/]+\/image$/.test(keys);
     if (imageContext && isImageLine(line))
-      return raw.replace(/(image:\s*)(\S+)/, "$1<pin>");
+      return raw.replace(
+        /(image:\s*)(\S+)/,
+        (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+      );
     return raw;
   }).join("\n");
   return unsupportedQuotes ? null : skeleton;

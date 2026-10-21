@@ -793,7 +793,10 @@ dependency route in [Human glance](#human-glance) and never reaches tier
 resolution. In a mixed range the dependency files do not set the tier either:
 a package that handles authentication, cryptography, validation, networking, or
 concurrency does not trip trigger 1 or 4 by being bumped. The tier comes from
-the code changes alone, and the bump gets the dependency analysis.
+the code changes alone, and the bump gets the dependency analysis. The one
+exception is the [dependency review override](#human-glance): under it the
+range takes the mixed route and the dependency files are reviewed, and can set
+the tier, like any other file.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI

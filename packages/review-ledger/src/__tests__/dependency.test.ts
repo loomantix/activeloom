@@ -102,7 +102,10 @@ describe('isDependencyPinChange', () => {
     ['k8s/api/deployment.yaml', ['        replicas: 3']],
     ['src/config.yaml', ['  tag: "1.4.2"']],
     ['src/index.ts', ['import x from "y";']],
-  ])('does not recognise %s with %j', (path, lines) => {
+    // Without before/after content every non-lockfile fails closed here; the
+    // named rejection rules are exercised with content in
+    // dependency-context.test.ts.
+  ])('does not recognise %s with %j from lines alone', (path, lines) => {
     expect(isDependencyPinChange(pin(path, lines))).toBe(false);
   });
 

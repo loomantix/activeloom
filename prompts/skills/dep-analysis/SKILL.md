@@ -26,14 +26,16 @@ The classifier decides the route. When it reports a file as a pin change that is
 
 ### 1. Pin the range
 
-Read the PR (`gh pr view <pr> --json number,state,baseRefName,headRefName,headRefOid,isDraft`) and use full SHAs. Fetch the base and PR head (`git fetch origin <base-branch> <head-branch>`), check out or verify the worktree is at `<head>` (`git rev-parse HEAD` must equal `<head>`), then:
+Read the PR (`gh pr view <pr> --json number,state,baseRefName,headRefName,headRefOid,isDraft,labels`) and use full SHAs. Fetch the base and PR head (`git fetch origin <base-branch> <head-branch>`), check out or verify the worktree is at `<head>` (`git rev-parse HEAD` must equal `<head>`), then:
 
 ```bash
 base_sha=$(git merge-base "origin/<base-branch>" <head>)
 node $L classify-changeset --base "$base_sha" --head <head>
 ```
 
-Done when the scope above is settled, local `HEAD` equals `<head>`, and the list of files under analysis is fixed.
+The dependency review override applies when the PR carries the `review: full` label or the invocation says a human asked for this dependency update to be reviewed anyway. Under it, add `--force-review` to that classification: the result reports `"dependencyReviewForced": true` and `"dependencyUpdate": false`, and the range is treated as mixed from here on.
+
+Done when the scope above is settled, the override is known, local `HEAD` equals `<head>`, and the list of files under analysis is fixed.
 
 ### 2. What could break
 
@@ -82,7 +84,7 @@ Done when the comment is posted and its marker names the PR's current head (re-r
 
 ### 6. Ready
 
-For a dependency update (not a mixed range, and not one the review override put on the chain) with verdict `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` immediately before readiness and require it to equal the analyzed `<head>`. If it moved during the wait, restart at step 1. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range, or under the review override, the review chain owns readiness. Any other verdict leaves the PR as it is.
+When step 1's classification reported `"dependencyUpdate": true` (not a mixed range, and not forced by the review override) and the verdict is `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` and `labels` immediately before readiness: require the head to equal the analyzed `<head>` and the `review: full` label still to be absent. If the head moved during the wait, restart at step 1; if the label appeared, the review chain owns readiness. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range, or under the review override, the review chain owns readiness. Any other verdict leaves the PR as it is.
 
 Report under 150 words: verdict, head, dependencies analysed, test commands and results, signals or gaps, and whether the PR was marked ready.
 

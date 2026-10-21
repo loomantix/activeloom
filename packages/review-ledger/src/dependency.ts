@@ -85,6 +85,42 @@ const PROTOCOL_VALUE =
 const AT_VERSION_VALUE =
   /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
 
+/**
+ * Mask only the version in a manifest value, keeping what names the artifact:
+ * an alias target, a workspace protocol, or a package-manager name.
+ */
+function maskVersionValue(value: string): string {
+  const alias = /^((?:npm|jsr):@?[\w./-]+@)/.exec(value);
+  if (alias) return `${alias[1]}<pin>`;
+  if (value.startsWith('workspace:')) return 'workspace:<pin>';
+  if (value.startsWith('catalog:')) return value;
+  const named = /^(@?[\w./-]+@)v?\d/.exec(value);
+  if (named) return `${named[1]}<pin>`;
+  return '<pin>';
+}
+
+/** Mask a quoted or bare manifest value, keeping its quotes. */
+function maskQuotedVersion(raw: string): string {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  return quoted
+    ? `${quoted[1]}${maskVersionValue(quoted[2]!)}${quoted[1]}`
+    : maskVersionValue(raw);
+}
+
+/** Mask an image's tag or digest, keeping its registry and repository. */
+function maskImageReference(raw: string): string {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  const reference = (quoted ? quoted[2]! : raw).replace(
+    /@sha256:[0-9a-f]{64}$/,
+    '',
+  );
+  const tag = reference.lastIndexOf(':');
+  const repository =
+    tag > reference.lastIndexOf('/') ? reference.slice(0, tag) : reference;
+  const quote = quoted?.[1] ?? '';
+  return `${quote}${repository}@<pin>${quote}`;
+}
+
 /** A line that carries only structure: braces, brackets, commas. */
 const STRUCTURE_ONLY = /^[[\]{}(),]*$/;
 
@@ -338,7 +374,7 @@ function jsonSkeleton(name: string, content: string): string | null {
           typeof pin === 'string' &&
           isVersionValue(JSON.stringify(pin), true)
         ) {
-          (entries as Record<string, unknown>)[key] = '<pin>';
+          (entries as Record<string, unknown>)[key] = maskVersionValue(pin);
         }
       }
     }
@@ -347,7 +383,7 @@ function jsonSkeleton(name: string, content: string): string | null {
       typeof document.packageManager === 'string' &&
       AT_VERSION_VALUE.test(document.packageManager)
     ) {
-      document.packageManager = '<pin>';
+      document.packageManager = maskVersionValue(document.packageManager);
     }
     return JSON.stringify(document);
   } catch {
@@ -382,6 +418,9 @@ function contentSkeleton(
     return null;
   let section = '';
   let yamlSection = '';
+  // Maven versions are pins only inside an artifact declaration; the
+  // project's own and its parent's `<version>` are not.
+  let mavenArtifact = false;
   const yaml = /\.ya?ml$/.test(name);
   let scalarIndent: number | undefined;
   let unsupportedQuotes = false;
@@ -422,6 +461,13 @@ function contentSkeleton(
         }
       }
       if (MANIFEST_BASENAMES.has(name)) {
+        if (name === 'pom.xml') {
+          if (/^<(dependency|plugin|extension)>$/.test(line))
+            mavenArtifact = true;
+          else if (/^<\/(dependency|plugin|extension)>$/.test(line))
+            mavenArtifact = false;
+          if (!mavenArtifact) return raw;
+        }
         if (
           name.endsWith('.toml') ||
           name === 'pipfile' ||
@@ -466,7 +512,11 @@ function contentSkeleton(
           return raw.replace(/(^|\s)(?:go)?v?\d[\w.+-]*(?=\s|$)/, '$1<pin>');
         if (name === 'pom.xml')
           return raw.replace(/(<version>).*?(<\/version>)/, '$1<pin>$2');
-        return raw.replace(/([:=]\s*)(.+?)(,?\s*)$/, '$1<pin>$3');
+        return raw.replace(
+          /([:=]\s*)(.+?)(,?\s*)$/,
+          (_, prefix: string, value: string, suffix: string) =>
+            `${prefix}${maskQuotedVersion(value)}${suffix}`,
+        );
       }
       if (REQUIREMENTS_FILE.test(name)) {
         if (isRequirementPinLine(line))
@@ -476,7 +526,11 @@ function contentSkeleton(
         return raw;
       }
       if (isDockerfileFromLine(line)) {
-        return raw.replace(/(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i, '$1<pin>');
+        return raw.replace(
+          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+          (_, prefix: string, reference: string) =>
+            `${prefix}${maskImageReference(reference)}`,
+        );
       }
       const workflow = isWorkflowPath(path, name);
       const keys = yamlPath.join('/');
@@ -496,7 +550,11 @@ function contentSkeleton(
         : /^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$/.test(name) &&
           /^services\/[^/]+\/image$/.test(keys);
       if (imageContext && isImageLine(line))
-        return raw.replace(/(image:\s*)(\S+)/, '$1<pin>');
+        return raw.replace(
+          /(image:\s*)(\S+)/,
+          (_, prefix: string, reference: string) =>
+            `${prefix}${maskImageReference(reference)}`,
+        );
       return raw;
     })
     .join('\n');
