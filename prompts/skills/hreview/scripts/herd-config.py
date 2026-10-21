@@ -913,8 +913,8 @@ def rule_restricts(rule: str, command: str) -> bool:
     """Whether a deny or ask rule could match some invocation `command ...`.
 
     Unlike an allow rule, a restriction need not cover the whole family to
-    refuse a herd command: `Bash(herdr agent start * --yolo*)` refuses only
-    some launches, and those may be the ones the herd makes.
+    refuse a herd command: `Bash(herdr agent start * --kind codex*)` refuses
+    only some launches, and those may be the ones the herd makes.
     """
     if rule_covers(rule, command):
         return True
