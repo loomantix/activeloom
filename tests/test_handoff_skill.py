@@ -15,7 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOTS = (".claude", ".codex", ".agents")
 MARKER = "<!-- handoff:v1 from=<short-sha or \"session\"> date=<YYYY-MM-DD> -->"
-SELECTOR = 'select(.body | contains("<!-- handoff:v1"))'
+SELECTOR = 'select(.body | startswith("<!-- handoff:v1 "))'
 SECTIONS = (
     "State",
     "Decisions to make before writing code",
@@ -71,10 +71,18 @@ def test_comment_format_is_identical_across_harnesses() -> None:
             "<!-- handoff:v1 from=old -->\nStill current\n",
         ),
         ([[{"body": "No handoff"}], [{"body": "Still no handoff"}]], ""),
+        (
+            [
+                [{"body": "<!-- handoff:v1 from=current -->\nCurrent plan"}],
+                [{"body": "Discussing the old plan:\n<!-- handoff:v1 from=old -->\nOld plan"}],
+                [{"body": "<!-- handoff:v10 from=future -->\nDifferent format"}],
+            ],
+            "<!-- handoff:v1 from=current -->\nCurrent plan\n",
+        ),
     ],
 )
 def test_resume_selects_one_handoff_across_pages(
-    root: str, pages: list[list[dict[str, str]]], expected: str
+    root: str, pages: list[list[dict[str, object]]], expected: str
 ) -> None:
     command = re.search(r"```bash\n(gh api.*?)\n```", skill(root), flags=re.DOTALL)
     assert command is not None
@@ -84,6 +92,13 @@ def test_resume_selects_one_handoff_across_pages(
     assert "--paginate" in gh_args
     assert "--jq" not in gh_args
     assert jq_args[0] == "jq"
+    for page in pages:
+        for comment in page:
+            comment.update(
+                id=123,
+                html_url="https://github.com/example/repo/issues/1#issuecomment-123",
+                user={"login": "handoff-author"},
+            )
     # gh --paginate emits separate page arrays; run the documented reducer on that stream.
     result = subprocess.run(
         jq_args,
@@ -93,4 +108,9 @@ def test_resume_selects_one_handoff_across_pages(
         check=True,
         timeout=10,
     )
-    assert result.stdout.replace("null\n", "") == expected
+    selected = json.loads(result.stdout)
+    assert (selected["body"] + "\n" if selected else "") == expected
+    if selected:
+        assert selected["id"] == 123
+        assert selected["html_url"] == "https://github.com/example/repo/issues/1#issuecomment-123"
+        assert selected["user"]["login"] == "handoff-author"
