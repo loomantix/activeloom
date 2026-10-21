@@ -36,8 +36,9 @@ When this skill is invoked as part of installation or repository onboarding, inc
 6. Run `show` and present the stored values.
 
 7. Follow [Repository auto-glance](#repository-auto-glance). This is a separate repository decision, not a key in the personal profile.
+8. Follow [Herd sessions in auto mode](#herd-sessions-in-auto-mode).
 
-Setup is complete when `show` reports `"configured": true` with an empty `missing` list, the user has seen the stored values, and the auto-glance choice is recorded or explicitly deferred.
+Setup is complete when `show` reports `"configured": true` with an empty `missing` list, the user has seen the stored values, the auto-glance choice is recorded or explicitly deferred, and the auto-mode check reports `ready` or the user has deferred it.
 
 ## Repository auto-glance
 
@@ -49,6 +50,14 @@ Run this step during first-time setup, when `onboard` delegates here, or when th
 4. Ask: **"Enable auto-glance for this repository? Yes (recommended for herdr workflows with an independent local reviewer), No (keep human glance), or defer."** Show the current value if present. Recommend No or deferral when the prerequisites are missing. Wait for an explicit answer; an unanswered prompt, non-interactive setup, or installer `--yes` is not consent.
 5. Confirm the integration branch from repository guidance and existing configuration; do not assume the current feature branch or default branch is the integration branch. After Yes or No, create or update `.activeloom-herd.json` with `schema_version: 1`, the confirmed `integration_branch`, and `glance.auto` as a JSON boolean (`true` for Yes, `false` for No). Merge only those fields into the existing object, preserving all other fields, including other `glance` options. On deferral, leave the file untouched and report the effective default as `false` only when the key is absent.
 6. Run `python3 -I <<SKILLS_ROOT>>/hreview/scripts/herd-config.py validate .activeloom-herd.json` (or the located personal helper), show the diff and validation result, and leave the change for the repository's normal PR process. A working-tree validation is not activation: `herd-config.py repo` reads the remote default branch first, then the named integration branch. When those branches differ, both must carry the configuration naming the same integration branch. The choice takes effect only after the required branch copies land; setup does not merge them or start a reviewer.
+
+## Herd sessions in auto mode
+
+Run this during first-time setup, or when the user asks how to run the herd skills (`hreview`, `horch`, `hloop`, `hgrill`, `hpromote`) without approval prompts. Skip it when the user does not drive the herd skills.
+
+1. Ask whether the user runs Claude Code in auto mode, or starts herd panes with `--permission-mode auto` in `~/.config/activeloom/herd.json`. If neither, say the check runs again before every herd launch and stop here.
+2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I <<SKILLS_ROOT>>/hreview/scripts/herd-config.py claude-settings --session-mode auto --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. If the helper is missing, report the required installation and defer.
+3. Act on the report as that section says: when `ready` is false, show each missing entry and why, the draft path and the copy command, and let the user run the command. Rerun until `ready` is true or the user defers. Never edit Claude settings yourself.
 
 ## Changing a setting
 
