@@ -25,27 +25,33 @@ def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
-def run_marker(controller: ModuleType, comment_id: int = 10) -> dict[str, Any]:
+def run_marker(
+    controller: ModuleType,
+    comment_id: int = 10,
+    supersedes: int | None = None,
+    tier: str = "lean",
+) -> dict[str, Any]:
     content = "Review the scoped change."
     run_id = controller._run_digest(
-        tier="lean",
-        max_rounds=controller.TIER_CAPS["lean"],
+        tier=tier,
+        max_rounds=controller.TIER_CAPS[tier],
         base=BASE,
         start_head=HEAD,
-        supersedes=None,
+        supersedes=supersedes,
         content=content,
     )
     marker = (
-        f"<!-- local-review-run:v1 id={run_id} tier=lean "
-        f"max-rounds={controller.TIER_CAPS['lean']} base={BASE} start-head={HEAD} "
-        f"supersedes=none content-sha256={run_id} -->"
+        f"<!-- local-review-run:v1 id={run_id} tier={tier} "
+        f"max-rounds={controller.TIER_CAPS[tier]} base={BASE} start-head={HEAD} "
+        f"supersedes={'none' if supersedes is None else supersedes} "
+        f"content-sha256={run_id} -->"
     )
     return {"id": comment_id, "body": f"{marker}\n{content}", "run_id": run_id}
 
 
-def end_marker(run_id: str, outcome: str) -> dict[str, Any]:
+def end_marker(run_id: str, outcome: str, comment_id: int = 11) -> dict[str, Any]:
     return {
-        "id": 11,
+        "id": comment_id,
         "body": f"<!-- local-review-run-end:v1 id={run_id} outcome={outcome} head={HEAD} -->",
     }
 
@@ -56,12 +62,13 @@ def state(
     capsys: pytest.CaptureFixture[str],
     rows: list[dict[str, Any]],
     commits: int = 0,
+    patchless: list[str] | None = None,
 ) -> dict[str, Any]:
     monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
     monkeypatch.setattr(
         controller,
         "_scope_signals",
-        lambda *_: {"behaviour_commits": commits, "missing_patch_files": []},
+        lambda *_: {"behaviour_commits": commits, "missing_patch_files": patchless or []},
     )
 
     def no_writes(*_: Any) -> None:
@@ -118,6 +125,37 @@ def test_scope_decision_uses_the_controller_checkpoint(
     assert result["scope_decision_required"] is required
 
 
+def test_patchless_files_fire_the_scope_checkpoint(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = state(controller, monkeypatch, capsys, [], patchless=["big.bin"])
+    assert result["behaviour_commits"] == 0
+    assert result["missing_patch_files"] == 1
+    assert result["scope_decision_required"] is True
+
+
+def test_state_comes_from_the_latest_run(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = run_marker(controller)
+    first_end = end_marker(first["run_id"], "aborted")
+    second = run_marker(controller, comment_id=12, supersedes=first["id"], tier="deep")
+
+    restarted = state(controller, monkeypatch, capsys, [first, first_end, second])
+    assert restarted["state"] == "active"
+    assert restarted["run_id"] == second["run_id"]
+    assert restarted["tier"] == "deep"
+    assert restarted["outcome"] is None
+    assert restarted["restart_required"] is False
+
+    second_end = end_marker(second["run_id"], "exhausted", comment_id=13)
+    ended = state(controller, monkeypatch, capsys, [first, first_end, second, second_end])
+    assert ended["state"] == "ended"
+    assert ended["run_id"] == second["run_id"]
+    assert ended["outcome"] == "exhausted"
+    assert ended["restart_required"] is True
+
+
 @pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
 def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     def skill(name: str) -> str:
@@ -129,6 +167,7 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "start no herder" in horch
     assert "hreview <n> --restart" in horch
     assert "--scope-decision keep|split" in horch
+    assert "an earlier run's end marker does not count" in horch
     assert "A PR whose run has ended gets no herder" in skill("hloop")
 
     hreview = skill("hreview")

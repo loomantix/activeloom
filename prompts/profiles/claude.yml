@@ -153,7 +153,7 @@ skills:
   hreview:
     FM_EXTRAS: |-
       disable-model-invocation: true
-      argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion]'
+      argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--restart [--deep] [--scope-decision keep|split]]'
     DESC_TRIGGER: ''
   auto-glance:
     FM_EXTRAS: |-

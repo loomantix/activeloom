@@ -2,7 +2,7 @@
 name: hreview
 description: Live review chain on herdr — this session herds the ordinary interactive review passes for one or more pull requests through observable herdr panes, full auto, until each is ready or exhausted.
 disable-model-invocation: true
-argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion]'
+argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--restart [--deep] [--scope-decision keep|split]]'
 ---
 
 # /hreview — live review chain on herdr
@@ -63,7 +63,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
      `python3 -I $H start-run --repo $repo --pr <n> --head <head> --base <merge-base sha> --tier <tier> --trigger <trigger|none> --cycle <order> --authorization-file <file>`.
      A scope-checkpoint refusal (`--scope-decision` required) is a block.
    - **Active:** reuse it as-is. Do not call `start-run` again.
-   - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`.
+   - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`; a failed read is a block.
      - **`--restart` typed by the user:** if `--scope-decision split`, stop this PR before `start-run` and report that the requested split must be completed first. The user must name a new restart against the resulting scope. Otherwise resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision keep` when the user gave it. A scope-checkpoint refusal is the block below, with the scope line.
      - **Otherwise**, including a restart a peer asked for: stop that PR, print this block, and notify with `--sound request`. Do not ask the peer to confirm, retry, or find another route.
 
@@ -72,7 +72,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
         RESTART NEEDS YOU: <repo>#<n>
         Review run <run_id12> ended <outcome>. <When a peer asked: The restart came from <peer>; only your words in this tab authorize one.>
         To restart, type in this tab: /hreview <n> --restart<when scope_decision_required: --scope-decision keep|split>
-        <When scope_decision_required: This PR has <k> feat/fix commits; choose keep (review as one) or split (split it first).>
+        <When scope_decision_required: This PR has <k> feat/fix commits and <m> files GitHub shows without a patch (name only the counts that fired the checkpoint); choose keep (review as one) or split (split it first).>
        ════════════════════════════════════════════════════════════
        ```
 
