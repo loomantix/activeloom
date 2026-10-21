@@ -96,11 +96,3 @@ held:
       Version drift, `.claude` newest. The `.codex` and `.agents` copies use
       `REPO_SLUG` without ever assigning it, and lack the empty-`SINCE` guard
       that stops GitHub from silently returning lifetime run counts.
-
-  - skill: publish-npm-package
-    issue: 173
-    ceiling: 2
-    reason: >-
-      The `.agents` copy's frontmatter description tells the Gemini harness to
-      invoke the skill when *Codex* needs an npm release. One word, but it is
-      the auto-invocation trigger text.
