@@ -502,6 +502,13 @@ export type ChangesetClass = 'app' | 'test' | 'docsConfig' | 'generated';
 export interface ClassifyOptions {
   /** Path prefixes and exact paths treated as prompt surfaces. */
   promptSurfaces?: readonly string[] | undefined;
+  /**
+   * The review override: a human asked for review, or the PR carries the
+   * `review: full` label. `dependencyUpdate` is then false, so a dependency-only
+   * range takes the mixed-range route: the chain runs and the analysis still
+   * covers `dependencyPaths`.
+   */
+  forceReview?: boolean | undefined;
 }
 
 /** One changed file and its churn over the pinned review range. */
@@ -577,9 +584,15 @@ export interface ChangesetReport {
    * True when every review-significant file is a dependency pin change: a
    * lockfile, a manifest version line, an Actions pin, a container image tag
    * or digest, or a submodule gitlink. The range gets a dependency analysis,
-   * not a review chain. Never true together with `skip` or `smallChange`.
+   * not a review chain. Never true together with `skip` or `smallChange`, and
+   * never true under `forceReview`. Recognition is a best-effort heuristic.
    */
   dependencyUpdate: boolean;
+  /**
+   * True when `forceReview` turned what would have been a dependency update
+   * into the mixed-range route.
+   */
+  dependencyReviewForced: boolean;
   /**
    * Files that are dependency pin changes, whether or not the range is
    * dependency-only. Non-empty with `dependencyUpdate` false is a mixed range:

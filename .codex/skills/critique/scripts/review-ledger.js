@@ -18032,6 +18032,8 @@ function classifyFiles(files, options) {
     }
   }
   const skip = changeset.reviewSignificantFiles === 0;
+  const dependencyOnly = !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0;
+  const forceReview = options?.forceReview === true;
   return {
     changeset,
     classifications,
@@ -18039,7 +18041,8 @@ function classifyFiles(files, options) {
     skip,
     smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
     smallChangeLines,
-    dependencyUpdate: !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0,
+    dependencyUpdate: dependencyOnly && !forceReview,
+    dependencyReviewForced: dependencyOnly && forceReview,
     dependencyPaths
   };
 }
@@ -20011,7 +20014,10 @@ function readJsonArray(pathValue, label) {
   return parsed;
 }
 function resolveChangesetReport(args) {
-  const options = args.promptSurfaces === void 0 ? void 0 : { promptSurfaces: args.promptSurfaces };
+  const options = {
+    ...args.promptSurfaces === void 0 ? {} : { promptSurfaces: args.promptSurfaces },
+    ...args.forceReview === true ? { forceReview: true } : {}
+  };
   if (args.diffFile) {
     assertRegularFile(
       args.diffFile,
@@ -20098,6 +20104,11 @@ function parseCliArgs(argv) {
     }
     if (arg === "--dry-run") {
       args.dryRun = true;
+      i++;
+      continue;
+    }
+    if (arg === "--force-review") {
+      args.forceReview = true;
       i++;
       continue;
     }
@@ -20716,6 +20727,7 @@ function runCliCommand(argv) {
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
         dependencyUpdate: report.dependencyUpdate,
         dependencyPaths: report.dependencyPaths,
+        dependencyReviewForced: report.dependencyReviewForced,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications
       });

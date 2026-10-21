@@ -63,7 +63,7 @@ On `BUILD-PR: <pr> <sha>`:
 Read the herder's pane, then:
 
 - **converged or clean auto-glance**, or a dependency analysis at `verdict=clear` → step 5;
-- **dependency analysis at `gaps`, `broken` or `blocked`** → send the report to a fix session for `broken`; otherwise `horch`'s Problems. Do not start a review chain on the dependency update;
+- **dependency analysis at `gaps`, `broken` or `blocked`** → send the report to a fix session for `broken`; otherwise `horch`'s Problems. Do not start a review chain on the dependency update unless a human applies the `review: full` label;
 - **auto-glance in progress** → keep watching the same herder; `hreview` owns it;
 - **stopped at the glance gate** → `horch`'s human-glance alert or block handling; do not launch another auto-glance or override the gate;
 - **glance with findings** → send the findings to a fix session (the build's session if it is still open, otherwise a new one in the PR's tab), then glance again at the new head;

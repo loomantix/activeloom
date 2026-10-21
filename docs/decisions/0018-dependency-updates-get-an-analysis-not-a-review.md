@@ -20,13 +20,27 @@ for one narrow class of bump, with the evidence left to the session.
 
 - **No review chain on a dependency update.** Not Lean, not Deep, not a
   human-glance recommendation or auto-glance, on any engine and from any entry
-  point, including an explicit request to review it anyway.
+  point, unless the review override below applies.
 - **The classifier decides.** `classify-changeset` reports `dependencyUpdate`
   when every review-significant file is a dependency pin change: a lockfile, a
   manifest or workspace-catalog version line, a GitHub Actions `uses:` version
   or SHA pin, a container image tag or digest, or a submodule gitlink. It reads
-  each file's changed lines and fails closed — any other edit keeps the range on
-  the normal route. `dependencyPaths` lists the pin changes either way.
+  each file's changed lines and keeps any edit it does not recognise on the
+  normal route. `dependencyPaths` lists the pin changes either way.
+- **The classifier is a best-effort heuristic.** It pattern-matches lines; it
+  does not parse the manifest, lockfile, Dockerfile, or workflow, so it cannot
+  prove a change is dependency-only. Review rounds on its first version found
+  string syntax it read as a pin more than once, and each fix narrowed one
+  pattern. A parser-based classifier is tracked in
+  [#456](https://github.com/loomantix/activeloom/issues/456).
+- **Review override.** A human who directly asks for a dependency update to be
+  reviewed anyway, or a `review: full` label on the PR, puts it back on the
+  review route. The entry point classifies with `--force-review` added, and
+  `classify-changeset` then reports `dependencyUpdate: false` and
+  `dependencyReviewForced: true` and keeps `dependencyPaths`. The range then
+  follows the mixed-range rule below, except that the chain reviews the
+  dependency files as ordinary files and they can set the tier. The analysis
+  still runs at the converged head.
 - **The dependency analysis replaces the chain.** One rendered skill,
   `dep-analysis`, on every harness: what could break (from → to, release notes,
   breaking changes, security fixes, consumers and their tiers), the existing
@@ -48,8 +62,11 @@ for one narrow class of bump, with the evidence left to the session.
 
 Dependency PRs stop consuming review rounds and start producing evidence a
 reviewer would otherwise have to ask for: the tests that ran and the signal to
-watch. The classifier's line recognition is a heuristic; a bump it misses runs
-the normal route (the safe direction), and a misrecognised file is fixed in the
-classifier, not argued past in a session. The 0014 routine-dependency glance
+watch. The classifier's line recognition is a heuristic in both directions: a
+bump it misses runs the normal route (the safe direction), and content it
+wrongly reads as a pin skips the chain unless someone applies the review
+override. A misrecognised file is fixed in the classifier, and the override is
+the way past it in the meantime. Only a human request or the label applies it,
+never a session's own reading of the diff. The 0014 routine-dependency glance
 rule is removed, since the analysis covers every dependency update rather than
 one class of patch bump.

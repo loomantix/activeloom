@@ -516,6 +516,9 @@ function emptyChangeset(): Changeset {
  * review-significant file is a dependency pin change, so the range gets a
  * dependency analysis instead of a review chain. A pin change is unsized for
  * `smallChange` as well, so a workflow pin bump is never a small change.
+ * Recognition is a best-effort heuristic over changed lines, not a parse, so
+ * `forceReview` exists to put a dependency-only range back on the review
+ * route; `dependencyPaths` is kept, so the analysis still runs.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -606,6 +609,9 @@ export function classifyFiles(
   }
 
   const skip = changeset.reviewSignificantFiles === 0;
+  const dependencyOnly =
+    !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0;
+  const forceReview = options?.forceReview === true;
   return {
     changeset,
     classifications,
@@ -616,8 +622,8 @@ export function classifyFiles(
       unsizedFiles === 0 &&
       smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
     smallChangeLines,
-    dependencyUpdate:
-      !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0,
+    dependencyUpdate: dependencyOnly && !forceReview,
+    dependencyReviewForced: dependencyOnly && forceReview,
     dependencyPaths,
   };
 }

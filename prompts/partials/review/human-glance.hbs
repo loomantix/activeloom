@@ -49,8 +49,8 @@ Human glance recommended: N changed lines of code or config and T of tests in M 
 review-significant file in the range is a dependency pin change: a lockfile, a
 manifest or workspace-catalog version line, a GitHub Actions version or SHA pin,
 a container image tag or digest, or a submodule gitlink. No review chain runs
-on it — not Lean, not Deep, not a human-glance recommendation, on any engine,
-and not on a request to review it anyway. Its risk is upstream code this
+on it — not Lean, not Deep, not a human-glance recommendation, on any engine —
+unless the dependency review override below applies. Its risk is upstream code this
 repository does not contain, so it gets a dependency analysis instead: what
 could break, the existing tests that exercise it (run), the signal that would
 show a break after merge, and a verdict. Print this line, with N as the length
@@ -64,7 +64,7 @@ Dependency update: N dependency files, no review chain. Running the dependency a
 A range with a non-empty `dependencyPaths` and `"dependencyUpdate": false` is
 **mixed**: a bump plus code. The code follows the normal route — this gate, then
 the tier from triggers 1–5 — and the chain's reviewers leave the dependency
-files to the analysis. `<<INVOKE>>dep-analysis` covers `dependencyPaths` once the
+files to the analysis, except under the dependency review override. `<<INVOKE>>dep-analysis` covers `dependencyPaths` once the
 chain converges, at the converged head. A mixed PR is ready to ship only with
 both the chain's convergence and a `clear` analysis at the same head. Where the
 bump can stand alone, a separate PR for it is the simpler route.
@@ -83,8 +83,8 @@ Otherwise continue the entry point unchanged. An empty range or a classifier
 that cannot run is not human glance; the entry point's own pre-flight handles it.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
-  anyway overrides the gate, except on a dependency update, which always takes
-  the dependency analysis. For a range with no review-significant file, that
+  anyway overrides the gate; on a dependency update, that request is the
+  dependency review override below. For a range with no review-significant file, that
   request is trigger 6: the chain runs and the tier marker records it. For a
   small change, the next rule sets the tier. Typing a review skill's name, or
   asking to "review this PR" or "run the review chain", is not that request:
@@ -92,6 +92,19 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   usual. When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set,
   a launcher, runner, or wrapper hook wrote the invoking prompt: it is never
   trigger 6, whatever skill or tier it names.
+- **Dependency review override.** Dependency recognition is a best-effort
+  heuristic: the classifier pattern-matches lines and cannot prove a range is
+  dependency-only. When a human directly asks for a dependency update to be
+  reviewed anyway, or the open PR carries the `review: full` label
+  (`gh pr view <n> --json labels`), classify again with `--force-review`
+  added. The output then has `"dependencyUpdate": false` and
+  `"dependencyReviewForced": true`, with `dependencyPaths` kept, and the range
+  takes the mixed route: the chain runs, its reviewers review the dependency
+  files as ordinary files and those files can set the tier, and
+  `<<INVOKE>>dep-analysis` still covers `dependencyPaths` at the converged head.
+  Only that request or the label applies it. A session never adds the label or
+  the flag on its own reading of the diff, and a prompt a launcher, runner, or
+  wrapper hook wrote is not the request.
 - **Small-change override.** After the recommendation is printed, a human's
   request to run the chain on this range, in any words, is the override: the
   entry point continues past this gate. The tier then resolves from triggers

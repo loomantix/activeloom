@@ -82,12 +82,12 @@ Done when the comment is posted and its marker names the PR's current head (re-r
 
 ### 6. Ready
 
-For a dependency update (not a mixed range) with verdict `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` immediately before readiness and require it to equal the analyzed `<head>`. If it moved during the wait, restart at step 1. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range the review chain owns readiness. Any other verdict leaves the PR as it is.
+For a dependency update (not a mixed range, and not one the review override put on the chain) with verdict `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` immediately before readiness and require it to equal the analyzed `<head>`. If it moved during the wait, restart at step 1. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range, or under the review override, the review chain owns readiness. Any other verdict leaves the PR as it is.
 
 Report under 150 words: verdict, head, dependencies analysed, test commands and results, signals or gaps, and whether the PR was marked ready.
 
 ## Rules
 
-- No review chain on a dependency update, on any engine — not on request, not as a second opinion. A human who wants more than this analysis asks for the dependency to be split out or the change re-scoped; the classifier still decides the route.
+- No review chain on a dependency update, on any engine, not as a second opinion. The one exception is the review workflow's dependency review override: a human's direct request to review it anyway, or the PR's `review: full` label, runs the chain with this analysis beside it. The classifier is a best-effort heuristic; the override is the way past a range it misroutes, and a session never applies it on its own reading of the diff.
 - No merge. Readiness is the only PR state this skill changes.
 - The analysis names its sources: a release-note link, an advisory identifier, a test command. A claim without one is not evidence for `clear`.

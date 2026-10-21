@@ -165,6 +165,7 @@ interface CliArgs {
   promptSurfaces?: string[] | undefined;
   truncated?: boolean | undefined;
   dryRun?: boolean | undefined;
+  forceReview?: boolean | undefined;
   prs?: string | undefined;
   since?: string | undefined;
   until?: string | undefined;
@@ -205,10 +206,12 @@ function readJsonArray(pathValue: string, label: string): unknown[] {
  * would report a changeset no reviewer saw.
  */
 function resolveChangesetReport(args: CliArgs): ChangesetReport {
-  const options =
-    args.promptSurfaces === undefined
-      ? undefined
-      : { promptSurfaces: args.promptSurfaces };
+  const options = {
+    ...(args.promptSurfaces === undefined
+      ? {}
+      : { promptSurfaces: args.promptSurfaces }),
+    ...(args.forceReview === true ? { forceReview: true } : {}),
+  };
   if (args.diffFile) {
     assertRegularFile(
       args.diffFile,
@@ -326,6 +329,12 @@ function parseCliArgs(argv: string[]): CliArgs {
 
     if (arg === '--dry-run') {
       args.dryRun = true;
+      i++;
+      continue;
+    }
+
+    if (arg === '--force-review') {
+      args.forceReview = true;
       i++;
       continue;
     }
@@ -1066,6 +1075,7 @@ function runCliCommand(argv: string[]): number {
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
         dependencyUpdate: report.dependencyUpdate,
         dependencyPaths: report.dependencyPaths,
+        dependencyReviewForced: report.dependencyReviewForced,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications,
       });

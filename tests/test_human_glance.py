@@ -150,7 +150,10 @@ def test_the_gate_routes_a_dependency_update_to_the_analysis(root: str, skill: s
     gate = " ".join(body.split(GATE_HEADING, 1)[1].split("\n## ", 1)[0].split())
     assert "On `dependencyUpdate: true`" in gate
     assert "dep-analysis" in gate
-    assert "no review chain runs on a dependency update, whatever the request" in gate
+    assert "no review chain runs on a dependency update, whatever the tier marker or skill name" in gate
+    # The one way past the route is a human request or the PR label, applied through the flag.
+    assert "a human's direct request to review it anyway or the PR's `review: full` label" in gate
+    assert "classify again with `--force-review` and continue as for a mixed range" in gate
     # The dependency route is decided before anything that would continue the chain.
     assert gate.index("On `dependencyUpdate: true`") < gate.index("Continue when")
     assert "the range is mixed: continue for the code" in gate
@@ -167,10 +170,10 @@ def test_the_workflow_gives_a_dependency_update_no_chain(root: str) -> None:
     for requirement in (
         '`"dependencyUpdate": true`',
         "No review chain runs on it",
-        "not on a request to review it anyway",
+        "unless the dependency review override below applies",
         "Dependency update: N dependency files, no review chain.",
         "is **mixed**",
-        "leave the dependency files to the analysis",
+        "leave the dependency files to the analysis, except under the dependency review override",
         "once the chain converges, at the converged head",
         "<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->",
         "requires `verdict=clear` at the exact current head",
@@ -179,8 +182,20 @@ def test_the_workflow_gives_a_dependency_update_no_chain(root: str) -> None:
         assert requirement in rule, requirement
     tier = body.split("### What does not set the tier", 1)[1]
     assert "**Dependency updates take no tier.**" in tier
-    # An explicit request overrides human glance, never the dependency route.
-    assert "except on a dependency update, which always takes the dependency analysis" in body
+    # An explicit request on a dependency update is the dependency review override.
+    assert "on a dependency update, that request is the dependency review override below" in body
+    override = body.split("**Dependency review override.**", 1)[1].split("- **Small-change override.**", 1)[0]
+    for requirement in (
+        "best-effort heuristic",
+        "the open PR carries the `review: full` label",
+        "classify again with `--force-review`",
+        '`"dependencyReviewForced": true`',
+        "with `dependencyPaths` kept",
+        "those files can set the tier",
+        "still covers `dependencyPaths` at the converged head",
+        "A session never adds the label or the flag on its own reading of the diff",
+    ):
+        assert requirement in override, requirement
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)

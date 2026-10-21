@@ -18,7 +18,10 @@ recommendation and stop the same way.
 
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
 the same way, and run `/dep-analysis` instead: no review chain runs on a
-dependency update, whatever the request, tier marker, or skill name. When
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a human's direct request to
+review it anyway or the PR's `review: full` label. Then classify again with
+`--force-review` and continue as for a mixed range. When
 `dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
 mixed: continue for the code, and follow the workflow's "Dependency updates"
 rule for the dependency files.

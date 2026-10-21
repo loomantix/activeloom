@@ -61,7 +61,8 @@ def test_herd_skills_route_a_dependency_update_to_the_analysis(root: str) -> Non
         return " ".join((ROOT / root / "skills" / name / "SKILL.md").read_text().split())
 
     hreview = skill("hreview")
-    assert "On `dependencyUpdate`, whatever the tier extensions, markers or request: start no chain." in hreview
+    assert "On `dependencyUpdate`, whatever the tier extensions or markers: start no chain, unless the PR carries the `review: full` label" in hreview
+    assert "classify again with `--force-review` and continue as a mixed range" in hreview
     assert hreview.index("On `dependencyUpdate`") < hreview.index("On `skip` or `smallChange`")
     assert "run `" in hreview and "dep-analysis <n>` once the chain converges" in hreview
     glance = skill("auto-glance")

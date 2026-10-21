@@ -311,9 +311,15 @@ container image tag or digest, or a submodule gitlink — and the range gets a
 dependency analysis instead of a review chain. `dependencyPaths` lists the pin
 changes whether or not the range is dependency-only, so a non-empty list with
 `dependencyUpdate` false marks a mixed range. Recognition reads each file's
-changed lines and fails closed: a manifest with any non-version edit, a
-workflow with any line other than a `uses:` or `image:` pin, or a file of an
-unknown kind keeps the range on the normal route. A manifest under a test path
+changed lines and is a best-effort heuristic, not a parser: a manifest with
+any non-version edit, a workflow with any line other than a `uses:` or `image:`
+pin, or a file of an unknown kind keeps the range on the normal route, but a
+line pattern cannot prove that a change is dependency-only.
+`--force-review` is the review override: on a range that would be a
+dependency update it reports `dependencyUpdate: false` and
+`dependencyReviewForced: true`, keeps `dependencyPaths`, and so sends the range
+down the mixed-range route. Entry points pass it on a human's direct request to
+review a dependency update anyway or on the PR's `review: full` label. A manifest under a test path
 is a fixture and is never a pin.
 
 YAML pins require a recognized schema location: workflow/composite-action

@@ -196,6 +196,37 @@ describe('classifyFiles dependency-update gate', () => {
     expect(report.skip).toBe(false);
   });
 
+  it('puts a dependency-only range on the review route under forceReview', () => {
+    const files: ChangedFile[] = [
+      { path: 'vendor/lib', added: 1, deleted: 1, submodule: true },
+    ];
+    const report = classifyFiles(files, { forceReview: true });
+    expect(report.dependencyUpdate).toBe(false);
+    expect(report.dependencyReviewForced).toBe(true);
+    expect(report.dependencyPaths).toEqual(['vendor/lib']);
+    expect(report.skip).toBe(false);
+    expect(report.smallChange).toBe(false);
+    expect(classifyFiles(files).dependencyReviewForced).toBe(false);
+  });
+
+  it('leaves a mixed or docs-only range unchanged under forceReview', () => {
+    const mixed = classifyFiles(
+      [
+        { path: 'vendor/lib', added: 1, deleted: 1, submodule: true },
+        { path: 'src/a.ts', added: 1, deleted: 1 },
+      ],
+      { forceReview: true },
+    );
+    expect(mixed.dependencyUpdate).toBe(false);
+    expect(mixed.dependencyReviewForced).toBe(false);
+    expect(mixed.dependencyPaths).toEqual(['vendor/lib']);
+    const docs = classifyFiles([{ path: 'README.md', added: 1, deleted: 0 }], {
+      forceReview: true,
+    });
+    expect(docs.skip).toBe(true);
+    expect(docs.dependencyReviewForced).toBe(false);
+  });
+
   it('never routes an empty or docs-only range', () => {
     expect(classifyFiles([]).dependencyUpdate).toBe(false);
     expect(

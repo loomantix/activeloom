@@ -240,7 +240,11 @@ uses those flags for the file, size, and dependency gates. A file is a dependenc
 pin change only when its kind is known and every changed line is a recognised
 version, pin, tag, or digest line, with complete pinned before/after contents
 proving that non-pin fields and structure stayed unchanged. Missing context or
-unsupported syntax fails closed to the normal route. Lockfiles and gitlinks
+unsupported syntax keeps the file on the normal route. That recognition is a
+best-effort heuristic over lines, not a parse, so `--force-review` reports
+`dependencyUpdate: false` and `dependencyReviewForced: true` for a range that
+would otherwise be a dependency update, keeping `dependencyPaths`; entry points
+pass it on a human's direct request or the PR's `review: full` label. Lockfiles and gitlinks
 are the content-independent exceptions; renames and mode transitions still
 take the normal route. Neither a manifest filename alone nor a bot author
 makes a range a dependency update.
