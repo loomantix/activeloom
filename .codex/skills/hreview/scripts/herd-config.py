@@ -909,7 +909,7 @@ def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]
         if args:
             flags[engine] = args
     if flags:
-        named = [arg for args in flags.values() for arg in args]
+        named = [term for engine, args in flags.items() for term in (ENGINE_CLIS[engine], *args)]
         required.append(
             {
                 "setting": "autoMode.allow",

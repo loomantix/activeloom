@@ -823,6 +823,27 @@ def test_launch_rule_must_name_every_configured_flag(
     assert [item["setting"] for item in value_report["missing"]] == ["autoMode.allow"]
     assert "--permission-mode bypassPermissions for claude" in value_report["missing"][0]["entry"]
 
+    shared_flag = json.loads(json.dumps(COMPLETE))
+    shared_flag["autoMode"]["allow"][1] = (
+        "Starting agy sessions with `herdr agent start` using --dangerously-skip-permissions for agy is expected."
+    )
+    shared_report = claude_settings(
+        tmp_path,
+        capsys,
+        monkeypatch,
+        shared_flag,
+        "--engine",
+        "claude",
+        "--session-mode",
+        "auto",
+        engines={
+            "claude": {"permission_off_args": ["--dangerously-skip-permissions"]},
+            "gemini": {"permission_off_args": ["--dangerously-skip-permissions"]},
+        },
+    )
+    assert [item["setting"] for item in shared_report["missing"]] == ["autoMode.allow"]
+    assert "--dangerously-skip-permissions for claude" in shared_report["missing"][0]["entry"]
+
 
 def test_no_launch_rule_without_permission_flags(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
