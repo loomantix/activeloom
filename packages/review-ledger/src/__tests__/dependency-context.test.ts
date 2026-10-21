@@ -12,6 +12,27 @@ import {
 
 const cases: [string, string, string, string, boolean][] = [
   [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n          cat > config.yml <<EOF\n          image: node:22\n          EOF\n',
+    'image: node:22',
+    'image: node:23',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - run: |\n          echo ready\n      - uses: actions/checkout@v4\n',
+    '@v4',
+    '@v5',
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nCOPY <<EOF /app/template\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
     'package.json',
     '{\n "dependencies": {\n "react": "18.2.0"\n },\n "scripts": {\n "test": "1.0.0"\n }\n}',
     '18.2.0',

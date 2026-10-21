@@ -364,12 +364,34 @@ function contentSkeleton(
   if (name.endsWith('.json')) return jsonSkeleton(name, content);
   // JSONC needs a structural parser before it can safely bypass review.
   if (name.endsWith('.jsonc')) return null;
+  // Heredocs can contain instruction-shaped data; a line scanner cannot
+  // establish Docker instruction boundaries in their presence.
+  if (
+    (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) &&
+    content.includes('<<')
+  )
+    return null;
   let section = '';
   let yamlSection = '';
+  const yaml = /\.ya?ml$/.test(name);
+  let scalarIndent: number | undefined;
   return content
     .split('\n')
     .map((raw) => {
       const line = raw.trim();
+      if (yaml) {
+        const indent = raw.length - raw.trimStart().length;
+        if (scalarIndent !== undefined) {
+          if (!line || indent > scalarIndent) return raw;
+          scalarIndent = undefined;
+        }
+        if (
+          /(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)
+        ) {
+          scalarIndent = indent;
+          return raw;
+        }
+      }
       if (MANIFEST_BASENAMES.has(name)) {
         if (
           name.endsWith('.toml') ||

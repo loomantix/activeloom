@@ -17562,10 +17562,25 @@ function jsonSkeleton(name, content) {
 function contentSkeleton(path, name, content) {
   if (name.endsWith(".json")) return jsonSkeleton(name, content);
   if (name.endsWith(".jsonc")) return null;
+  if ((/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) && content.includes("<<"))
+    return null;
   let section = "";
   let yamlSection = "";
+  const yaml = /\.ya?ml$/.test(name);
+  let scalarIndent;
   return content.split("\n").map((raw) => {
     const line = raw.trim();
+    if (yaml) {
+      const indent = raw.length - raw.trimStart().length;
+      if (scalarIndent !== void 0) {
+        if (!line || indent > scalarIndent) return raw;
+        scalarIndent = void 0;
+      }
+      if (/(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)) {
+        scalarIndent = indent;
+        return raw;
+      }
+    }
     if (MANIFEST_BASENAMES.has(name)) {
       if (name.endsWith(".toml") || name === "pipfile" || name === "setup.cfg") {
         const header = /^\[([^\]]+)\]$/.exec(line);
