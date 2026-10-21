@@ -785,7 +785,9 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
     }
     if (
       !inHunk &&
-      /^(old mode |new mode |rename from |rename to |copy from |copy to )/.test(
+      // A type change to or from a symlink prints as a delete and an add,
+      // each carrying mode 120000; it is a mode transition too.
+      /^(old mode |new mode |rename from |rename to |copy from |copy to |(?:new|deleted) file mode 120000$)/.test(
         rawLine,
       )
     ) {

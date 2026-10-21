@@ -11,7 +11,11 @@ import type { ChangedFile } from './types.js';
  * keeps the normal review route.
  */
 
-/** Lockfiles: any content change is a dependency resolution change. */
+/**
+ * Lockfiles: any content change is a dependency resolution change. Only
+ * formats their tools read as data belong here; `mix.lock` is evaluated as
+ * Elixir, so it stays on the review route.
+ */
 const LOCKFILE_BASENAMES: ReadonlySet<string> = new Set([
   'pnpm-lock.yaml',
   'package-lock.json',
@@ -31,7 +35,6 @@ const LOCKFILE_BASENAMES: ReadonlySet<string> = new Set([
   'flake.lock',
   'podfile.lock',
   'pubspec.lock',
-  'mix.lock',
   'package.resolved',
   'packages.lock.json',
   'gradle.lockfile',
@@ -81,9 +84,12 @@ const VERSION_VALUE = new RegExp(
 const PROTOCOL_VALUE =
   /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
 
-/** `name@version`, as in a package-manager pin. */
+/**
+ * `name@version`, as in a package-manager pin. The name is a package name
+ * (optionally scoped), never a path: `./vendor/foo@1.0.0` is a local directory.
+ */
 const AT_VERSION_VALUE =
-  /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
+  /^(?:@[\w.-]+\/)?\w[\w.-]*@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
 
 /**
  * Mask only the version in a manifest value, keeping what names the artifact:
@@ -168,6 +174,13 @@ function isKeyedVersionLine(name: string, line: string): boolean {
   const key = (match[1] ?? match[2] ?? match[3])!.toLowerCase();
   const value = match[4]!.trim().replace(/,$/, '').trim();
   if (OWN_VERSION_KEYS.has(key)) {
+    return false;
+  }
+  // A dotted TOML key such as `foo.path` sets a source field, not a version.
+  if (
+    name.endsWith('.toml') &&
+    /\.(git|path|branch|rev|tag|registry|package)$/.test(key)
+  ) {
     return false;
   }
   if (value.startsWith('{')) {
@@ -446,7 +459,9 @@ function contentSkeleton(
           return raw;
         }
         if (
-          /(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)
+          /(?:^|:\s+|-\s+)(?:[&!]\S*\s+)*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(
+            raw,
+          )
         ) {
           scalarIndent = indent;
           return raw;
@@ -542,9 +557,11 @@ function contentSkeleton(
         /^(?:jobs\/[^/]+\/steps|runs\/steps)\/uses$/.test(keys) &&
         isActionPinLine(line)
       ) {
+        // Only a version-shaped comment (`# v4.1.1`) is masked; any other
+        // comment text must match exactly.
         return raw
           .replace(/(@)([^\s"']+)/, '$1<pin>')
-          .replace(/\s+#.*$/, ' #<comment>');
+          .replace(/\s+#\s*v?\d[\w.+-]*\s*$/, ' #<comment>');
       }
       const imageContext = workflow
         ? /^(?:jobs\/[^/]+\/(?:container|services\/[^/]+)\/image|runs\/image)$/.test(

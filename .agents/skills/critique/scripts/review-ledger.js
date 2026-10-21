@@ -17333,7 +17333,6 @@ var LOCKFILE_BASENAMES = /* @__PURE__ */ new Set([
   "flake.lock",
   "podfile.lock",
   "pubspec.lock",
-  "mix.lock",
   "package.resolved",
   "packages.lock.json",
   "gradle.lockfile",
@@ -17366,7 +17365,7 @@ var VERSION_VALUE = new RegExp(
   `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_PATTERN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_PATTERN.source})*$`
 );
 var PROTOCOL_VALUE = /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
-var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
+var AT_VERSION_VALUE = /^(?:@[\w.-]+\/)?\w[\w.-]*@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
 function maskVersionValue(value) {
   const alias = /^((?:npm|jsr):@?[\w./-]+@)/.exec(value);
   if (alias) return `${alias[1]}<pin>`;
@@ -17414,6 +17413,9 @@ function isKeyedVersionLine(name, line) {
   const key = (match[1] ?? match[2] ?? match[3]).toLowerCase();
   const value = match[4].trim().replace(/,$/, "").trim();
   if (OWN_VERSION_KEYS.has(key)) {
+    return false;
+  }
+  if (name.endsWith(".toml") && /\.(git|path|branch|rev|tag|registry|package)$/.test(key)) {
     return false;
   }
   if (value.startsWith("{")) {
@@ -17613,7 +17615,9 @@ function contentSkeleton(path, name, content) {
         unsupportedQuotes = true;
         return raw;
       }
-      if (/(?:^|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(raw)) {
+      if (/(?:^|:\s+|-\s+)(?:[&!]\S*\s+)*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(
+        raw
+      )) {
         scalarIndent = indent;
         return raw;
       }
@@ -17684,7 +17688,7 @@ function contentSkeleton(path, name, content) {
     const workflow = isWorkflowPath(path, name);
     const keys = yamlPath.join("/");
     if (workflow && /^(?:jobs\/[^/]+\/steps|runs\/steps)\/uses$/.test(keys) && isActionPinLine(line)) {
-      return raw.replace(/(@)([^\s"']+)/, "$1<pin>").replace(/\s+#.*$/, " #<comment>");
+      return raw.replace(/(@)([^\s"']+)/, "$1<pin>").replace(/\s+#\s*v?\d[\w.+-]*\s*$/, " #<comment>");
     }
     const imageContext = workflow ? /^(?:jobs\/[^/]+\/(?:container|services\/[^/]+)\/image|runs\/image)$/.test(
       keys
@@ -18202,7 +18206,9 @@ function parseDiffPatch(patch) {
     if (current === null) {
       continue;
     }
-    if (!inHunk && /^(old mode |new mode |rename from |rename to |copy from |copy to )/.test(
+    if (!inHunk && // A type change to or from a symlink prints as a delete and an add,
+    // each carrying mode 120000; it is a mode transition too.
+    /^(old mode |new mode |rename from |rename to |copy from |copy to |(?:new|deleted) file mode 120000$)/.test(
       rawLine
     )) {
       current.metadataChanged = true;

