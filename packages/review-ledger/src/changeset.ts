@@ -530,15 +530,26 @@ export function classifyFiles(
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
+    const name = basename(classification.path).toLowerCase();
+    const underTestOrFixture =
+      classification.class === 'test' ||
+      isTest(classification.path, name) ||
+      isFixture(classification.path, name);
+    // A submodule gitlink mounted under `vendor/` or `docs/` is still a
+    // review-significant dependency pin unless it lives under a test/fixture path.
+    if (file.submodule === true && !underTestOrFixture) {
+      classification.reviewSignificant = true;
+    }
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
     }
-    // A manifest under a test path is a fixture, not a dependency of the
-    // project, so only a review-significant non-test file can be a pin.
+    // A manifest or lockfile under a test or fixture path is a fixture, not a
+    // dependency of the project, so only a review-significant non-test/non-fixture
+    // file can be a pin.
     const dependencyPin =
       classification.reviewSignificant &&
-      classification.class !== 'test' &&
+      !underTestOrFixture &&
       isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);

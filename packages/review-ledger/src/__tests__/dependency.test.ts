@@ -71,16 +71,31 @@ describe('isDependencyPinChange', () => {
 
   it.each([
     ['package.json', ['    "build": "tsc -p ."']],
+    ['package.json', ['    "build:all": "npm:build:*"']],
+    ['package.json', ['    "migrate": "2to3"', '    "debug": "v8-inspector"']],
+    ['package.json', ['  "port": 3000']],
     ['package.json', ['  "version": "2.0.0"']],
     ['package.json', ['  "dependencies": {', '    "react": "^18.3.1"']],
+    ['package.json', ['  {', '  }']],
+    ['Cargo.toml', ['serde = { version = "1.0.210", path = "../serde" }']],
+    [
+      'Cargo.toml',
+      [
+        'serde = { version = "1.0.210", git = "https://example.com/serde.git" }',
+      ],
+    ],
+    ['requirements.txt', ['# only a comment']],
     ['pnpm-workspace.yaml', ["  - 'apps/*'"]],
     ['.github/workflows/ci.yml', ['      - run: pnpm test']],
+    ['.github/workflows/ci.yml', ['      - uses: actions/checkout@main']],
     [
       '.github/workflows/ci.yml',
       [`      - uses: actions/checkout@${SHA}`, '        with:'],
     ],
     ['Dockerfile', ['RUN apt-get update']],
     ['Dockerfile', ['FROM ${BASE_IMAGE}']],
+    ['Dockerfile', ['FROM build']],
+    ['docker-compose.yml', ['    image: false']],
     ['k8s/api/deployment.yaml', ['        replicas: 3']],
     ['src/config.yaml', ['  tag: "1.4.2"']],
     ['src/index.ts', ['import x from "y";']],
@@ -161,12 +176,22 @@ describe('classifyFiles dependency-update gate', () => {
     expect(report.dependencyPaths).toEqual([]);
   });
 
-  it('treats a manifest under a test path as a fixture, not a pin', () => {
+  it('treats a manifest or lockfile under a test path as a fixture, not a pin', () => {
     const report = classifyFiles([
       pin('tests/fixtures/app/package.json', ['    "zod": "3.24.0"']),
+      { path: 'tests/fixtures/app/pnpm-lock.yaml', added: 10, deleted: 10 },
     ]);
     expect(report.dependencyUpdate).toBe(false);
     expect(report.dependencyPaths).toEqual([]);
+  });
+
+  it('routes a submodule gitlink bump even under vendor/', () => {
+    const report = classifyFiles([
+      { path: 'vendor/lib', added: 1, deleted: 1, submodule: true },
+    ]);
+    expect(report.dependencyUpdate).toBe(true);
+    expect(report.dependencyPaths).toEqual(['vendor/lib']);
+    expect(report.skip).toBe(false);
   });
 
   it('never routes an empty or docs-only range', () => {

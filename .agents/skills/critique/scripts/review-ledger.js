@@ -17361,40 +17361,56 @@ var MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
 ]);
 var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.(txt|in)$/;
 var OWN_VERSION_KEYS = /* @__PURE__ */ new Set(["version"]);
-var VERSION_VALUE = /^(?=[^\d]*\d)[\^~<>=!*vV]*\s*\d[\w.*+-]*(\s*(\|\||,|\s)\s*[\^~<>=!]*\s*v?\d[\w.*+-]*)*$/;
-var PROTOCOL_VALUE = /^(workspace|catalog|npm|jsr):\S*$/;
-var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d[\w.+-]*(\+sha\d*\.[0-9a-f]+)?$/;
+var VERSION_TOKEN = /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
+var VERSION_VALUE = new RegExp(
+  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_TOKEN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_TOKEN.source})*$`
+);
+var PROTOCOL_VALUE = /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
+var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
 var STRUCTURE_ONLY = /^[[\]{}(),]*$/;
-function isVersionValue(raw) {
-  const value = raw.trim().replace(/^["']|["']$/g, "");
+function requiresQuotedManifestValue(name) {
+  return name.endsWith(".json") || name.endsWith(".jsonc") || name.endsWith(".toml") || name === "pipfile";
+}
+function isVersionValue(raw, requireQuoted = false) {
+  const trimmed = raw.trim().replace(/,$/, "").trim();
+  const isQuoted = trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("'") && trimmed.endsWith("'");
+  if (requireQuoted && !isQuoted) {
+    return false;
+  }
+  const value = isQuoted ? trimmed.slice(1, -1).trim() : trimmed;
   return VERSION_VALUE.test(value) || PROTOCOL_VALUE.test(value) || AT_VERSION_VALUE.test(value);
 }
-function isKeyedVersionLine(line) {
-  const match = /^(?:-\s+)?["']?(@?[\w][\w@./:-]*)["']?\s*[:=]\s*(.+?)\s*,?$/.exec(line);
+function isKeyedVersionLine(name, line) {
+  const match = /^(?:-\s+)?(?:"(@?[\w][\w@./:-]*)"|'(@?[\w][\w@./:-]*)'|(@?[\w][\w@./-]*))\s*[:=]\s*(.+)$/.exec(
+    line
+  );
   if (!match) {
     return false;
   }
-  const key = match[1].toLowerCase();
-  const value = match[2];
+  const key = (match[1] ?? match[2] ?? match[3]).toLowerCase();
+  const value = match[4].trim().replace(/,$/, "").trim();
   if (OWN_VERSION_KEYS.has(key)) {
     return false;
   }
   if (value.startsWith("{")) {
+    if (!value.endsWith("}") || /\b(git|path|branch|rev|tag)\s*=/.test(value)) {
+      return false;
+    }
     const inline = /\bversion\s*=\s*("[^"]*"|'[^']*')/.exec(value);
-    return inline !== null && isVersionValue(inline[1]);
+    return inline !== null && isVersionValue(inline[1], true);
   }
-  return isVersionValue(value);
+  return isVersionValue(value, requiresQuotedManifestValue(name));
 }
-function isRequirementLine(line) {
-  if (line.startsWith("#") || /^--hash=\S+(\s*\\)?$/.test(line)) {
-    return true;
-  }
+function isRequirementPinLine(line) {
   return /^[A-Za-z0-9][\w.\-[\],]*\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+(\s*,\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+)*(\s*;[^\\]*)?(\s*\\)?$/.test(
     line
   );
 }
-function isGoModLine(line) {
-  return line.startsWith("//") || /^(require\s+)?[\w.~/-]+\s+v\d[\w.+-]*(\s*\/\/\s*indirect)?$/.test(line) || /^(go|toolchain)\s+(go)?\d[\w.]*$/.test(line);
+function isRequirementAuxiliaryLine(line) {
+  return line.startsWith("#") || /^--hash=\S+(\s*\\)?$/.test(line);
+}
+function isGoModPinLine(line) {
+  return /^(require\s+)?[\w.~/-]+\s+v\d[\w.+-]*(\s*\/\/\s*indirect)?$/.test(line) || /^(go|toolchain)\s+(go)?\d[\w.]*$/.test(line);
 }
 function isMavenLine(line) {
   return /^<version>\s*v?\d[\w.+-]*\s*<\/version>$/.test(line);
@@ -17410,12 +17426,9 @@ function isGemLine(line) {
 function isMixLine(line) {
   return /^\{:\w+,\s*"[~<>=\s\d.]+"\}\s*,?$/.test(line);
 }
-function isManifestLine(name, line) {
-  if (STRUCTURE_ONLY.test(line)) {
-    return true;
-  }
+function isManifestPinLine(name, line) {
   if (name === "go.mod" || name === "go.work") {
-    return isGoModLine(line);
+    return isGoModPinLine(line);
   }
   if (name === "pom.xml") {
     return isMavenLine(line);
@@ -17431,25 +17444,31 @@ function isManifestLine(name, line) {
   }
   if (name === "setup.cfg" || name === "pyproject.toml" || name === "pipfile") {
     const quoted = /^["']([^"']+)["']\s*,?$/.exec(line);
-    if (quoted && isRequirementLine(quoted[1].trim())) {
+    if (quoted && isRequirementPinLine(quoted[1].trim())) {
       return true;
     }
-    if (name === "setup.cfg" && isRequirementLine(line)) {
+    if (name === "setup.cfg" && isRequirementPinLine(line)) {
       return true;
     }
   }
-  if (line.startsWith("#") && !name.endsWith(".json")) {
+  return isKeyedVersionLine(name, line);
+}
+function isManifestAuxiliaryLine(name, line) {
+  if (STRUCTURE_ONLY.test(line)) {
     return true;
   }
-  return isKeyedVersionLine(line);
+  if (name === "go.mod" || name === "go.work") {
+    return line.startsWith("//");
+  }
+  return line.startsWith("#") && !name.endsWith(".json");
 }
 function isActionPinLine(line) {
-  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@[\w.-]+["']?(\s+#.*)?$/.test(
+  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@(?:v?\d[\dA-Za-z.+-]*|[0-9a-f]{40}|[0-9a-f]{64})["']?(\s+#.*)?$/.test(
     line
   );
 }
 function isImageReference(value) {
-  return /^["']?[\w.-]+(:\d+)?(\/[\w.-]+)*(:[\w.-]+)?(@sha256:[0-9a-f]{64})?["']?$/.test(
+  return /^["']?[\w.-]+(:\d+(?=\/))?(\/[\w.-]+)*(?::[\w][\w.-]*(?:@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})["']?$/.test(
     value
   );
 }
@@ -17471,27 +17490,36 @@ function isDockerfileFromLine(line) {
 function isWorkflowPath(path, name) {
   return path.startsWith(".github/workflows/") || path.startsWith(".github/actions/") || name === "action.yml" || name === "action.yaml";
 }
+function pinOnly(isPin) {
+  return { isPin, isAllowed: isPin };
+}
 function lineKind(path, name) {
   if (LOCKFILE_BASENAMES.has(name)) {
     return "lockfile";
   }
   if (MANIFEST_BASENAMES.has(name)) {
-    return (line) => isManifestLine(name, line);
+    return {
+      isPin: (line) => isManifestPinLine(name, line),
+      isAllowed: (line) => isManifestPinLine(name, line) || isManifestAuxiliaryLine(name, line)
+    };
   }
   if (REQUIREMENTS_FILE.test(name)) {
-    return isRequirementLine;
+    return {
+      isPin: isRequirementPinLine,
+      isAllowed: (line) => isRequirementPinLine(line) || isRequirementAuxiliaryLine(line)
+    };
   }
   if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
-    return isDockerfileFromLine;
+    return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith(".yml") || name.endsWith(".yaml")) {
     if (isWorkflowPath(path, name)) {
-      return (line) => isActionPinLine(line) || isImageLine(line);
+      return pinOnly((line) => isActionPinLine(line) || isImageLine(line));
     }
     if (/^values[\w.-]*\.ya?ml$/.test(name)) {
-      return (line) => isImageLine(line) || isImageTagLine(line);
+      return pinOnly((line) => isImageLine(line) || isImageTagLine(line));
     }
-    return isImageLine;
+    return pinOnly(isImageLine);
   }
   return null;
 }
@@ -17512,7 +17540,7 @@ function isDependencyPinChange(file) {
   if (lines.length === 0) {
     return false;
   }
-  return lines.every(kind);
+  return lines.every(kind.isAllowed) && lines.some(kind.isPin);
 }
 
 // src/changeset.ts
@@ -17819,11 +17847,16 @@ function classifyFiles(files, options) {
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
+    const name = basename(classification.path).toLowerCase();
+    const underTestOrFixture = classification.class === "test" || isTest(classification.path, name) || isFixture(classification.path, name);
+    if (file.submodule === true && !underTestOrFixture) {
+      classification.reviewSignificant = true;
+    }
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
     }
-    const dependencyPin = classification.reviewSignificant && classification.class !== "test" && isDependencyPinChange(file);
+    const dependencyPin = classification.reviewSignificant && !underTestOrFixture && isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
     } else if (classification.reviewSignificant) {

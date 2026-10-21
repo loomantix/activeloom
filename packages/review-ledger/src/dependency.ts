@@ -65,22 +65,48 @@ const REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.(txt|in)$/;
 /** Keys that name the package's own release, not a dependency. */
 const OWN_VERSION_KEYS: ReadonlySet<string> = new Set(['version']);
 
+/**
+ * A single version token: digits and dots (or wildcards), with optional
+ * pre-release or build metadata after a dot, or a PEP 440 pre/post/dev suffix.
+ */
+const VERSION_TOKEN =
+  /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
+
 /** A version constraint, range, or exact pin; must contain a digit. */
-const VERSION_VALUE =
-  /^(?=[^\d]*\d)[\^~<>=!*vV]*\s*\d[\w.*+-]*(\s*(\|\||,|\s)\s*[\^~<>=!]*\s*v?\d[\w.*+-]*)*$/;
+const VERSION_VALUE = new RegExp(
+  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_TOKEN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_TOKEN.source})*$`,
+);
 
 /** Workspace and alias protocols a manifest uses in place of a range. */
-const PROTOCOL_VALUE = /^(workspace|catalog|npm|jsr):\S*$/;
+const PROTOCOL_VALUE =
+  /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
 
 /** `name@version`, as in a package-manager pin. */
-const AT_VERSION_VALUE = /^@?[\w./-]+@v?\d[\w.+-]*(\+sha\d*\.[0-9a-f]+)?$/;
+const AT_VERSION_VALUE =
+  /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
 
 /** A line that carries only structure: braces, brackets, commas. */
 const STRUCTURE_ONLY = /^[[\]{}(),]*$/;
 
+function requiresQuotedManifestValue(name: string): boolean {
+  return (
+    name.endsWith('.json') ||
+    name.endsWith('.jsonc') ||
+    name.endsWith('.toml') ||
+    name === 'pipfile'
+  );
+}
+
 /** Changed manifest lines, without the diff `+` or `-`. */
-function isVersionValue(raw: string): boolean {
-  const value = raw.trim().replace(/^["']|["']$/g, '');
+function isVersionValue(raw: string, requireQuoted = false): boolean {
+  const trimmed = raw.trim().replace(/,$/, '').trim();
+  const isQuoted =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"));
+  if (requireQuoted && !isQuoted) {
+    return false;
+  }
+  const value = isQuoted ? trimmed.slice(1, -1).trim() : trimmed;
   return (
     VERSION_VALUE.test(value) ||
     PROTOCOL_VALUE.test(value) ||
@@ -92,38 +118,44 @@ function isVersionValue(raw: string): boolean {
  * A `key: value` or `key = value` dependency entry with a version value.
  *
  * Covers JSON, YAML (including a pnpm catalog), and TOML. A TOML inline table
- * qualifies when its `version` field is a version value.
+ * qualifies when its `version` field is a version value and it carries no git
+ * or path source override.
  */
-function isKeyedVersionLine(line: string): boolean {
+function isKeyedVersionLine(name: string, line: string): boolean {
   const match =
-    /^(?:-\s+)?["']?(@?[\w][\w@./:-]*)["']?\s*[:=]\s*(.+?)\s*,?$/.exec(line);
+    /^(?:-\s+)?(?:"(@?[\w][\w@./:-]*)"|'(@?[\w][\w@./:-]*)'|(@?[\w][\w@./-]*))\s*[:=]\s*(.+)$/.exec(
+      line,
+    );
   if (!match) {
     return false;
   }
-  const key = match[1]!.toLowerCase();
-  const value = match[2]!;
+  const key = (match[1] ?? match[2] ?? match[3])!.toLowerCase();
+  const value = match[4]!.trim().replace(/,$/, '').trim();
   if (OWN_VERSION_KEYS.has(key)) {
     return false;
   }
   if (value.startsWith('{')) {
+    if (!value.endsWith('}') || /\b(git|path|branch|rev|tag)\s*=/.test(value)) {
+      return false;
+    }
     const inline = /\bversion\s*=\s*("[^"]*"|'[^']*')/.exec(value);
-    return inline !== null && isVersionValue(inline[1]!);
+    return inline !== null && isVersionValue(inline[1]!, true);
   }
-  return isVersionValue(value);
+  return isVersionValue(value, requiresQuotedManifestValue(name));
 }
 
-function isRequirementLine(line: string): boolean {
-  if (line.startsWith('#') || /^--hash=\S+(\s*\\)?$/.test(line)) {
-    return true;
-  }
+function isRequirementPinLine(line: string): boolean {
   return /^[A-Za-z0-9][\w.\-[\],]*\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+(\s*,\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+)*(\s*;[^\\]*)?(\s*\\)?$/.test(
     line,
   );
 }
 
-function isGoModLine(line: string): boolean {
+function isRequirementAuxiliaryLine(line: string): boolean {
+  return line.startsWith('#') || /^--hash=\S+(\s*\\)?$/.test(line);
+}
+
+function isGoModPinLine(line: string): boolean {
   return (
-    line.startsWith('//') ||
     /^(require\s+)?[\w.~/-]+\s+v\d[\w.+-]*(\s*\/\/\s*indirect)?$/.test(line) ||
     /^(go|toolchain)\s+(go)?\d[\w.]*$/.test(line)
   );
@@ -147,12 +179,9 @@ function isMixLine(line: string): boolean {
   return /^\{:\w+,\s*"[~<>=\s\d.]+"\}\s*,?$/.test(line);
 }
 
-function isManifestLine(name: string, line: string): boolean {
-  if (STRUCTURE_ONLY.test(line)) {
-    return true;
-  }
+function isManifestPinLine(name: string, line: string): boolean {
   if (name === 'go.mod' || name === 'go.work') {
-    return isGoModLine(line);
+    return isGoModPinLine(line);
   }
   if (name === 'pom.xml') {
     return isMavenLine(line);
@@ -169,29 +198,36 @@ function isManifestLine(name: string, line: string): boolean {
   if (name === 'setup.cfg' || name === 'pyproject.toml' || name === 'pipfile') {
     // A PEP 508 string in a list, or a requirement in a setup.cfg block.
     const quoted = /^["']([^"']+)["']\s*,?$/.exec(line);
-    if (quoted && isRequirementLine(quoted[1]!.trim())) {
+    if (quoted && isRequirementPinLine(quoted[1]!.trim())) {
       return true;
     }
-    if (name === 'setup.cfg' && isRequirementLine(line)) {
+    if (name === 'setup.cfg' && isRequirementPinLine(line)) {
       return true;
     }
   }
-  if (line.startsWith('#') && !name.endsWith('.json')) {
+  return isKeyedVersionLine(name, line);
+}
+
+function isManifestAuxiliaryLine(name: string, line: string): boolean {
+  if (STRUCTURE_ONLY.test(line)) {
     return true;
   }
-  return isKeyedVersionLine(line);
+  if (name === 'go.mod' || name === 'go.work') {
+    return line.startsWith('//');
+  }
+  return line.startsWith('#') && !name.endsWith('.json');
 }
 
 /** An Actions `uses:` reference pinned to a tag or commit. */
 function isActionPinLine(line: string): boolean {
-  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@[\w.-]+["']?(\s+#.*)?$/.test(
+  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@(?:v?\d[\dA-Za-z.+-]*|[0-9a-f]{40}|[0-9a-f]{64})["']?(\s+#.*)?$/.test(
     line,
   );
 }
 
 /** A container image reference, pinned by tag, digest, or both. */
 function isImageReference(value: string): boolean {
-  return /^["']?[\w.-]+(:\d+)?(\/[\w.-]+)*(:[\w.-]+)?(@sha256:[0-9a-f]{64})?["']?$/.test(
+  return /^["']?[\w.-]+(:\d+(?=\/))?(\/[\w.-]+)*(?::[\w][\w.-]*(?:@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})["']?$/.test(
     value,
   );
 }
@@ -224,30 +260,47 @@ function isWorkflowPath(path: string, name: string): boolean {
   );
 }
 
+interface LineClassifier {
+  isPin: (line: string) => boolean;
+  isAllowed: (line: string) => boolean;
+}
+
+function pinOnly(isPin: (line: string) => boolean): LineClassifier {
+  return { isPin, isAllowed: isPin };
+}
+
 function lineKind(
   path: string,
   name: string,
-): ((line: string) => boolean) | 'lockfile' | null {
+): LineClassifier | 'lockfile' | null {
   if (LOCKFILE_BASENAMES.has(name)) {
     return 'lockfile';
   }
   if (MANIFEST_BASENAMES.has(name)) {
-    return (line) => isManifestLine(name, line);
+    return {
+      isPin: (line) => isManifestPinLine(name, line),
+      isAllowed: (line) =>
+        isManifestPinLine(name, line) || isManifestAuxiliaryLine(name, line),
+    };
   }
   if (REQUIREMENTS_FILE.test(name)) {
-    return isRequirementLine;
+    return {
+      isPin: isRequirementPinLine,
+      isAllowed: (line) =>
+        isRequirementPinLine(line) || isRequirementAuxiliaryLine(line),
+    };
   }
   if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
-    return isDockerfileFromLine;
+    return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith('.yml') || name.endsWith('.yaml')) {
     if (isWorkflowPath(path, name)) {
-      return (line) => isActionPinLine(line) || isImageLine(line);
+      return pinOnly((line) => isActionPinLine(line) || isImageLine(line));
     }
     if (/^values[\w.-]*\.ya?ml$/.test(name)) {
-      return (line) => isImageLine(line) || isImageTagLine(line);
+      return pinOnly((line) => isImageLine(line) || isImageTagLine(line));
     }
-    return isImageLine;
+    return pinOnly(isImageLine);
   }
   return null;
 }
@@ -279,5 +332,5 @@ export function isDependencyPinChange(file: ChangedFile): boolean {
   if (lines.length === 0) {
     return false;
   }
-  return lines.every(kind);
+  return lines.every(kind.isAllowed) && lines.some(kind.isPin);
 }

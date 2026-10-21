@@ -25,14 +25,14 @@ The classifier decides the route. When it reports a file as a pin change that is
 
 ### 1. Pin the range
 
-Read the PR (`gh pr view <pr> --json number,state,baseRefName,headRefOid,isDraft`) and use full SHAs. Fetch the base, then:
+Read the PR (`gh pr view <pr> --json number,state,baseRefName,headRefName,headRefOid,isDraft`) and use full SHAs. Fetch the base and PR head (`git fetch origin <base-branch> <head-branch>`), check out or verify the worktree is at `<head>` (`git rev-parse HEAD` must equal `<head>`), then:
 
 ```bash
 base_sha=$(git merge-base "origin/<base-branch>" <head>)
 node $L classify-changeset --base "$base_sha" --head <head>
 ```
 
-Done when the scope above is settled and the list of files under analysis is fixed.
+Done when the scope above is settled, local `HEAD` equals `<head>`, and the list of files under analysis is fixed.
 
 ### 2. What could break
 
@@ -46,7 +46,7 @@ Done when every changed dependency has a from → to, an upstream summary with i
 
 ### 3. Tests
 
-Find the existing tests that exercise the consumer paths from step 2: unit, integration, smoke, end-to-end. Run them at the head, in a clean worktree on the PR branch, with the repository's own gate commands for each touched tier as AGENTS.md and the CI workflows define them — a frozen install first, then the typecheck, build and test commands those tiers use. A tier that cannot run locally (a deployed end-to-end suite) is covered by a CI run at the exact head; name the run.
+Find the existing tests that exercise the consumer paths from step 2: unit, integration, smoke, end-to-end. Verify `git rev-parse HEAD` equals `<head>` and `git status --porcelain` is empty, then run them at `<head>`, in a clean worktree on the PR branch, with the repository's own gate commands for each touched tier as AGENTS.md and the CI workflows define them — a frozen install first, then the typecheck, build and test commands those tiers use. A tier that cannot run locally (a deployed end-to-end suite) is covered by a CI run at the exact head; name the run.
 
 Record each command, its exit status, and the failures it printed. Read every failure before calling it unrelated: a dependency bump changes behaviour without changing a line here.
 
@@ -67,7 +67,7 @@ Pick the verdict:
 - `broken` — a test failed, or an upstream breaking change reaches a consumer here without a fix in the range.
 - `blocked` — the analysis could not finish: tests could not run, or upstream notes could not be read.
 
-Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`. Its first line is the marker, with the exact head the analysis ran at:
+Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`. Before posting, verify both `git rev-parse HEAD` and `gh pr view <pr> --json headRefOid -q .headRefOid` still equal `<head>` (if either moved, start over from step 1 and do not post a comment for a stale or unverified SHA). Its first line is the marker, with the exact head the analysis ran at:
 
 ```text
 <!-- dependency-analysis:v1 head=<head sha> verdict=<clear|gaps|broken|blocked> -->

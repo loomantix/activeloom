@@ -19,7 +19,7 @@ Read [`herdr.md`](../../references/herdr.md) first: engine launch, startup dialo
 ## Hard stops
 
 - never merge;
-- never mark a PR ready outside `next-pass` → `verify-coverage` → `finish-run --outcome converged`, except through `auto-glance`'s clean-result and CI gate below or for a herder-opened gate-fix PR (see [Pre-existing red gate](#pre-existing-red-gate));
+- never mark a PR ready outside `next-pass` → `verify-coverage` → `finish-run --outcome converged`, except through `auto-glance`'s clean-result and CI gate below, `dep-analysis`'s `verdict=clear` and CI gate on a `dependencyUpdate` PR, or for a herder-opened gate-fix PR (see [Pre-existing red gate](#pre-existing-red-gate));
 - never start a new run after the cap to get more rounds;
 - never override or dismiss a reviewer's finding.
 
@@ -124,7 +124,8 @@ At most one gate fix per PR per run. A second red gate of this kind is a block.
 
 1. `node $L verify-coverage --repo $repo --pr <n> --head $head` must pass.
 2. `python3 -I $H finish-run --repo $repo --pr <n> --head $head --outcome converged` must exit 0. A failure at either step is a block; the PR stays draft.
-3. CI at the exact head: `gh run list --commit $head --json name,status,conclusion,databaseId,workflowName`. Wait until every run has completed; an absent run is not a passing one.
+3. If `classify-changeset --base <merge-base sha> --head $head` reports a non-empty `dependencyPaths` (mixed range), run `/dep-analysis <n>` at `$head` now. Require its `dependency-analysis:v1` comment at `head=$head` to record `verdict=clear`; any other verdict (`gaps`, `broken`, `blocked`) leaves the PR draft, notifies with the verdict, and stops before `gh pr ready`.
+4. CI at the exact head: `gh run list --commit $head --json name,status,conclusion,databaseId,workflowName`. Wait until every run has completed; an absent run is not a passing one.
    - **All green:** `gh pr ready <n>`. Notify with `--sound request`: `<repo>#<n> converged, CI green — ready for final review and merge`.
    - **Any red:** leave the PR draft. Find the failing job (`gh run view <id> --json jobs`) and that workflow's latest result on the base branch (`gh run list --branch <base> --workflow <workflow> -L 1`). Notify with both. Do not fix it.
 
