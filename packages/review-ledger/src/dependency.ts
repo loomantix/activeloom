@@ -466,10 +466,6 @@ function contentSkeleton(
           return raw.replace(/(^|\s)(?:go)?v?\d[\w.+-]*(?=\s|$)/, '$1<pin>');
         if (name === 'pom.xml')
           return raw.replace(/(<version>).*?(<\/version>)/, '$1<pin>$2');
-        if (name.startsWith('build.gradle'))
-          return raw.replace(/(:)v?\d[\w.+-]*(["'])/, '$1<pin>$2');
-        if (name === 'gemfile' || name === 'podfile' || name === 'mix.exs')
-          return raw.replace(/["'][~<>=!\s\d.]+["']/g, '"<pin>"');
         return raw.replace(/([:=]\s*)(.+?)(,?\s*)$/, '$1<pin>$3');
       }
       if (REQUIREMENTS_FILE.test(name)) {
