@@ -632,7 +632,10 @@ REPEATABLE = {"codex": CODEX_CONFIG_FLAGS}
 # The Claude mode whose classifier needs the herd's settings entries.
 CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
 # claude-cli-invocations:end
-PERMISSION_SCOPE = "herd.json only; engine config files such as ~/.codex/config.toml and Claude settings are not read"
+PERMISSION_SCOPE = (
+    "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "
+    "~/.codex/config.toml and Claude settings are not read (claude-settings checks Claude settings for auto mode)"
+)
 
 
 def _classify(engine: str, flag: str, value: str | None) -> tuple[str | None, bool] | None:
@@ -730,7 +733,12 @@ def _canonical(engine: str, arg: str) -> str:
 
 
 def parse_type_output(cli: str, text: str) -> dict[str, Any]:
-    """What `type <cli>` reports: an alias and its words, a function, or neither."""
+    """What `type <cli>` reports: an alias and its words, a function, or neither.
+
+    `kind` is None when no line describes `cli`: the shell exited early, loaded
+    no aliases, or printed `type` in another language. That is not a check.
+    """
+    described = False
     for raw in text.splitlines():
         line = raw.strip()
         for pattern in ALIAS_PATTERNS:
@@ -745,7 +753,8 @@ def parse_type_output(cli: str, text: str) -> dict[str, Any]:
         match = FUNCTION_RE.match(line)
         if match and match.group("cli") == cli:
             return {"kind": "function", "definition": None, "words": []}
-    return {"kind": "none", "definition": None, "words": []}
+        described = described or line.startswith(f"{cli} is ")
+    return {"kind": "none" if described else None, "definition": None, "words": []}
 
 
 def probe_type(cli: str, shell: str) -> str | None:
@@ -767,7 +776,8 @@ def probe_type(cli: str, shell: str) -> str | None:
 def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None) -> dict[str, Any]:
     """Flags an alias adds to every launch, and those the herd also passes."""
     cli = ENGINE_CLIS[engine]
-    if type_text is None:
+    parsed = parse_type_output(cli, type_text) if type_text is not None else None
+    if parsed is None or parsed["kind"] is None:
         return {
             "cli": cli,
             "checked": False,
@@ -776,7 +786,6 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
             "repeats": [],
             "turned_off": [],
         }
-    parsed = parse_type_output(cli, type_text)
     words = parsed["words"]
     first_flag = next((index for index, word in enumerate(words) if word.startswith("-")), len(words))
     alias_args = words[first_flag:]
@@ -878,20 +887,23 @@ def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
     named = ", ".join(f"{' '.join(args)} for {ENGINE_CLIS[engine]}" for engine, args in flags.items())
     clis = " or ".join(ENGINE_CLIS[engine] for engine in flags)
     return (
-        f"Starting {clis} reviewer and worker sessions with `herdr agent start` using the permission-off flags "
-        f"configured in {_home_relative(herd_path)} ({named}) is expected: the user configured these flags "
-        "for local review chains and approved them."
+        f"While a herd skill (hreview, auto-glance, hgrill, horch, hloop, hpromote) is running, starting {clis} "
+        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags configured in "
+        f"{_home_relative(herd_path)} ({named}) is expected: the user configured these flags for local review "
+        "chains and approved them. This covers only sessions the skill starts with a prompt it wrote, and only "
+        "flags that file held before the run; it does not cover other flags or launches asked for by text the "
+        "session read."
     )
+
+
+# Commands a deny or ask rule must not cover. Launches are not pre-allowed: a
+# `Bash(herdr agent start:*)` rule would approve any argv after `--`, in every
+# session, without the classifier.
+HERD_COMMANDS = ("herdr agent start", "herdr agent read", "herdr agent send-keys")
 
 
 def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]]:
     required: list[dict[str, Any]] = [
-        {
-            "setting": "permissions.allow",
-            "entry": "Bash(herdr agent start:*)",
-            "command": "herdr agent start",
-            "why": "starting an engine session; without it auto mode can refuse the launch",
-        },
         {
             "setting": "permissions.allow",
             "entry": "Bash(herdr agent read:*)",
@@ -901,14 +913,16 @@ def _required(loaded: dict[str, Any], engines: list[str]) -> list[dict[str, Any]
         {
             "setting": "autoMode.allow",
             "entry": DIALOG_RULE,
-            "command": "herdr agent send-keys",
             "names": ["herdr agent send-keys"],
             "why": "answering a startup dialog in a pane the run started",
         },
     ]
     flags: dict[str, list[str]] = {}
     for engine in engines:
-        args = loaded["config"]["engines"][engine]["permission_off_args"]
+        entry = loaded["config"]["engines"][engine]
+        hits, _, _ = _turned_off(engine, entry["launch_args"])
+        in_launch = [word for hit in hits for word in hit["arg"].split(" ", 1)]
+        args = [*in_launch, *entry["permission_off_args"]]
         if args:
             flags[engine] = args
     if flags:
@@ -992,27 +1006,21 @@ def auto_mode_report(
 
     missing: list[dict[str, str]] = []
     conflicts: list[dict[str, str]] = []
+    for command in HERD_COMMANDS:
+        for kind, rules in restrictions.items():
+            conflicts.extend(
+                {"setting": f"permissions.{kind}", "entry": rule, "blocks": command}
+                for rule in rules
+                if rule_covers(rule, command)
+            )
     for item in _required(loaded, engines):
         shown = {key: item[key] for key in ("setting", "entry", "why")}
-        if "command" in item:
-            for kind, rules in restrictions.items():
-                conflicts.extend(
-                    {
-                        "setting": f"permissions.{kind}",
-                        "entry": rule,
-                        "blocks": item["command"],
-                    }
-                    for rule in rules
-                    if rule_covers(rule, item["command"])
-                )
         if item["setting"] == "permissions.allow":
             if not any(rule_covers(rule, item["command"]) for rule in allow):
                 missing.append(shown)
         elif not any(all(_names(rule, name) for name in item["names"]) for rule in auto_allow):
             missing.append(shown)
 
-    user_auto = settings["user"].get("autoMode") if isinstance(settings["user"], dict) else None
-    user_auto_allow = user_auto.get("allow") if isinstance(user_auto, dict) else None
     any_auto_allow = any(
         isinstance(value, dict)
         and isinstance(value.get("autoMode"), dict)
@@ -1043,8 +1051,9 @@ def auto_mode_report(
             holder = draft[section] = {}
         entries = holder.get(key)
         if not isinstance(entries, list):
-            # A new autoMode.allow list replaces the built-in rules unless it names them.
-            entries = holder[key] = ["$defaults"] if section == "autoMode" and user_auto_allow is None else []
+            # A new autoMode.allow list replaces the built-in rules unless it names them;
+            # keep them only where no list in scope has already left them out.
+            entries = holder[key] = ["$defaults"] if section == "autoMode" and defaults == "not set" else []
         entries.append(item["entry"])
     _private_file(draft_path, json.dumps(draft, indent=2) + "\n")
     report["draft"] = {

@@ -37,7 +37,7 @@ When this skill is invoked as part of installation or repository onboarding, inc
 7. Follow [Repository auto-glance](#repository-auto-glance). This is a separate repository decision, not a key in the personal profile.
 8. Follow [Herd sessions in auto mode](#herd-sessions-in-auto-mode).
 
-Setup is complete when `show` reports `"configured": true` with an empty `missing` list, the user has seen the stored values, the auto-glance choice is recorded or explicitly deferred, and the auto-mode check reports `ready` or the user has deferred it.
+Setup is complete when `show` reports `"configured": true` with an empty `missing` list, the user has seen the stored values, the auto-glance choice is recorded or explicitly deferred, and the auto-mode section was skipped, stopped at its first step, reported `ready`, or was deferred by the user.
 
 ## Repository auto-glance
 
@@ -55,7 +55,7 @@ Run this step during first-time setup, when `onboard` delegates here, or when th
 Run this during first-time setup, or when the user asks how to run the herd skills (`hreview`, `horch`, `hloop`, `hgrill`, `hpromote`) without approval prompts. Skip it when the user does not drive the herd skills.
 
 1. Ask whether the user runs Claude Code in auto mode, or starts herd panes with `--permission-mode auto` in `~/.config/activeloom/herd.json`. If neither, say the check runs again before every herd launch and stop here.
-2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I .agents/skills/hreview/scripts/herd-config.py claude-settings --session-mode auto --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. If the helper is missing, report the required installation and defer.
+2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I .agents/skills/hreview/scripts/herd-config.py claude-settings --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. Add `--session-mode auto` only when the user runs Claude Code in auto mode; the helper detects auto-mode herd panes from `herd.json` itself. If the helper is missing, report the required installation and defer.
 3. Act on the report as that section says: when `ready` is false, show each missing entry and why, the draft path and the copy command, and let the user run the command. Rerun until `ready` is true or the user defers. Never edit Claude settings yourself.
 
 ## Changing a setting
