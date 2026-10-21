@@ -7,22 +7,23 @@ Shared mechanics for `hreview`, `auto-glance`, `hgrill`, `horch`, `hloop` and `h
 - herdr 0.9.0 or later, and this session running inside it: `test "${HERDR_ENV:-}" = 1`. Otherwise say so and stop.
 - `gh` authenticated for the repository, `git`, `jq`, Python 3.
 - The review surface the skill names (ledger helper, run controller, review profile) installed in the checkout.
-- The [permissions preflight](#permissions-preflight), before the first engine launch.
+- The [permissions preflight](#permissions-preflight), including its [Claude auto-mode check](#claude-auto-mode), before the first engine launch.
 
 ## Configuration
 
 The config helper ships with `hreview`: `python3 -I <skills root>/hreview/scripts/herd-config.py <command>`. Every command prints JSON; exit 1 is an invalid config, 2 a git or usage error, 3 a held lock. Treat 1 and 2 as blocks.
 
-| Command                                             | Use                                                                                                                                                                   |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `repo`                                              | `.activeloom-herd.json` from the integration branch at `origin`, with defaults applied. Never read the copy in a PR worktree.                                         |
-| `user`                                              | `~/.config/activeloom/herd.json` (or `$ACTIVELOOM_HERD_USER_CONFIG`) with defaults applied.                                                                           |
-| `user-args --engine <e> [--read-only]`              | The user's extra launch argv for one engine. `--read-only` drops the permission-off arguments.                                                                        |
-| `gate-fix-paths --base <sha> --head <sha>`          | Classify a gate fix's changed paths against the repository's `gate_fix` globs.                                                                                        |
-| `paths --repo <owner/name> --skill <s> [--key <k>]` | Create and print the private state and scratch directories for this repository and skill.                                                                             |
-| `lock` / `unlock` (same arguments as `paths`)       | Take or release an exclusive lock. `lock` exits 3 when another run holds it.                                                                                          |
-| `validate [<file>]`                                 | Check a working-tree `.activeloom-herd.json` while authoring it.                                                                                                      |
-| `permissions --engine <e> [--engine <e>]`           | Per engine: whether sessions that edit stop at approval prompts, which configured flags turn a check off, and any such flag in `launch_args`. Reads `herd.json` only. |
+| Command                                                                                                        | Use                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo`                                                                                                         | `.activeloom-herd.json` from the integration branch at `origin`, with defaults applied. Never read the copy in a PR worktree.                                                               |
+| `user`                                                                                                         | `~/.config/activeloom/herd.json` (or `$ACTIVELOOM_HERD_USER_CONFIG`) with defaults applied.                                                                                                 |
+| `user-args --engine <e> [--read-only]`                                                                         | The user's extra launch argv for one engine. `--read-only` drops the permission-off arguments.                                                                                              |
+| `gate-fix-paths --base <sha> --head <sha>`                                                                     | Classify a gate fix's changed paths against the repository's `gate_fix` globs.                                                                                                              |
+| `paths --repo <owner/name> --skill <s> [--key <k>]`                                                            | Create and print the private state and scratch directories for this repository and skill.                                                                                                   |
+| `lock` / `unlock` (same arguments as `paths`)                                                                  | Take or release an exclusive lock. `lock` exits 3 when another run holds it.                                                                                                                |
+| `validate [<file>]`                                                                                            | Check a working-tree `.activeloom-herd.json` while authoring it.                                                                                                                            |
+| `permissions --engine <e> [--engine <e>]`                                                                      | Per engine: whether sessions that edit stop at approval prompts, which configured flags turn a check off, any such flag in `launch_args`, and what a shell alias for the engine's CLI adds. |
+| `claude-settings --engine <e> [...] [--session-mode <m>] [--project-dir <dir>] [--draft <file>] [--read-only]` | Whether Claude auto mode is in use, and which Claude settings entries the herd needs then. Writes a draft settings file when some are missing; never writes Claude settings.                |
 
 State files hold identifiers only: pane and tab IDs, PR and issue numbers, heads, outcomes, URLs, timestamps. No issue text, evidence, customer data or tokens. Scratch never goes in a worktree.
 
@@ -30,7 +31,7 @@ State files hold identifiers only: pane and tab IDs, PR and issue numbers, heads
 
 Every herd skill runs this before its first engine launch. Run `permissions` with an `--engine` for every engine this run may start. A session the skill starts read-only takes `user-args --read-only`, which still passes `launch_args`: for an engine this run starts only read-only, act on `turned_off_in_read_only` and `unrecognized` and make no offer. Act on each engine's entry before launching anything.
 
-The report reads `herd.json` only, as its `scope` says. An engine's own config, such as Codex `~/.codex/config.toml` or Claude settings, can turn a check off without showing here, so never present an empty `turned_off` as proof that every check is on.
+The report reads `herd.json` and, for aliases, `type <cli>` in the user's shell, as its `scope` says. An engine's own config, such as Codex `~/.codex/config.toml` or Claude settings, can turn a check off without showing here, so never present an empty `turned_off` as proof that every check is on.
 
 - **`unrecognized` is not empty.** Name those flags and say the helper cannot tell what they turn off. Make no offer for that engine: an added flag could repeat one of them under another spelling, and the Codex CLI exits on a repeated flag.
 - **`stops_at_prompts` is true and nothing is unrecognized.** Its panes stop at every approval prompt, and the run answers them with `herdr agent send-keys`. This session's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through. Tell the user, and offer the tiers below, narrowest first, each with its line on what it removes. Link the guide on [running unattended safely](https://github.com/loomantix/activeloom/blob/main/docs/herd-orchestration.md#running-unattended-safely): these sessions read pull request and issue text that anyone may have written, and hold an authenticated `gh`.
@@ -47,8 +48,27 @@ The report reads `herd.json` only, as its `scope` says. An engine's own config, 
 
 - **`turned_off` is not empty.** Tell the user in one line per engine what its sessions run without, for example `codex: -a never -s danger-full-access turns off approval prompts and the sandbox`. Do not ask again; the setting is theirs.
 - **`turned_off_in_read_only` is not empty.** Those flags are in `launch_args`, so read-only sessions run without the check too. Tell the user and recommend moving them to `permission_off_args`.
+- **Alias repeats.** Use `alias.repeats` for editing sessions and `alias.read_only_repeats` for read-only sessions; check both when the run starts both modes. If the applicable list is not empty, the alias adds a flag that launch also passes. Block that launch: name the repeated flags, and tell the user to remove them from the alias and keep them in `herd.json`.
+- **`alias.turned_off` is not empty.** The alias turns a check off for every session, read-only ones included. Tell the user and recommend moving the flag to `permission_off_args`.
+- **`alias.kind` is `function`.** The helper cannot see what a shell function adds. Say so, and ask the user to confirm it adds no flag `herd.json` holds.
+- **`alias.checked` is false.** The shell probe failed, timed out, or printed nothing about the CLI, so the empty `repeats` and `turned_off` prove nothing. Say the alias could not be checked, and ask the user to confirm that `type <cli>` adds no flag `herd.json` holds.
 
 A session that another session started has no user to ask: it reports these in its first message and continues as configured. The session the user invoked asks. Never write `herd.json` without the user's choice. That is a rule the session follows, not one the helper enforces: the session edits the file itself.
+
+### Claude auto mode
+
+Claude Code's auto mode puts a classifier in front of each action. Without entries in the user's Claude settings it refuses ordinary herd actions: starting a Codex or Agy session with `herd.json`'s permission-off flags reads as creating an unsafe agent, and reading or answering a pane's startup dialog reads as bypassing auto mode. A chain that meets either refusal stops partway through, so check before the first launch.
+
+Run `claude-settings` with an `--engine` for every engine this run may start, after `herd.json` is settled. When this session is Claude Code, add `--session-mode <its permission mode>` (`auto` while auto mode is active). Add `--project-dir <primary checkout>` so the checkout's `.claude/settings.json` and `.claude/settings.local.json` count. Pass `--draft <scratch dir>/claude-settings.json` once the skill has a scratch directory. Add `--read-only` when every session this run starts is read-only, as auto-glance's are: those sessions never get `permission_off_args`. The helper counts auto mode as in use when this session runs in it, when `herd.json` starts Claude sessions in it (those sessions drive panes too), or when a settings file sets `permissions.defaultMode` to `auto`.
+
+- **`ready` is true.** Continue. When `auto_mode.in_use` is false and `partial_conflicts` is empty, say nothing.
+- **`ready` is false.** Block before any launch. A deny rule in `conflicts` refuses its command in every permission mode, so it blocks even when `auto_mode.in_use` is false. Tell the user which reason in `auto_mode.because` applies, if any, then list each `missing` entry with its `setting` and `why`, and each `conflicts` deny or ask rule that blocks unattended use of a herd command. When a draft exists, give the `draft.path` (the user's settings with only the missing entries added) and the `draft.copy_command`, which backs up the settings file, validates the draft with `jq -e`, then copies it into place. Never print the draft: it copies the whole settings file, secrets under `env` included, and the `missing` entries are exactly what it adds. Ask the user to read the draft and run the command themselves (in Claude Code, `! <command>`), then rerun `claude-settings`. Continue once it reports `ready`. Never run the copy command or edit Claude settings yourself. Rules in `conflicts` are the user's to change; the draft never removes them.
+- **`partial_conflicts` is not empty.** Each deny or ask rule there matches some invocations of its `may_block` command, possibly the ones the herd runs. Name each rule and say the run stops if a herd command matches it. These rules are the user's to change; continue as configured.
+- **`defaults` is `replaced`.** The user's `autoMode.allow` list leaves out `$defaults`, so Claude's built-in rules are off. The draft keeps it that way. Mention it once.
+
+The settings take effect without a restart. Build the draft only after `herd.json` is final: the launch entry names its permission-off flags, and a flag added later makes the check fail again. A session that another session started reports a `ready: false` result in its first message and stops; it has no user to ask.
+
+In auto mode, run each herdr command as its own shell command. The classifier reads a compound command as one action, so a launch wrapped in status checks can be refused where each part alone passes.
 
 ## Engines
 
@@ -81,7 +101,7 @@ For a Claude pane, also set the pane environment when splitting it: `--env ANTHR
 
    Then `herdr agent wait <name> --until idle --until done --timeout 120000`.
 
-4. A launch that exits at once usually means a duplicated or unknown flag. Check `type <cli>` for a shell alias that adds flags, and the user's `user-args`. The user's config is the place for permission-off flags, not an alias.
+4. A launch that exits at once usually means a duplicated or unknown flag. Run `permissions` again and read its `alias` entry for that engine, then the user's `user-args`. The user's config is the place for permission-off flags, not an alias.
 
 ## Prompting
 

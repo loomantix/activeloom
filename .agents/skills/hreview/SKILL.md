@@ -39,7 +39,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
 
 ## Preflight (per PR)
 
-1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight (herdr.md) for every engine in the review order.
+1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine in the review order.
 2. Read `.agents/REVIEW_WORKFLOW.md` and `.agents/references/local-review-ledger.md` if not already in context this session. They govern tier, rounds, roster, recovery and telemetry; this skill adds only the herding.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; `gh pr view <n> --json headRefName,headRefOid,baseRefName,isDraft,state,author`. The PR must be open. Full SHAs only.
 4. Config: `python3 -I $C repo` and `python3 -I $C user`. Either failing is a block.

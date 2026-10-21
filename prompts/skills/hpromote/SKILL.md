@@ -49,7 +49,7 @@ Nothing else: no closing issues, editing other PRs, filing issues beyond deferre
 
 ## Dispatch
 
-1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight (herdr.md) for this session's engine and every engine a fix or review may start on.
+1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for this session's engine and every engine a fix or review may start on.
 2. Lock: `python3 -I $C lock --repo <repo> --skill hpromote --key <yyyy-mm-dd>`. Exit 3 means a promotion is already running or blocked: report its tab and stop.
 3. Open a new tab, `P<mmdd>`, with the primary checkout as `--cwd` (never reuse the dispatcher's), start the driver as `p<mmdd>-driver` on this session's engine, and prompt it `run` (plus `--dry-run` if given) through this skill, addressed the way herdr.md's Engines table gives for that engine.
 4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
