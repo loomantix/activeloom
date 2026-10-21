@@ -611,12 +611,16 @@ CODEX_CONFIG_KEYS: dict[str, FlagValues] = {
     },
 }
 CODEX_CONFIG_FLAGS = ("-c", "--config")
-# Flags a herd launch passes itself, outside herd.json: model and effort, and the
-# read-only mode. An alias that adds one repeats it.
+# Flags every herd launch passes itself, outside herd.json.
 HERD_FLAGS = {
-    "claude": ("--model", "--effort", "--permission-mode"),
-    "codex": ("-m", "-s"),
-    "gemini": ("--model", "--effort", "--mode"),
+    "claude": ("--model", "--effort"),
+    "codex": ("-m",),
+    "gemini": ("--model", "--effort"),
+}
+HERD_READ_ONLY_FLAGS = {
+    "claude": ("--permission-mode",),
+    "codex": ("-s",),
+    "gemini": ("--mode",),
 }
 # Two spellings of one flag; the CLI counts them as the same flag.
 FLAG_SPELLINGS = {
@@ -773,7 +777,9 @@ def probe_type(cli: str, shell: str) -> str | None:
     return result.stdout
 
 
-def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None) -> dict[str, Any]:
+def alias_report(
+    engine: str, entry: dict[str, list[str]], type_text: str | None
+) -> dict[str, Any]:
     """Flags an alias adds to every launch, and those the herd also passes."""
     cli = ENGINE_CLIS[engine]
     parsed = parse_type_output(cli, type_text) if type_text is not None else None
@@ -784,10 +790,13 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
             "kind": None,
             "definition": None,
             "repeats": [],
+            "read_only_repeats": [],
             "turned_off": [],
         }
     words = parsed["words"]
-    first_flag = next((index for index, word in enumerate(words) if word.startswith("-")), len(words))
+    first_flag = next(
+        (index for index, word in enumerate(words) if word.startswith("-")), len(words)
+    )
     alias_args = words[first_flag:]
     repeatable = REPEATABLE.get(engine, ())
     configured = {
@@ -799,7 +808,20 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
         ]
         if arg.startswith("-")
     }
-    added = [arg for arg in alias_args if arg.startswith("-") and arg.split("=", 1)[0] not in repeatable]
+    read_only_configured = {
+        _canonical(engine, arg)
+        for arg in [
+            *entry["launch_args"],
+            *HERD_FLAGS[engine],
+            *HERD_READ_ONLY_FLAGS[engine],
+        ]
+        if arg.startswith("-")
+    }
+    added = [
+        arg
+        for arg in alias_args
+        if arg.startswith("-") and arg.split("=", 1)[0] not in repeatable
+    ]
     repeats = sorted({_canonical(engine, arg) for arg in added} & configured)
     turned_off, _, _ = _turned_off(engine, alias_args)
     return {
@@ -808,6 +830,9 @@ def alias_report(engine: str, entry: dict[str, list[str]], type_text: str | None
         "kind": parsed["kind"],
         "definition": parsed["definition"],
         "repeats": repeats,
+        "read_only_repeats": sorted(
+            {_canonical(engine, arg) for arg in added} & read_only_configured
+        ),
         "turned_off": turned_off,
     }
 
@@ -869,13 +894,17 @@ def rule_covers(rule: str, command: str) -> bool:
     body = match.group(1).strip()
     if body in ("*", ":*"):
         return True
-    for suffix in (":*", " *"):
-        if body.endswith(suffix):
-            prefix = body[: -len(suffix)].strip()
-            return command == prefix or command.startswith(prefix + " ")
-    if body.endswith("*"):
-        return command.startswith(body[:-1])
-    return False
+    if body.endswith(":*"):
+        body = body[:-2] + " *"
+    # A command family includes arbitrary arguments, so an exact or suffix-only
+    # rule cannot establish that the whole family is allowed.
+    if not body.endswith("*"):
+        return False
+    pattern = re.escape(body).replace(r"\*", ".*")
+    return any(
+        re.fullmatch(pattern, text, re.S) is not None
+        for text in (command, command + " ")
+    )
 
 
 def _names(text: str, term: str) -> bool:

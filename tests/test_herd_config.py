@@ -960,6 +960,14 @@ def test_project_and_local_settings_count_except_project_auto_mode(
         ("Bash(herdr agent *)", True),
         ("Bash(herdr agent start:*)", True),
         ("Bash(herdr agent start)", False),
+        ("Bash(*herdr*)", True),
+        ("Bash(herdr * *)", True),
+        ("Bash(* agent:*)", True),
+        ("Bash(herdr agent*read*)", False),
+        ("Bash(herdr agent start * forbidden)", False),
+        ("Bash(herdr agent star *)", False),
+        ("Bash(herdr agent star*)", True),
+        ("Bash(herdr agent [s]tart*)", False),
         ("Bash(herdr agent read:*)", False),
         ("Bash(herd:*)", False),
         ("Read(herdr agent start)", False),
@@ -979,3 +987,74 @@ def test_invalid_settings_json_is_a_config_error(
     herd_path = tmp_path / "herd.json"
     herd_path.write_text(json.dumps({"schema_version": 1}))
     assert herd.main(["claude-settings", "--path", str(herd_path), "--engine", "codex"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("engine", "cli", "flag", "value"),
+    [
+        ("codex", "codex", "-s", "workspace-write"),
+        ("claude", "claude", "--permission-mode", "auto"),
+        ("gemini", "agy", "--mode", "accept-edits"),
+    ],
+)
+def test_alias_mode_flag_only_repeats_in_read_only_launch(
+    engine: str, cli: str, flag: str, value: str
+) -> None:
+    alias = herd.alias_report(
+        engine,
+        {"launch_args": [], "permission_off_args": []},
+        f"{cli} is an alias for {cli} {flag} {value}",
+    )
+    assert alias["repeats"] == []
+    assert alias["read_only_repeats"] == [flag]
+
+
+def test_alias_permission_off_flag_is_not_repeated_in_read_only_launch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alias = alias_for(
+        tmp_path,
+        capsys,
+        {"codex": {"permission_off_args": ["-a", "never"]}},
+        "codex is an alias for codex -a never",
+    )
+    assert alias["repeats"] == ["-a"]
+    assert alias["read_only_repeats"] == []
+
+
+def test_alias_launch_flag_repeats_in_both_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alias = alias_for(
+        tmp_path,
+        capsys,
+        {"codex": {"launch_args": ["-a", "never"]}},
+        "codex is an alias for codex --ask-for-approval never",
+    )
+    assert alias["repeats"] == alias["read_only_repeats"] == ["-a"]
+
+
+@pytest.mark.parametrize("kind", ["deny", "ask"])
+@pytest.mark.parametrize(
+    "rule", ["Bash(*herdr*)", "Bash(herdr * *)", "Bash(* agent:*)"]
+)
+def test_wildcard_restrictions_block_complete_settings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    rule: str,
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    settings["permissions"][kind] = [rule]
+    report = claude_settings(
+        tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto"
+    )
+    assert report["ready"] is False
+    assert report["missing"] == []
+    assert {item["blocks"] for item in report["conflicts"]} == {
+        "herdr agent start",
+        "herdr agent read",
+        "herdr agent send-keys",
+    }
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == settings
