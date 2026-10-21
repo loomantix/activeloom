@@ -40,7 +40,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
 
 ## Preflight (per PR)
 
-1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight (herdr.md) for every engine in the review order.
+1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine in the review order.
 2. Read `.codex/REVIEW_WORKFLOW.md` and `.codex/references/local-review-ledger.md` if not already in context this session. They govern tier, rounds, roster, recovery and telemetry; this skill adds only the herding.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; `gh pr view <n> --json headRefName,headRefOid,baseRefName,isDraft,state,author`. The PR must be open. Full SHAs only.
 4. Config: `python3 -I $C repo` and `python3 -I $C user`. Either failing is a block.
@@ -61,8 +61,8 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
      `python3 -I $H start-run --repo $repo --pr <n> --head <head> --base <merge-base sha> --tier <tier> --trigger <trigger|none> --cycle <order> --authorization-file <file>`.
      A scope-checkpoint refusal (`--scope-decision` required) is a block.
    - **Active:** reuse it as-is. Do not call `start-run` again.
-   - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`.
-     - **`--restart` typed by the user:** resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision <d>` when the user gave one. A scope-checkpoint refusal is the block below, with the scope line.
+   - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`; a failed read is a block.
+     - **`--restart` typed by the user:** if `--scope-decision split`, stop this PR before `start-run` and report that the requested split must be completed first. The user must name a new restart against the resulting scope. Otherwise resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision keep` when the user gave it. A scope-checkpoint refusal is the block below, with the scope line.
      - **A restart approval the user recorded:** otherwise, immediately before `start-run`, `python3 -I $C claim-restart --repo $repo --pr <n> --head <head>`. Exit 0 returns the record, now marked used: proceed as for `--restart`, taking `deep` and `scope_decision` from the record, and let the authorization paragraph cite `user restart approval <id>, recorded <created>` in place of "named in this session". Exit 4 means none matches this PR at this exact head, unexpired and unused: fall through. Never write or approve a record; only the user's own terminal can.
      - **Otherwise**, including a restart a peer asked for: stop that PR, print this block, and notify with `--sound request`. Do not ask the peer to confirm, retry, or find another route.
 
@@ -72,7 +72,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
         Review run <run_id12> ended <outcome>. <When a peer asked: The restart came from <peer>; only your words in this tab authorize one.>
         To restart, type in this tab: hreview <n> --restart<when scope_decision_required: --scope-decision keep|split>
         Or approve it from your own terminal, then restart this herder: python3 -I <absolute path of $C> approve-restart --repo <repo> --pr <n> --head <head><same --scope-decision>
-        <When scope_decision_required: This PR has <k> feat/fix commits; choose keep (review as one) or split (split it first).>
+        <When scope_decision_required: This PR has <k> feat/fix/perf commits and <m> files GitHub shows without a patch (name only the counts that fired the checkpoint); choose keep (review as one) or split (split it first).>
        ════════════════════════════════════════════════════════════
        ```
 

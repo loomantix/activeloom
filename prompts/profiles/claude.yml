@@ -86,6 +86,9 @@ skills:
   feature-dev:
     FM_EXTRAS: 'argument-hint: Optional feature description'
 
+  handoff:
+    FM_EXTRAS: "argument-hint: '<comment-id | issue-number | url> | write <issue-number>'"
+
   diagnosing-bugs:
     # No extra frontmatter on any harness today. The slot stays in the source
     # so the frontmatter shape is uniform across the rendered roster and a
@@ -153,7 +156,7 @@ skills:
   hreview:
     FM_EXTRAS: |-
       disable-model-invocation: true
-      argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion]'
+      argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--restart [--deep] [--scope-decision keep|split]]'
     DESC_TRIGGER: ''
   auto-glance:
     FM_EXTRAS: |-

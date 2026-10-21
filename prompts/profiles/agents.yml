@@ -51,6 +51,9 @@ skills:
   feature-dev:
     FM_EXTRAS: ''
 
+  handoff:
+    FM_EXTRAS: ''
+
   diagnosing-bugs:
     FM_EXTRAS: ''
 

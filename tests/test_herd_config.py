@@ -397,7 +397,7 @@ def test_unknown_user_engine_is_rejected() -> None:
 def permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], *names: str) -> Any:
     path = tmp_path / "herd.json"
     path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
-    argv = ["permissions", "--path", str(path)]
+    argv = ["permissions", "--path", str(path), "--no-alias-check"]
     for name in names:
         argv += ["--engine", name]
     assert herd.main(argv) == 0
@@ -406,6 +406,7 @@ def permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dic
 
 def test_engine_without_permission_flags_stops_at_prompts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     report = permissions(tmp_path, capsys, {}, "codex")
+    report["codex"].pop("alias")
     assert report == {
         "codex": {"stops_at_prompts": True, "turned_off": [], "unrecognized": [], "turned_off_in_read_only": []}
     }
@@ -507,8 +508,10 @@ def test_repeated_engine_is_reported_once(tmp_path: Path, capsys: pytest.Capture
 def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path = tmp_path / "herd.json"
     path.write_text(json.dumps({"schema_version": 1}))
-    assert herd.main(["permissions", "--engine", "codex", "--path", str(path)]) == 0
-    assert json.loads(capsys.readouterr().out)["scope"].startswith("herd.json only")
+    assert herd.main(["permissions", "--engine", "codex", "--path", str(path), "--no-alias-check"]) == 0
+    scope = json.loads(capsys.readouterr().out)["scope"]
+    assert scope.startswith("herd.json, plus `type <cli>`")
+    assert "Claude settings are not read" in scope
 
 
 def test_unknown_flag_in_launch_args_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -584,3 +587,566 @@ def test_paths_are_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert herd.main(["paths", "--repo", "acme/widgets", "--skill", "horch"]) == 0
     state = tmp_path / "cache/activeloom-herd/acme__widgets/horch"
     assert state.stat().st_mode & 0o777 == 0o700
+
+
+# --- shell aliases -----------------------------------------------------------------
+
+
+def fake_shell(tmp_path: Path, output: str) -> Path:
+    """A shell whose `-ic 'type <cli>'` prints `output`, as bash or zsh would."""
+    script = tmp_path / "fake-shell"
+    script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{output}\nEOF\n")
+    script.chmod(0o755)
+    return script
+
+
+def alias_for(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], output: str) -> Any:
+    path = tmp_path / "herd.json"
+    path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
+    argv = ["permissions", "--path", str(path), "--engine", "codex", "--shell", str(fake_shell(tmp_path, output))]
+    assert herd.main(argv) == 0
+    return json.loads(capsys.readouterr().out)["engines"]["codex"]["alias"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "codex is aliased to `codex --yolo'",
+        "codex is an alias for codex --dangerously-bypass-approvals-and-sandbox",
+    ],
+)
+def test_alias_repeating_a_herd_flag_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], output: str
+) -> None:
+    engines = {"codex": {"permission_off_args": ["--dangerously-bypass-approvals-and-sandbox"]}}
+    alias = alias_for(tmp_path, capsys, engines, output)
+    assert alias["kind"] == "alias"
+    assert alias["repeats"] == ["--dangerously-bypass-approvals-and-sandbox"]
+    assert alias["turned_off"][0]["turns_off"] == "approval prompts and the sandbox"
+
+
+def test_alias_flag_the_herd_passes_itself_is_a_repeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    alias = alias_for(tmp_path, capsys, {}, "codex is aliased to `codex --model gpt-x'")
+    assert alias["repeats"] == ["-m"]
+
+
+def test_alias_that_turns_a_check_off_reaches_read_only_sessions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alias = alias_for(tmp_path, capsys, {}, "codex is aliased to `codex -a never'")
+    assert alias["repeats"] == []
+    assert alias["turned_off"] == [{"arg": "-a never", "turns_off": "approval prompts"}]
+
+
+def test_repeatable_codex_config_flag_is_not_a_repeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"codex": {"launch_args": ["-c", "tui.theme=dark"]}}
+    alias = alias_for(tmp_path, capsys, engines, "codex is aliased to `codex -c sandbox_mode=read-only'")
+    assert alias["repeats"] == []
+
+
+def test_no_alias_and_function_are_told_apart(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert alias_for(tmp_path, capsys, {}, "codex is /usr/local/bin/codex")["kind"] == "none"
+    assert (
+        alias_for(tmp_path, capsys, {}, "codex is a function\ncodex () { command codex --yolo; }")["kind"] == "function"
+    )
+
+
+def test_alias_report_names_flags_but_never_the_alias_body(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    output = "codex is aliased to `OPENAI_API_KEY=sk-secret codex --yolo --profile=sk-flagvalue -m x'"
+    alias = alias_for(tmp_path, capsys, {}, output)
+    assert alias["flags"] == ["--profile", "--yolo", "-m"]
+    assert "definition" not in alias
+    assert "sk-" not in json.dumps(alias)
+
+
+def test_alias_for_another_command_is_ignored() -> None:
+    assert herd.parse_type_output("codex", "codex2 is aliased to `codex --yolo'")["kind"] is None
+
+
+@pytest.mark.parametrize("output", ["", "sh: type: not found", "codex ist ein Alias von `codex --yolo'"])
+def test_output_that_does_not_describe_the_cli_is_not_a_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], output: str
+) -> None:
+    alias = alias_for(tmp_path, capsys, {}, output)
+    assert alias["checked"] is False
+    assert alias["kind"] is None
+
+
+def test_alias_check_can_be_skipped(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    alias = permissions(tmp_path, capsys, {}, "codex")["codex"]["alias"]
+    assert alias["checked"] is False
+
+
+# --- Claude settings in auto mode ------------------------------------------------------
+
+LAUNCH_FLAGS = {
+    "codex": {"permission_off_args": ["--dangerously-bypass-approvals-and-sandbox"]},
+    "gemini": {"permission_off_args": ["--dangerously-skip-permissions"]},
+}
+COMPLETE = {
+    "permissions": {"allow": ["Bash(herdr agent read:*)"]},
+    "autoMode": {
+        "allow": [
+            "$defaults",
+            "Starting codex or agy sessions with `herdr agent start` using the permission-off flags configured in "
+            "herd.json (--dangerously-bypass-approvals-and-sandbox for codex, --dangerously-skip-permissions for agy) "
+            "is expected.",
+            herd.DIALOG_RULE,
+        ]
+    },
+}
+
+
+def claude_settings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    settings: dict[str, Any] | None,
+    *extra: str,
+    engines: dict[str, Any] = LAUNCH_FLAGS,
+) -> Any:
+    config_dir = tmp_path / "claude"
+    config_dir.mkdir(exist_ok=True)
+    if settings is not None:
+        (config_dir / "settings.json").write_text(json.dumps(settings))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    herd_path = tmp_path / "herd.json"
+    herd_path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
+    argv = ["claude-settings", "--path", str(herd_path), "--draft", str(tmp_path / "draft/settings.json")]
+    argv += ["--engine", "codex", "--engine", "gemini", *extra]
+    assert herd.main(argv) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_settings_with_every_entry_are_ready(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, COMPLETE, "--session-mode", "auto")
+    assert report["auto_mode"]["in_use"] is True
+    assert report["missing"] == []
+    assert report["ready"] is True
+    assert report["draft"] is None
+    assert report["defaults"] == "kept"
+
+
+@pytest.mark.parametrize("kind", ["deny", "ask"])
+@pytest.mark.parametrize("command", ["start", "read", "send-keys"])
+def test_restrictive_rules_block_complete_settings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    command: str,
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    rule = f"Bash(herdr agent {command}:*)"
+    settings["permissions"][kind] = [rule]
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert report["ready"] is False
+    assert report["missing"] == []
+    assert report["draft"] is None
+    assert report["conflicts"] == [
+        {"setting": f"permissions.{kind}", "entry": rule, "blocks": f"herdr agent {command}"}
+    ]
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == settings
+
+
+def test_missing_entries_block_and_get_a_draft(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = {"model": "opus", "permissions": {"allow": ["Bash(git status:*)"]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, existing, "--session-mode", "auto")
+    assert report["ready"] is False
+    assert [item["setting"] for item in report["missing"]] == [
+        "permissions.allow",
+        "autoMode.allow",
+        "autoMode.allow",
+    ]
+    draft_path = Path(report["draft"]["path"])
+    assert draft_path.stat().st_mode & 0o777 == 0o600
+    draft = json.loads(draft_path.read_text())
+    assert draft["model"] == "opus"
+    assert draft["permissions"]["allow"][0] == "Bash(git status:*)"
+    assert draft["autoMode"]["allow"][0] == "$defaults"
+    # Launches stay with the classifier: no allow rule that approves any argv.
+    assert draft["permissions"]["allow"] == ["Bash(git status:*)", "Bash(herdr agent read:*)"]
+    assert draft["autoMode"]["allow"][-1].startswith("While a herd skill")
+    # The user's own settings are never written.
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == existing
+    # The draft is complete: checking it as the user's settings finds nothing missing.
+    rerun = claude_settings(tmp_path, capsys, monkeypatch, draft, "--session-mode", "auto")
+    assert rerun["ready"] is True
+
+
+def test_copy_command_backs_up_validates_and_copies(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original: dict[str, Any] = {"permissions": {"allow": []}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, original, "--session-mode", "auto")
+    target = tmp_path / "claude/settings.json"
+    command = report["draft"]["copy_command"]
+    assert command.index("cp -p") < command.index("jq -e") < command.rindex(" && cp ")
+    assert json.loads(target.read_text()) == original
+
+
+def test_draft_keeps_a_list_that_replaced_the_defaults(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = {"autoMode": {"allow": ["Pushing to my fork is fine."]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert report["defaults"] == "replaced"
+    draft = json.loads(Path(report["draft"]["path"]).read_text())
+    assert draft["autoMode"]["allow"][0] == "Pushing to my fork is fine."
+    assert "$defaults" not in draft["autoMode"]["allow"]
+
+
+def test_absent_settings_file_is_drafted_from_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, None, "--session-mode", "auto")
+    assert report["files"]["user"]["present"] is False
+    assert report["draft"]["copy_command"].startswith("mkdir -p ")
+
+
+def test_not_in_auto_mode_is_ready_but_still_lists_entries(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--session-mode", "default")
+    assert report["auto_mode"]["in_use"] is False
+    assert report["ready"] is True
+    assert len(report["missing"]) == 3
+    assert report["draft"] is None
+
+
+@pytest.mark.parametrize("args", [["--permission-mode", "auto"], ["--permission-mode=auto"]])
+@pytest.mark.parametrize("location", ["launch_args", "permission_off_args"])
+def test_claude_panes_in_auto_mode_need_the_entries(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, args: list[str], location: str
+) -> None:
+    engines = {**LAUNCH_FLAGS, "claude": {location: args}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines=engines)
+    assert report["auto_mode"]["because"] == ["herd.json starts Claude sessions in auto mode"]
+    assert report["ready"] is False
+    assert report["draft"] is not None
+
+
+def test_default_mode_in_settings_counts_as_auto_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {"permissions": {"defaultMode": "auto"}})
+    assert report["auto_mode"]["in_use"] is True
+
+
+def test_launch_rule_must_name_every_configured_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = json.loads(json.dumps(COMPLETE))
+    stale["autoMode"]["allow"][1] = (
+        "Starting codex with `herdr agent start` and --dangerously-bypass-approvals-and-sandbox is fine."
+    )
+    report = claude_settings(tmp_path, capsys, monkeypatch, stale, "--session-mode", "auto")
+    assert [item["setting"] for item in report["missing"]] == ["autoMode.allow"]
+    assert "--dangerously-skip-permissions for agy" in report["missing"][0]["entry"]
+
+    stale_value = json.loads(json.dumps(COMPLETE))
+    stale_value["autoMode"]["allow"][1] = (
+        "Starting claude sessions with `herdr agent start` using --permission-mode auto is expected."
+    )
+    value_report = claude_settings(
+        tmp_path,
+        capsys,
+        monkeypatch,
+        stale_value,
+        "--engine",
+        "claude",
+        "--session-mode",
+        "auto",
+        engines={"claude": {"permission_off_args": ["--permission-mode", "bypassPermissions"]}},
+    )
+    assert [item["setting"] for item in value_report["missing"]] == ["autoMode.allow"]
+    assert "--permission-mode bypassPermissions for claude" in value_report["missing"][0]["entry"]
+
+    shared_flag = json.loads(json.dumps(COMPLETE))
+    shared_flag["autoMode"]["allow"][1] = (
+        "Starting agy sessions with `herdr agent start` using --dangerously-skip-permissions for agy is expected."
+    )
+    shared_report = claude_settings(
+        tmp_path,
+        capsys,
+        monkeypatch,
+        shared_flag,
+        "--engine",
+        "claude",
+        "--session-mode",
+        "auto",
+        engines={
+            "claude": {"permission_off_args": ["--dangerously-skip-permissions"]},
+            "gemini": {"permission_off_args": ["--dangerously-skip-permissions"]},
+        },
+    )
+    assert [item["setting"] for item in shared_report["missing"]] == ["autoMode.allow"]
+    assert "--dangerously-skip-permissions for claude" in shared_report["missing"][0]["entry"]
+
+
+def test_no_launch_rule_without_permission_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--session-mode", "auto", engines={})
+    assert len(report["missing"]) == 2
+
+
+def test_launches_are_checked_for_restrictions_without_a_launch_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    settings["permissions"]["deny"] = ["Bash(herdr agent start:*)"]
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto", engines={})
+    assert report["missing"] == []
+    assert report["conflicts"] == [
+        {"setting": "permissions.deny", "entry": "Bash(herdr agent start:*)", "blocks": "herdr agent start"}
+    ]
+    assert report["ready"] is False
+
+
+def test_permission_flags_in_launch_args_need_the_launch_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines = {"codex": {"launch_args": ["-m", "gpt-x", "-s", "danger-full-access"]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, COMPLETE, "--session-mode", "auto", engines=engines)
+    assert [item["setting"] for item in report["missing"]] == ["autoMode.allow"]
+    entry = report["missing"][0]["entry"]
+    assert "-s danger-full-access for codex" in entry
+    assert "gpt-x" not in entry
+
+
+def test_draft_keeps_defaults_replaced_in_local_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "checkout"
+    (project / ".claude").mkdir(parents=True)
+    local = {"autoMode": {"allow": ["Pushing to my fork is fine."]}}
+    (project / ".claude/settings.local.json").write_text(json.dumps(local))
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--session-mode", "auto", "--project-dir", str(project))
+    assert report["defaults"] == "replaced"
+    draft = json.loads(Path(report["draft"]["path"]).read_text())
+    assert "$defaults" not in draft["autoMode"]["allow"]
+
+
+def test_draft_keeps_defaults_when_user_allow_is_not_a_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = {"autoMode": {"allow": "not a list"}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert report["defaults"] == "not set"
+    draft = json.loads(Path(report["draft"]["path"]).read_text())
+    assert draft["autoMode"]["allow"][0] == "$defaults"
+
+
+def test_project_and_local_settings_count_except_project_auto_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "checkout"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude/settings.json").write_text(json.dumps(COMPLETE))
+    (project / ".claude/settings.local.json").write_text(json.dumps({"permissions": {"deny": ["Bash(herdr:*)"]}}))
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--session-mode", "auto", "--project-dir", str(project))
+    assert {item["setting"] for item in report["missing"]} == {"autoMode.allow"}
+    assert report["conflicts"][0] == {
+        "setting": "permissions.deny",
+        "entry": "Bash(herdr:*)",
+        "blocks": "herdr agent start",
+    }
+    assert report["ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("rule", "covers"),
+    [
+        ("Bash", True),
+        ("Bash(*)", True),
+        ("Bash(herdr:*)", True),
+        ("Bash(herdr agent *)", True),
+        ("Bash(herdr agent start:*)", True),
+        ("Bash(herdr agent start)", False),
+        ("Bash(*herdr*)", True),
+        ("Bash(herdr * *)", True),
+        ("Bash(* agent:*)", True),
+        ("Bash(herdr agent*read*)", False),
+        ("Bash(herdr agent start * forbidden)", False),
+        ("Bash(herdr agent star *)", False),
+        ("Bash(herdr agent star*)", True),
+        ("Bash(herdr agent [s]tart*)", False),
+        ("Bash(herdr agent read:*)", False),
+        ("Bash(herd:*)", False),
+        ("Read(herdr agent start)", False),
+    ],
+)
+def test_permission_rule_coverage(rule: str, covers: bool) -> None:
+    assert herd.rule_covers(rule, "herdr agent start") is covers
+
+
+@pytest.mark.parametrize(
+    ("rule", "restricts"),
+    [
+        ("Bash(herdr agent start:*)", True),
+        ("Bash(herdr agent start * --yolo*)", True),
+        ("Bash(herdr agent start --kind codex)", True),
+        ("Bash(herdr agent st*)", True),
+        ("Bash(* --dangerously-bypass-approvals-and-sandbox*)", True),
+        ("Bash(herdr agent start)", False),
+        ("Bash(herdr agent starts*)", False),
+        ("Bash(herdr agent read:*)", False),
+        ("Read(herdr agent start *)", False),
+    ],
+)
+def test_restriction_overlap(rule: str, restricts: bool) -> None:
+    assert herd.rule_restricts(rule, "herdr agent start") is restricts
+
+
+@pytest.mark.parametrize("kind", ["deny", "ask"])
+def test_partial_restrictions_are_reported_without_blocking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    rule = "Bash(herdr agent start * --dangerously-bypass-approvals-and-sandbox*)"
+    settings["permissions"][kind] = [rule]
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert report["conflicts"] == []
+    assert report["partial_conflicts"] == [
+        {"setting": f"permissions.{kind}", "entry": rule, "may_block": "herdr agent start"}
+    ]
+    assert report["ready"] is True
+
+
+def test_deny_conflict_blocks_outside_auto_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = {"permissions": {"deny": ["Bash(herdr agent send-keys:*)"]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "default")
+    assert report["auto_mode"]["in_use"] is False
+    assert report["ready"] is False
+    assert report["draft"] is None
+
+
+def test_ask_conflict_only_matters_in_auto_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = {"permissions": {"ask": ["Bash(herdr agent send-keys:*)"]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "default")
+    assert len(report["conflicts"]) == 1
+    assert report["ready"] is True
+
+
+def test_read_only_run_needs_no_launch_entry_for_permission_off_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    settings["autoMode"]["allow"] = ["$defaults", herd.DIALOG_RULE]
+    editing = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto")
+    assert editing["ready"] is False
+    report = claude_settings(tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto", "--read-only")
+    assert report["missing"] == []
+    assert report["ready"] is True
+
+
+def test_read_only_run_still_names_check_off_flags_in_launch_args(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines = {"codex": {"launch_args": ["-s", "danger-full-access"], "permission_off_args": ["-a", "never"]}}
+    report = claude_settings(
+        tmp_path, capsys, monkeypatch, {}, "--session-mode", "auto", "--read-only", engines=engines
+    )
+    launch = report["missing"][-1]["entry"]
+    assert "-s danger-full-access for codex" in launch
+    assert "-a never" not in launch
+
+
+def test_read_only_claude_sessions_ignore_auto_mode_in_permission_off_args(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines = {**LAUNCH_FLAGS, "claude": {"permission_off_args": ["--permission-mode", "auto"]}}
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", "--read-only", engines=engines)
+    assert report["auto_mode"]["in_use"] is False
+
+
+def test_invalid_settings_json_is_a_config_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "claude"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text("{not json")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    herd_path = tmp_path / "herd.json"
+    herd_path.write_text(json.dumps({"schema_version": 1}))
+    assert herd.main(["claude-settings", "--path", str(herd_path), "--engine", "codex"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("engine", "cli", "flag", "value"),
+    [
+        ("codex", "codex", "-s", "workspace-write"),
+        ("claude", "claude", "--permission-mode", "auto"),
+        ("gemini", "agy", "--mode", "accept-edits"),
+    ],
+)
+def test_alias_mode_flag_only_repeats_in_read_only_launch(
+    engine: str, cli: str, flag: str, value: str
+) -> None:
+    alias = herd.alias_report(
+        engine,
+        {"launch_args": [], "permission_off_args": []},
+        f"{cli} is an alias for {cli} {flag} {value}",
+    )
+    assert alias["repeats"] == []
+    assert alias["read_only_repeats"] == [flag]
+
+
+def test_alias_permission_off_flag_is_not_repeated_in_read_only_launch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alias = alias_for(
+        tmp_path,
+        capsys,
+        {"codex": {"permission_off_args": ["-a", "never"]}},
+        "codex is an alias for codex -a never",
+    )
+    assert alias["repeats"] == ["-a"]
+    assert alias["read_only_repeats"] == []
+
+
+def test_alias_launch_flag_repeats_in_both_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alias = alias_for(
+        tmp_path,
+        capsys,
+        {"codex": {"launch_args": ["-a", "never"]}},
+        "codex is an alias for codex --ask-for-approval never",
+    )
+    assert alias["repeats"] == alias["read_only_repeats"] == ["-a"]
+
+
+@pytest.mark.parametrize("kind", ["deny", "ask"])
+@pytest.mark.parametrize(
+    "rule", ["Bash(*herdr*)", "Bash(herdr * *)", "Bash(* agent:*)"]
+)
+def test_wildcard_restrictions_block_complete_settings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    rule: str,
+) -> None:
+    settings = json.loads(json.dumps(COMPLETE))
+    settings["permissions"][kind] = [rule]
+    report = claude_settings(
+        tmp_path, capsys, monkeypatch, settings, "--session-mode", "auto"
+    )
+    assert report["ready"] is False
+    assert report["missing"] == []
+    assert {item["blocks"] for item in report["conflicts"]} == {
+        "herdr agent start",
+        "herdr agent read",
+        "herdr agent send-keys",
+    }
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == settings
