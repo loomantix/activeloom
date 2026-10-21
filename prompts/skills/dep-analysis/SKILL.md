@@ -68,7 +68,7 @@ Pick the verdict:
 - `broken` — a test failed, or an upstream breaking change reaches a consumer here without a fix in the range.
 - `blocked` — the analysis could not finish: tests could not run, or upstream notes could not be read.
 
-Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`. Before posting, verify both `git rev-parse HEAD` and `gh pr view <pr> --json headRefOid -q .headRefOid` still equal `<head>` (if either moved, start over from step 1 and do not post a comment for a stale or unverified SHA). Its first line is the marker, with the exact head the analysis ran at:
+Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`, using the same authenticated GitHub actor as the consuming readiness or shipping session. Consumers apply the workflow's Dependency updates evidence rule: select the latest analysis from that actor, ignoring other commenters. Before posting, verify both `git rev-parse HEAD` and `gh pr view <pr> --json headRefOid -q .headRefOid` still equal `<head>` (if either moved, start over from step 1 and do not post a comment for a stale or unverified SHA). Its first line is the marker, with the exact head the analysis ran at:
 
 ```text
 <!-- dependency-analysis:v1 head=<head sha> verdict=<clear|gaps|broken|blocked> -->

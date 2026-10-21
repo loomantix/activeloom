@@ -71,9 +71,16 @@ bump can stand alone, a separate PR for it is the simpler route.
 
 The analysis records its outcome as a PR comment whose first line is
 `<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->`.
-An orchestrator ship gate reads the latest one and requires `verdict=clear` at
-the exact current head. `gaps` recommends a separate issue documenting the test
-and telemetry gaps, to close before merge; re-run the analysis once it closes.
+Read the complete paginated PR comments and accept analysis markers only from
+the authenticated GitHub actor (`gh api user --jq .login`), matching the review
+ledger's actor boundary. Select that actor's latest analysis comment before
+checking its exact first-line marker. The gate requires `verdict=clear` at the
+exact current head; a newer non-clear or stale report must not fall back to an
+older clear one. Comments
+from other actors cannot authorize readiness or shipping or supersede that
+actor's evidence. Missing or malformed evidence blocks those gates.
+`gaps` recommends a separate issue documenting the test and telemetry gaps, to
+close before merge; re-run the analysis once it closes.
 
 No human-glance recommendation authorizes a merge. When the repository's own
 instructions gate merging the touched paths — a deploy on merge, an apply-before-merge order —
