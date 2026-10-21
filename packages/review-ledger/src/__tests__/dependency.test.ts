@@ -200,11 +200,14 @@ describe('classifyFiles dependency-update gate', () => {
       expect(report.dependencyUpdate).toBe(false);
       expect(report.dependencyPaths).toEqual(['pnpm-lock.yaml']);
     }
-    const withDocs = classifyFiles([
-      lockfile,
-      { path: 'docs/notes.md', added: 1, deleted: 0, blank: 0 },
-    ]);
-    expect(withDocs.dependencyUpdate).toBe(true);
+    for (const path of ['docs/notes.md', 'docs/conf.py', 'CMakeLists.txt']) {
+      const withDocs = classifyFiles([
+        lockfile,
+        { path, added: 1, deleted: 0, blank: 0 },
+      ]);
+      expect(withDocs.dependencyUpdate).toBe(false);
+      expect(withDocs.dependencyPaths).toEqual(['pnpm-lock.yaml']);
+    }
   });
 
   it('routes a submodule gitlink bump even under vendor/', () => {

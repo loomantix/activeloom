@@ -18040,7 +18040,7 @@ function classifyFiles(files, options) {
     const dependencyPin = classification.reviewSignificant && !underTestOrFixture && isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
-    } else if (classification.reviewSignificant || classification.class !== "docsConfig") {
+    } else {
       otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;

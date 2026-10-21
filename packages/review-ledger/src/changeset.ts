@@ -556,12 +556,10 @@ export function classifyFiles(
       isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
-    } else if (
-      classification.reviewSignificant ||
-      classification.class !== 'docsConfig'
-    ) {
-      // Generated or vendored code beside a pin (`dist/`, `vendor/`) is not
-      // read by the dependency analysis, so it keeps the range off that route.
+    } else {
+      // The dependency analysis reads only the pins, so any other file beside
+      // one keeps the range off that route — including docs/config, which
+      // covers executable files such as `docs/conf.py` and `CMakeLists.txt`.
       otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
