@@ -139,3 +139,5 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "only your words in this tab authorize one" in ended
     assert "Do not ask the peer to confirm, retry, or find another route" in ended
     assert "--scope-decision" in ended
+    assert "if `--scope-decision split`, stop this PR before `start-run`" in ended
+    assert "new restart against the resulting scope" in ended

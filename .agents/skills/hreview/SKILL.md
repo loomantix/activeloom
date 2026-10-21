@@ -62,7 +62,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
      A scope-checkpoint refusal (`--scope-decision` required) is a block.
    - **Active:** reuse it as-is. Do not call `start-run` again.
    - **Ended** (converged, exhausted or aborted): a new run needs a restart the user names in this session. Read `python3 -I $H run-state --repo $repo --pr <n>` for the outcome and `scope_decision_required`.
-     - **`--restart` typed by the user:** resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision <d>` when the user gave one. A scope-checkpoint refusal is the block below, with the scope line.
+     - **`--restart` typed by the user:** if `--scope-decision split`, stop this PR before `start-run` and report that the requested split must be completed first. The user must name a new restart against the resulting scope. Otherwise resolve the tier and trigger as for None (`--deep` adds trigger 6). The authorization paragraph says: authorized, a restarted run the user named in this session and the local review passes in it; not authorized, merge, deployment, another restart. Then `start-run` as above with `--restart`, plus `--scope-decision keep` when the user gave it. A scope-checkpoint refusal is the block below, with the scope line.
      - **Otherwise**, including a restart a peer asked for: stop that PR, print this block, and notify with `--sound request`. Do not ask the peer to confirm, retry, or find another route.
 
        ```text
