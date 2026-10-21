@@ -69,12 +69,12 @@ const OWN_VERSION_KEYS: ReadonlySet<string> = new Set(['version']);
  * A single version token: digits and dots (or wildcards), with optional
  * pre-release or build metadata after a dot, or a PEP 440 pre/post/dev suffix.
  */
-const VERSION_TOKEN =
+const VERSION_PATTERN =
   /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
 
 /** A version constraint, range, or exact pin; must contain a digit. */
 const VERSION_VALUE = new RegExp(
-  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_TOKEN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_TOKEN.source})*$`,
+  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_PATTERN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_PATTERN.source})*$`,
 );
 
 /** Workspace and alias protocols a manifest uses in place of a range. */

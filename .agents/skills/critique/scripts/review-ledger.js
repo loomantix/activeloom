@@ -17361,9 +17361,9 @@ var MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
 ]);
 var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.(txt|in)$/;
 var OWN_VERSION_KEYS = /* @__PURE__ */ new Set(["version"]);
-var VERSION_TOKEN = /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
+var VERSION_PATTERN = /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
 var VERSION_VALUE = new RegExp(
-  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_TOKEN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_TOKEN.source})*$`
+  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_PATTERN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_PATTERN.source})*$`
 );
 var PROTOCOL_VALUE = /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
 var AT_VERSION_VALUE = /^@?[\w./-]+@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
