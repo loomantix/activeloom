@@ -134,6 +134,17 @@ def test_patchless_files_fire_the_scope_checkpoint(
     assert result["scope_decision_required"] is True
 
 
+def test_ended_run_reports_the_scope_decision_its_restart_needs(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = run_marker(controller)
+    end = end_marker(run["run_id"], "exhausted")
+    limit = controller.SCOPE_BEHAVIOUR_COMMIT_LIMIT
+    result = state(controller, monkeypatch, capsys, [run, end], commits=limit)
+    assert result["restart_required"] is True
+    assert result["scope_decision_required"] is True
+
+
 def test_state_comes_from_the_latest_run(
     controller: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -168,6 +179,8 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "hreview <n> --restart" in horch
     assert "--scope-decision keep|split" in horch
     assert "an earlier run's end marker does not count" in horch
+    assert "A run already ended at bind time is never the bound run" in horch
+    assert "until a run whose `run_id` differs from the ended one is active" in horch
     assert "A PR whose run has ended gets no herder" in skill("hloop")
 
     hreview = skill("hreview")

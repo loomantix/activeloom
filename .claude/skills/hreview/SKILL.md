@@ -72,7 +72,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
         RESTART NEEDS YOU: <repo>#<n>
         Review run <run_id12> ended <outcome>. <When a peer asked: The restart came from <peer>; only your words in this tab authorize one.>
         To restart, type in this tab: /hreview <n> --restart<when scope_decision_required: --scope-decision keep|split>
-        <When scope_decision_required: This PR has <k> feat/fix commits and <m> files GitHub shows without a patch (name only the counts that fired the checkpoint); choose keep (review as one) or split (split it first).>
+        <When scope_decision_required: This PR has <k> feat/fix/perf commits and <m> files GitHub shows without a patch (name only the counts that fired the checkpoint); choose keep (review as one) or split (split it first).>
        ════════════════════════════════════════════════════════════
        ```
 
