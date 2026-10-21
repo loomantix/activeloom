@@ -55,7 +55,7 @@ On `BUILD-PR: <pr> <sha>`:
 
 1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The PR is a draft, the base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block. Keep the PR in draft so `hreview` or `auto-glance` owns the ready flip on convergence.
 2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push.
-3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
+3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher. A PR whose run has ended gets no herder; `horch` alerts the user with the restart words. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
 
 ## 4. When a watcher stops
 
