@@ -32,7 +32,7 @@ base_sha=$(git merge-base "origin/<base-branch>" <head>)
 node $L classify-changeset --base "$base_sha" --head <head>
 ```
 
-The dependency review override applies when the PR carries the `review: full` label or the invocation says a human asked for this dependency update to be reviewed anyway. Under it, add `--force-review` to that classification: the result reports `"dependencyReviewForced": true` and `"dependencyUpdate": false`, and the range is treated as mixed from here on.
+Resolve the workflow's dependency review override from the direct human request, current labels, complete paginated label-event history, and matching always-Deep repository tier extensions. A previously applied `review: full` label remains effective after removal; a matching extension is a standing human request for Deep under trigger 6. Missing history blocks readiness. Under the override, add `--force-review` to that classification: the result reports `"dependencyReviewForced": true` and `"dependencyUpdate": false`, and the range is treated as mixed from here on.
 
 Done when the scope above is settled, the override is known, local `HEAD` equals `<head>`, and the list of files under analysis is fixed.
 
@@ -43,13 +43,14 @@ For each dependency the range changes — every direct entry, and every transiti
 - **From → to.** The exact versions, tags, SHAs or digests on both sides.
 - **What changed upstream.** Release notes or changelog for every version in between; breaking changes, deprecations and removals; security advisories fixed or introduced. A major bump, or a minor bump below 1.0, is presumed breaking until the notes say otherwise. For an Actions pin, the tag or commit range of the action and any change to its inputs, outputs or runtime. For a container image, the base OS and runtime versions inside the tag or digest, and whether the tag moved to a new digest.
 - **Provenance.** Whether the dependency's source, registry, protocol or integrity hash changed beyond what its version change implies; whether it adds an install script; whether it moves from an immutable pin (a digest, commit SHA or hash) to a mutable one; and, for an Actions or submodule SHA, whether that SHA is reachable from the upstream tag or branch it names (`git ls-remote` of the tag, or the commit on an upstream branch). Any of these is a provenance change.
+- **First-party review evidence.** For a dependency controlled by this repository's owner or organization (including actions, reusable workflows, submodules and images), establish that the introduced upstream changes through the exact target SHA or artifact's source commit were reviewed or explicitly accepted by a human. Link the reviewed upstream change and its covered commits, or the explicit acceptance of that target. An organization name, a successful build, a tag, or reachability from an upstream branch is not review evidence. For an artifact, establish its source-to-artifact binding too. Missing or inaccessible evidence blocks the analysis before installation, including when this step is used as a mixed-range provenance preflight.
 - **Who consumes it.** Search this repository for imports, call sites, configuration, workflows that use the action, and Dockerfiles, compose files, manifests and deploys that use the image. Name the tier each consumer sits in: build or CI only, development tooling, runtime of a service, a deployed image.
 
-Done when every changed dependency has a from → to, an upstream summary with its source, a provenance result, and a consumer list (or "no consumer found", with the search that showed it).
+Done when every changed dependency has a from → to, an upstream summary with its source, a provenance result, first-party review evidence where applicable, and a consumer list (or "no consumer found", with the search that showed it).
 
 ### 3. Tests
 
-Skip this step when step 2 found a provenance change: installing would run code no human has accepted.
+Skip this step when step 2 found a provenance change or could not establish required first-party review evidence: installing would run code no human has accepted.
 
 Find the existing tests that exercise the consumer paths from step 2: unit, integration, smoke, end-to-end. Verify `git rev-parse HEAD` equals `<head>` and `git status --porcelain` is empty, then run them at `<head>`, in a clean worktree on the PR branch, with the repository's own gate commands for each touched tier as AGENTS.md or CLAUDE.md and the CI workflows define them — a frozen install first, then the typecheck, build and test commands those tiers use. A tier that cannot run locally (a deployed end-to-end suite) is covered by a CI run at the exact head; name the run.
 
@@ -67,10 +68,10 @@ Done when each consumer path has a named signal or is recorded as a gap.
 
 Pick the verdict:
 
-- `clear` — no provenance change, no unaddressed breaking change, every consumer path is exercised by a test that passed at the head, and each has a named signal.
+- `clear` — no provenance change, required first-party review evidence established, no unaddressed breaking change, every consumer path is exercised by a test that passed at the head, and each has a named signal.
 - `gaps` — nothing failed, but a consumer path has no exercising test or no signal. Recommend a separate issue documenting each gap, to close before merge.
 - `broken` — a test failed, or an upstream breaking change reaches a consumer here without a fix in the range.
-- `blocked` — the analysis could not finish: tests could not run, or upstream notes could not be read; or it found a provenance change, which a human must accept (name it), or a misrouted file.
+- `blocked` — the analysis could not finish: tests could not run, upstream notes could not be read, or required first-party review evidence was missing; or it found a provenance change, which a human must accept (name it), or a misrouted file.
 
 Post one PR comment, under 400 words, written to a scratch file and posted with `gh pr comment <pr> --body-file <file>`, using the same authenticated GitHub actor as the consuming readiness or shipping session. Consumers apply the workflow's Dependency updates evidence rule: select the latest analysis from that actor, ignoring other commenters. Before posting, verify both `git rev-parse HEAD` and `gh pr view <pr> --json headRefOid -q .headRefOid` still equal `<head>` (if either moved, start over from step 1 and do not post a comment for a stale or unverified SHA). Its first line is the marker, with the exact head the analysis ran at:
 
@@ -78,7 +79,7 @@ Post one PR comment, under 400 words, written to a scratch file and posted with 
 <!-- dependency-analysis:v1 head=<head sha> verdict=<clear|gaps|broken|blocked> -->
 ```
 
-Then: the verdict in one line; per dependency, from → to, the breaking changes and security fixes that matter, and its consumers by tier; the test commands with their results; the named signals; and, for `gaps`, the gap list worded so it can be pasted into the recommended issue.
+Then: the verdict in one line; per dependency, from → to, the breaking changes and security fixes that matter, first-party review evidence where required, and its consumers by tier; the test commands with their results; the named signals; and, for `gaps`, the gap list worded so it can be pasted into the recommended issue. Publish corrections as new comments, never edit a report: consumers reject edited evidence using GraphQL `lastEditedAt`.
 
 Without a PR, print the same report in the session instead of posting it.
 
@@ -86,12 +87,12 @@ Done when the comment is posted and its marker names the PR's current head (re-r
 
 ### 6. Ready
 
-When step 1's classification reported `"dependencyUpdate": true` (not a mixed range, and not forced by the review override) and the verdict is `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` and `labels` immediately before readiness: require the head to equal the analyzed `<head>` and the `review: full` label still to be absent. If the head moved during the wait, restart at step 1; if the label appeared, the review chain owns readiness. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range, or under the review override, the review chain owns readiness. Any other verdict leaves the PR as it is.
+When step 1's classification reported `"dependencyUpdate": true` (not a mixed range, and not forced by the review override) and the verdict is `clear`, wait for every CI run at the head to complete (`gh run list --commit <head>`). When there is at least one run and every one ended `success` or `skipped`, re-read the PR's `headRefOid` and re-evaluate the workflow's durable dependency review override, including label-event history and tier extensions. Require the head to equal the analyzed `<head>` and no override to apply. Re-fetch the latest actor-authored analysis under the workflow's evidence rule, requiring an unedited exact-head `clear` report. Missing history or invalid evidence leaves the PR draft. If the head moved during the wait, restart at step 1; if an override applies, the review chain owns readiness. Otherwise mark a draft PR ready with `gh pr ready <pr>`, unless the invocation said to leave it in draft. Re-read the head after the mutation; if it moved, restore draft status and restart the analysis. For a mixed range, or under the review override, the review chain owns readiness. Any other verdict leaves the PR as it is.
 
 Report under 150 words: verdict, head, dependencies analysed, test commands and results, signals or gaps, and whether the PR was marked ready.
 
 ## Rules
 
-- No review chain on a dependency update, on any engine, not as a second opinion. The one exception is the review workflow's dependency review override: a human's direct request to review it anyway, or the PR's `review: full` label, runs the chain with this analysis beside it. The classifier is a best-effort heuristic; the override is the way past a range it misroutes, and a session never applies it on its own reading of the diff.
+- No review chain on a dependency update, on any engine, not as a second opinion, unless the workflow's durable dependency review override applies. Direct human requests, current or previously applied labels, and standing always-Deep tier extensions run the chain with this analysis beside it. The classifier is a best-effort heuristic; the override is the way past a range it misroutes, and a session never invents one on its own reading of the diff.
 - No merge. Readiness is the only PR state this skill changes.
 - The analysis names its sources: a release-note link, an advisory identifier, a test command. A claim without one is not evidence for `clear`.

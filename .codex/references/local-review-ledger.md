@@ -244,7 +244,9 @@ unsupported syntax keeps the file on the normal route. That recognition is a
 best-effort heuristic over lines, not a parse, so `--force-review` reports
 `dependencyUpdate: false` and `dependencyReviewForced: true` for a range that
 would otherwise be a dependency update, keeping `dependencyPaths`; entry points
-pass it on a human's direct request or the PR's `review: full` label. Lockfiles and gitlinks
+pass it under the workflow's durable dependency review override: a direct human
+request, a current or previously applied `review: full` label, or a matching
+always-Deep repository tier extension. Lockfiles and gitlinks
 are the content-independent exceptions; renames and mode transitions still
 take the normal route. Neither a manifest filename alone nor a bot author
 makes a range a dependency update.

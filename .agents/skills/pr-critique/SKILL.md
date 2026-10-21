@@ -40,8 +40,10 @@ recommendation and stop the same way.
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
 the same way, and run `dep-analysis` instead: no review chain runs on a
 dependency update, whatever the tier marker or skill name, unless the
-workflow's dependency review override applies — a human's direct request to
-review it anyway or the PR's `review: full` label. Then classify again with
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
 `--force-review` and continue as for a mixed range. When
 `dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
 mixed: continue for the code, and follow the workflow's "Dependency updates"

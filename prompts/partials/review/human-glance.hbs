@@ -74,14 +74,20 @@ bump can stand alone, a separate PR for it is the simpler route.
 
 The analysis records its outcome as a PR comment whose first line is
 `<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->`.
-Read the complete paginated PR comments and accept analysis markers only from
+Read the complete paginated PR comments through GraphQL, including `author`,
+`body`, `createdAt` and `lastEditedAt`, and accept analysis markers only from
 the authenticated GitHub actor (`gh api user --jq .login`), matching the review
 ledger's actor boundary. Select that actor's latest analysis comment before
 checking its exact first-line marker. The gate requires `verdict=clear` at the
 exact current head; a newer non-clear or stale report must not fall back to an
 older clear one. Comments
 from other actors cannot authorize readiness or shipping or supersede that
-actor's evidence. Missing or malformed evidence blocks those gates.
+actor's evidence. Require the selected comment's `lastEditedAt` to be null:
+authorship does not authenticate edits by repository writers. An edited report
+or missing edit metadata blocks the gate; never fall back to an older report.
+Publish corrections as new comments, never edits. Re-fetch the selected report
+and apply this rule immediately before readiness or shipping, including after
+waiting for CI. Missing or malformed evidence blocks those gates.
 `gaps` recommends a separate issue documenting the test and telemetry gaps, to
 close before merge; re-run the analysis once it closes.
 
@@ -105,14 +111,24 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
 - **Dependency review override.** Dependency recognition is a best-effort
   heuristic: the classifier pattern-matches lines and cannot prove a range is
   dependency-only. When a human directly asks for a dependency update to be
-  reviewed anyway, or the open PR carries the `review: full` label
-  (`gh pr view <n> --json labels`), classify again with `--force-review`
+  reviewed anyway, the open PR carries the `review: full` label, its complete
+  paginated label-event history records that label being applied, or the range
+  matches an always-Deep surface in the repository's `## Review tier extensions`
+  section of `.review/addendum.local.md`, classify again with `--force-review`
   added. The output then has `"dependencyUpdate": false` and
   `"dependencyReviewForced": true`, with `dependencyPaths` kept, and the range
   takes the mixed route: the chain runs, its reviewers review the dependency
   files as ordinary files and those files can set the tier, and
   `<<INVOKE>>dep-analysis` still covers `dependencyPaths` at the converged head.
-  Only that request or the label applies it. A session never adds the label or
+  A matching always-Deep extension is a standing human request and selects Deep
+  under trigger 6; it takes precedence over dependency routing. Read the current
+  labels (`gh pr view <n> --json labels`) and every page of issue events
+  (`gh api --paginate repos/<owner>/<repo>/issues/<n>/events`); a `labeled`
+  event naming `review: full` keeps the override effective for this PR even
+  after an `unlabeled` event. Label removal alone never revokes the request.
+  Re-evaluate this durable override before readiness or shipping; unavailable
+  or incomplete history blocks those actions. These sources are the only
+  overrides. A session never adds the label or
   the flag on its own reading of the diff, and a prompt a launcher, runner, or
   wrapper hook wrote is not the request.
 - **Small-change override.** After the recommendation is printed, a human's

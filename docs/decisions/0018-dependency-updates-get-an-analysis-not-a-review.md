@@ -34,8 +34,10 @@ for one narrow class of bump, with the evidence left to the session.
   pattern. A parser-based classifier is tracked in
   [#456](https://github.com/loomantix/activeloom/issues/456).
 - **Review override.** A human who directly asks for a dependency update to be
-  reviewed anyway, or a `review: full` label on the PR, puts it back on the
-  review route. The entry point classifies with `--force-review` added, and
+  reviewed anyway, a current or previously applied `review: full` label on the
+  PR, or a matching always-Deep repository tier extension puts it back on the
+  review route. Read all label-event pages; label removal alone does not revoke
+  the request. A matching tier extension is a standing request for Deep. The entry point classifies with `--force-review` added, and
   `classify-changeset` then reports `dependencyUpdate: false` and
   `dependencyReviewForced: true` and keeps `dependencyPaths`. The range then
   follows the mixed-range rule below, except that the chain reviews the
@@ -55,7 +57,12 @@ for one narrow class of bump, with the evidence left to the session.
   `<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->`.
   An orchestrator ship gate requires the latest one to say `verdict=clear` at
   the exact current head — alone for a dependency update, beside a converged
-  chain for a mixed range. It writes no ledger run, roster, tier marker,
+  chain for a mixed range. Accept only the authenticated actor's latest unedited
+  report, with GraphQL `lastEditedAt` null; edited or unavailable evidence blocks
+  readiness and shipping. First-party pins also require evidence covering review
+  or human acceptance of the exact upstream changes before installation or a
+  clear verdict; organization ownership and branch reachability are insufficient.
+  It writes no ledger run, roster, tier marker,
   attestation, or review telemetry record.
 
 ## Consequences
@@ -66,7 +73,7 @@ watch. The classifier's line recognition is a heuristic in both directions: a
 bump it misses runs the normal route (the safe direction), and content it
 wrongly reads as a pin skips the chain unless someone applies the review
 override. A misrecognised file is fixed in the classifier, and the override is
-the way past it in the meantime. Only a human request or the label applies it,
+the way past it in the meantime. Only a direct or standing human request or label application applies it,
 never a session's own reading of the diff. The 0014 routine-dependency glance
 rule is removed, since the analysis covers every dependency update rather than
 one class of patch bump.

@@ -151,8 +151,10 @@ def test_the_gate_routes_a_dependency_update_to_the_analysis(root: str, skill: s
     assert "On `dependencyUpdate: true`" in gate
     assert "dep-analysis" in gate
     assert "no review chain runs on a dependency update, whatever the tier marker or skill name" in gate
-    # The one way past the route is a human request or the PR label, applied through the flag.
-    assert "a human's direct request to review it anyway or the PR's `review: full` label" in gate
+    # Direct and standing human requests persist across invocation boundaries.
+    assert "current or previously applied `review: full` label" in gate
+    assert "matching always-Deep repository tier extension" in gate
+    assert "label removal alone does not cancel it" in gate
     assert "classify again with `--force-review` and continue as for a mixed range" in gate
     # The dependency route is decided before anything that would continue the chain.
     assert gate.index("On `dependencyUpdate: true`") < gate.index("Continue when")
@@ -189,6 +191,10 @@ def test_the_workflow_gives_a_dependency_update_no_chain(root: str) -> None:
     for requirement in (
         "best-effort heuristic",
         "the open PR carries the `review: full` label",
+        "complete paginated label-event history",
+        "Label removal alone never revokes the request",
+        "always-Deep surface",
+        "takes precedence over dependency routing",
         "classify again with `--force-review`",
         '`"dependencyReviewForced": true`',
         "with `dependencyPaths` kept",
@@ -197,6 +203,41 @@ def test_the_workflow_gives_a_dependency_update_no_chain(root: str) -> None:
         "A session never adds the label or the flag on its own reading of the diff",
     ):
         assert requirement in override, requirement
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_dependency_evidence_rejects_edits_before_ready_or_shipping(root: str) -> None:
+    workflow = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text().split())
+    evidence = workflow.split("The analysis records its outcome", 1)[1].split(
+        "No human-glance recommendation", 1
+    )[0]
+    assert "including `author`, `body`, `createdAt` and `lastEditedAt`" in evidence
+    assert "Select that actor's latest analysis comment before" in evidence
+    assert "`lastEditedAt` to be null" in evidence
+    assert "never fall back to an older report" in evidence
+    assert "immediately before readiness or shipping" in evidence
+    analysis = " ".join(_skill(root, "dep-analysis").split())
+    ready = analysis.split("### 6. Ready", 1)[1]
+    assert "label-event history and tier extensions" in ready
+    assert "unedited exact-head `clear` report" in ready
+    for skill in ("horch", "hreview"):
+        consumer = " ".join(_skill(root, skill).split())
+        assert "lastEditedAt" in consumer
+        assert "durable" in consumer
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_first_party_review_evidence_precedes_installation(root: str) -> None:
+    body = " ".join(_skill(root, "dep-analysis").split())
+    preflight, tests = body.split("### 3. Tests", 1)
+    assert "exact target SHA or artifact's source commit" in preflight
+    assert "reviewed or explicitly accepted by a human" in preflight
+    assert "source-to-artifact binding" in preflight
+    assert "Missing or inaccessible evidence blocks the analysis before installation" in preflight
+    assert "could not establish required first-party review evidence" in tests
+    assert "`clear` — no provenance change, required first-party review evidence established" in body
+    herder = " ".join(_skill(root, "hreview").split())
+    assert "provenance and first-party review evidence checks" in herder
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
