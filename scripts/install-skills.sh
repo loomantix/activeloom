@@ -403,6 +403,17 @@ required_by() {
 
 problems=0
 
+check_support_file() {
+  local to="$1" label="$2" fix="$3"
+  [ -e "$to" ] && return 0
+  if [ -L "$to" ]; then
+    # Installation preserves support entries, including broken foreign links.
+    printf -v fix 'unlink %q && %s' "$to" "$fix"
+  fi
+  echo "  ❌ support file $label is missing — fix: $fix"
+  problems=$((problems + 1))
+}
+
 # Report what the harness still lacks: upstream skills not installed (naming
 # the installed skills that require them), stale copies shadowing an upstream
 # skill, and missing support files. Each line ends in the command that fixes it.
@@ -412,7 +423,10 @@ check_harness() {
     [ -d "$src" ] || continue
     name="$(basename "$src")"
     target="$dest/$name"
-    if [ ! -e "$target" ]; then
+    if { [ -e "$target" ] || [ -L "$target" ]; } && [ ! -f "$target/SKILL.md" ]; then
+      echo "  ❌ $name has no usable SKILL.md — fix: $fix --force (backs up regular entries)"
+      problems=$((problems + 1))
+    elif [ ! -e "$target" ]; then
       needers="$(required_by "$name" "$dest")"
       if [ -n "$needers" ]; then
         echo "  ❌ $name is not installed (required by: $needers) — fix: $fix"
@@ -431,14 +445,10 @@ check_harness() {
     if [ -d "$src_root/$rel" ]; then
       while IFS= read -r file; do
         to="$(dirname "$dest")/$rel/${file#"$src_root/$rel"/}"
-        if [ ! -e "$to" ]; then
-          echo "  ❌ support file $rel/${file#"$src_root/$rel"/} is missing — fix: $fix"
-          problems=$((problems + 1))
-        fi
+        check_support_file "$to" "$rel/${file#"$src_root/$rel"/}" "$fix"
       done < <(find "$src_root/$rel" -type f ! -path '*/__pycache__/*' | sort)
-    elif [ ! -e "$(dirname "$dest")/$rel" ]; then
-      echo "  ❌ support file $rel is missing — fix: $fix"
-      problems=$((problems + 1))
+    else
+      check_support_file "$(dirname "$dest")/$rel" "$rel" "$fix"
     fi
   done
 }
@@ -454,9 +464,9 @@ while IFS=$'\t' read -r id root _home skills legacy _cli; do
     missing_src=$((missing_src + 1))
     continue
   fi
-  fix="$UPSTREAM_ROOT/scripts/install-skills.sh --harness $id"
+  printf -v fix '%q --harness %q' "$UPSTREAM_ROOT/scripts/install-skills.sh" "$id"
   if [ "$dest" != "$(canonical_dest "$HOME/$skills")" ]; then
-    fix="$fix --dest $id=$dest"
+    printf -v fix '%s --dest %q' "$fix" "$id=$dest"
   fi
   if [ "$CHECK" -eq 0 ]; then
     install_harness "$id" "$src_dir" "$dest"

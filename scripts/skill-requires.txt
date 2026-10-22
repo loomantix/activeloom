@@ -23,8 +23,8 @@ dep-analysis: critique |
 diagnosing-bugs: | refactorpass
 grill: backlog-refinement | critique deepcritique issues pr-critique product-grill
 hgrill: backlog-refinement grill hreview product-grill review-setup | horch
-hloop: critique hreview issues review-setup | auto-glance backlog-refinement hgrill horch
-horch: critique dep-analysis hreview issues review-setup | auto-glance hgrill hloop hpromote ship-staging
+hloop: critique horch hreview issues review-setup | auto-glance backlog-refinement hgrill
+horch: critique dep-analysis hloop hreview issues review-setup | auto-glance hgrill hpromote ship-staging
 hpromote: hreview promote | horch
 hreview: auto-glance critique dep-analysis review-setup | deepcritique horch promote refactorpass
 issues: | diagnosing-bugs grill

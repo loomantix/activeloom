@@ -7,6 +7,7 @@ a throwaway $HOME, so nothing touches the developer's real skills directories.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -361,3 +362,64 @@ def test_check_writes_nothing(upstream: Path, home: Path) -> None:
     assert result.returncode == 1
     assert "critique is not installed" in result.stdout
     assert not (home / ".claude").exists()
+
+
+@pytest.mark.parametrize("kind", ["file", "empty_link", "broken_link"])
+def test_check_rejects_unusable_skill_and_force_repairs_it(
+    upstream: Path, home: Path, kind: str
+) -> None:
+    assert run(upstream, home, "--harness", "claude").returncode == 0
+    target = home / DESTS["claude"] / "issues"
+    target.unlink()
+    if kind == "file":
+        target.write_text("not a skill directory\n")
+    else:
+        other = home / "other"
+        if kind == "empty_link":
+            other.mkdir()
+        target.symlink_to(other)
+
+    result = run(upstream, home, "--harness", "claude", "--check")
+    assert result.returncode == 1
+    assert "issues has no usable SKILL.md" in result.stdout
+    assert "--force" in result.stdout
+    assert run(upstream, home, "--harness", "claude", "--force").returncode == 0
+    assert run(upstream, home, "--harness", "claude", "--check").returncode == 0
+    if kind == "file":
+        assert next(target.parent.glob("issues.bak.*")).read_text() == "not a skill directory\n"
+
+
+@pytest.mark.parametrize("relative", ["references/herdr.md", "REVIEW_WORKFLOW.md"])
+def test_broken_support_link_fix_is_executable(
+    upstream: Path, home: Path, relative: str
+) -> None:
+    source = upstream / ".claude" / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("support\n")
+    shutil.copy2(SCRIPT, upstream / "scripts" / "install-skills.sh")
+    dest = home / "custom skills" / "skills"
+    args = ("--harness", "claude", "--dest", f"claude={dest}")
+    assert run(upstream, home, *args).returncode == 0
+    target = dest.parent / relative
+    target.unlink()
+    target.symlink_to(home / "removed clone" / relative)
+
+    result = run(upstream, home, *args, "--check")
+    assert result.returncode == 1
+    assert target.is_symlink()  # --check never removes the obstruction itself.
+    advice = next(
+        line.split(" — fix: ", 1)[1]
+        for line in result.stdout.splitlines()
+        if f"support file {relative} is missing" in line
+    )
+    assert advice.startswith("unlink ")
+    repaired = subprocess.run(
+        ["bash", "-c", advice],
+        env={"HOME": str(home), "PATH": "/usr/bin:/bin", "UPSTREAM_ROOT_OVERRIDE": str(upstream)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+    assert target.read_text() == "support\n"
+    assert run(upstream, home, *args, "--check").returncode == 0

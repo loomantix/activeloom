@@ -1285,6 +1285,22 @@ test('requiredClosure follows required skills transitively within the harness', 
   assert.strictEqual(requiredBy.has('ship-staging'), false);
 });
 
+test('herd entry points include their mandatory peer instructions', () => {
+  const root = path.resolve(__dirname, '../..');
+  const requires = addLib.readRequires(root);
+  for (const harness of ['.claude', '.codex', '.agents']) {
+    const available = addLib.listSkills(root, harness);
+    for (const [entry, peer] of [
+      ['horch', 'hloop'],
+      ['hloop', 'horch'],
+    ]) {
+      const { order } = addLib.requiredClosure([entry], requires, available);
+      assert.ok(order.includes(peer), `${harness}/${entry} requires ${peer}`);
+      assert.strictEqual(new Set(order).size, order.length);
+    }
+  }
+});
+
 test('add installs the required dependencies of a requested skill', async () => {
   const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
