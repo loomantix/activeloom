@@ -1380,7 +1380,8 @@ class Runner:
         paths = self.changed_paths(self.state["base"], head)
         selected: list[str] = []
         unmatched = not paths
-        for name, gate in contract["gates"].items():
+        # Checkpoints sort mapping keys; select in that order so a resume matches.
+        for name, gate in sorted(contract["gates"].items()):
             if name == fallback:
                 continue
             if gate["always"]:

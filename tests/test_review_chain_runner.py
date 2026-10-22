@@ -6458,7 +6458,7 @@ def test_resume_preserves_receipt_across_gate_order_change(
         "paths": [],
         "always": True,
         "commands": [[sys.executable, "-c", "pass"]],
-        "environment": {},
+        "environment": {"BASELINE": "1"},
     }
     h.args.check = None
     monkeypatch.setattr(h.runner, "validation_contract", lambda self, base: contract)
@@ -6476,12 +6476,16 @@ def test_resume_preserves_receipt_across_gate_order_change(
     with pytest.raises(h.module.Blocked, match="interrupted before attestation"):
         h.runner(h.args, h.directory).run()
     receipt = h.directory / "pass-1" / "validated.json"
-    assert h.module.read(receipt)["gates"] == ["backend", "aaa_baseline"]
-    monkeypatch.setattr(h.runner, "helper", original_helper)
+    saved = h.module.read(receipt)
+    assert saved["gates"] == ["aaa_baseline", "backend"]
+    # A receipt written before selection was sorted keeps declaration order.
+    saved["gates"] = ["backend", "aaa_baseline"]
     if tamper:
-        saved = h.module.read(receipt)
-        saved[tamper] = ["backend", "backend"] if tamper == "gates" else "changed"
-        h.module.save(receipt, saved)
+        saved[tamper] = (
+            ["aaa_baseline", "backend", "backend"] if tamper == "gates" else "changed"
+        )
+    h.module.save(receipt, saved)
+    monkeypatch.setattr(h.runner, "helper", original_helper)
     original_receipt = receipt.read_bytes()
     h.args.resume = True
     resumed = h.runner(h.args, h.directory)
