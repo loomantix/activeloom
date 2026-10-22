@@ -26,11 +26,20 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `/dep-analysis` instead: no review chain runs on a
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
+`--force-review` and continue as for a mixed range. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
@@ -119,7 +128,7 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
-7. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied.
+7. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization.
    Otherwise select one past Claude's highest completed round within the latest
    authenticated `local-review-run:v1` (1 when it has none), using only its
    pass/complete comments after that run marker. Honor the run's cap and use

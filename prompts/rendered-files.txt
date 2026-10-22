@@ -16,9 +16,11 @@
 .agents/skills/critique/SKILL.md
 .agents/skills/critique/scripts/local-review-handoff.py
 .agents/skills/deepcritique/SKILL.md
+.agents/skills/dep-analysis/SKILL.md
 .agents/skills/diagnosing-bugs/SKILL.md
 .agents/skills/feature-dev/SKILL.md
 .agents/skills/grill/SKILL.md
+.agents/skills/handoff/SKILL.md
 .agents/skills/hgrill/SKILL.md
 .agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
@@ -35,6 +37,9 @@
 .agents/skills/phone-install/SKILL.md
 .agents/skills/pr-critique/SKILL.md
 .agents/skills/product-grill/SKILL.md
+.agents/skills/promote/SKILL.md
+.agents/skills/promote/scripts/promote-recipe.py
+.agents/skills/promote/scripts/promote-recipe.schema.json
 .agents/skills/red-team/SKILL.md
 .agents/skills/refactorpass/SKILL.md
 .agents/skills/review-setup/SKILL.md
@@ -66,9 +71,11 @@
 .claude/skills/critique/SKILL.md
 .claude/skills/critique/scripts/local-review-handoff.py
 .claude/skills/deepcritique/SKILL.md
+.claude/skills/dep-analysis/SKILL.md
 .claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
+.claude/skills/handoff/SKILL.md
 .claude/skills/hgrill/SKILL.md
 .claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
@@ -84,6 +91,9 @@
 .claude/skills/onboard/SKILL.md
 .claude/skills/phone-install/SKILL.md
 .claude/skills/product-grill/SKILL.md
+.claude/skills/promote/SKILL.md
+.claude/skills/promote/scripts/promote-recipe.py
+.claude/skills/promote/scripts/promote-recipe.schema.json
 .claude/skills/red-team/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-setup/SKILL.md
@@ -114,9 +124,11 @@
 .codex/skills/critique/SKILL.md
 .codex/skills/critique/scripts/local-review-handoff.py
 .codex/skills/deepcritique/SKILL.md
+.codex/skills/dep-analysis/SKILL.md
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md
+.codex/skills/handoff/SKILL.md
 .codex/skills/hgrill/SKILL.md
 .codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md
@@ -133,6 +145,9 @@
 .codex/skills/phone-install/SKILL.md
 .codex/skills/pr-critique/SKILL.md
 .codex/skills/product-grill/SKILL.md
+.codex/skills/promote/SKILL.md
+.codex/skills/promote/scripts/promote-recipe.py
+.codex/skills/promote/scripts/promote-recipe.schema.json
 .codex/skills/red-team/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/review-setup/SKILL.md

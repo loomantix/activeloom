@@ -140,29 +140,51 @@ as `smallChangeLines`, T as `linesChanged.test`, M as
 Human glance recommended: N changed lines of code or config and T of tests in M files. Triggers: <matched triggers, or none>. Read the diff and merge, or ask for the review chain to run.
 ```
 
-**Routine dependency updates.** Before reviewer setup, an interactive entry
-may recommend human glance for a non-empty diff limited to patch bumps between
-stable versions of existing direct development dependencies and their lockfiles.
-Preserve dependency groups and version-range operators.
-Read the full manifest and lockfile diff: no other manifest fields or files may
-change. Inspect transitive updates, release notes and advisories for compatibility
-concerns, new install scripts, and changed package sources or registries.
-Require a successful frozen install, relevant tests/typecheck/build, and required
-CI at the current head; reuse existing evidence. Missing or failed validation,
-unexplained transitive changes, or unresolved concerns continue the normal review
-route. This recommendation does not apply to a PR with a tier marker, an explicit
-request to run review anyway, or a controller-scheduled pass. A reviewer launch
-failure never qualifies a change for it.
-
-When those conditions hold, summarize the dependency validation and print:
+**Dependency updates.** When the output has `"dependencyUpdate": true`, every
+review-significant file in the range is a dependency pin change: a lockfile, a
+manifest or workspace-catalog version line, a GitHub Actions version or SHA pin,
+a container image tag or digest, or a submodule gitlink. No review chain runs
+on it — not Lean, not Deep, not a human-glance recommendation, on any engine —
+unless the dependency review override below applies. Its risk is upstream code this
+repository does not contain, so it gets a dependency analysis instead: what
+could break, the existing tests that exercise it (run), the signal that would
+show a break after merge, and a verdict. Print this line, with N as the length
+of `dependencyPaths`, stop with the same absence of review artifacts, and run
+`/dep-analysis`:
 
 ```text
-Use human glance. Routine development-dependency patch updates; dependency validation passed. No review chain needed.
+Dependency update: N dependency files, no review chain. Running the dependency analysis.
 ```
 
-Stop with the same absence of review artifacts as the recommendations above.
-This is an evidence-based recommendation; it does not change the classifier's
-`skip` or `smallChange` flags.
+A range with a non-empty `dependencyPaths` and `"dependencyUpdate": false` is
+**mixed**: a bump plus code. The code follows the normal route — this gate, then
+the tier from triggers 1–5 — and the chain's reviewers leave the dependency
+files to the analysis, except under the dependency review override. Once the
+chain converges, the session that ends the run — the auto controller, the
+herder, or the human who ran the last pass — runs `/dep-analysis` on
+`dependencyPaths` at the converged head before marking the PR ready. A mixed PR
+is ready to ship only with both the chain's convergence and a `clear` analysis
+at the same head. Where the
+bump can stand alone, a separate PR for it is the simpler route.
+
+The analysis records its outcome as a PR comment whose first line is
+`<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->`.
+Read the complete paginated PR comments through GraphQL, including `author`,
+`body`, `createdAt` and `lastEditedAt`, and accept analysis markers only from
+the authenticated GitHub actor (`gh api user --jq .login`), matching the review
+ledger's actor boundary. Select that actor's latest analysis comment before
+checking its exact first-line marker. The gate requires `verdict=clear` at the
+exact current head; a newer non-clear or stale report must not fall back to an
+older clear one. Comments
+from other actors cannot authorize readiness or shipping or supersede that
+actor's evidence. Require the selected comment's `lastEditedAt` to be null:
+authorship does not authenticate edits by repository writers. An edited report
+or missing edit metadata blocks the gate; never fall back to an older report.
+Publish corrections as new comments, never edits. Re-fetch the selected report
+and apply this rule immediately before readiness or shipping, including after
+waiting for CI. Missing or malformed evidence blocks those gates.
+`gaps` recommends a separate issue documenting the test and telemetry gaps, to
+close before merge; re-run the analysis once it closes.
 
 No human-glance recommendation authorizes a merge. When the repository's own
 instructions gate merging the touched paths — a deploy on merge, an apply-before-merge order —
@@ -172,7 +194,8 @@ Otherwise continue the entry point unchanged. An empty range or a classifier
 that cannot run is not human glance; the entry point's own pre-flight handles it.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
-  anyway overrides the gate. For a range with no review-significant file, that
+  anyway overrides the gate; on a dependency update, that request is the
+  dependency review override below. For a range with no review-significant file, that
   request is trigger 6: the chain runs and the tier marker records it. For a
   small change, the next rule sets the tier. Typing a review skill's name, or
   asking to "review this PR" or "run the review chain", is not that request:
@@ -180,6 +203,29 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   usual. When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set,
   a launcher, runner, or wrapper hook wrote the invoking prompt: it is never
   trigger 6, whatever skill or tier it names.
+- **Dependency review override.** Dependency recognition is a best-effort
+  heuristic: the classifier pattern-matches lines and cannot prove a range is
+  dependency-only. When a human directly asks for a dependency update to be
+  reviewed anyway, the open PR carries the `review: full` label, its complete
+  paginated label-event history records that label being applied, or the range
+  matches an always-Deep surface in the repository's `## Review tier extensions`
+  section of `.review/addendum.local.md`, classify again with `--force-review`
+  added. The output then has `"dependencyUpdate": false` and
+  `"dependencyReviewForced": true`, with `dependencyPaths` kept, and the range
+  takes the mixed route: the chain runs, its reviewers review the dependency
+  files as ordinary files and those files can set the tier, and
+  `/dep-analysis` still covers `dependencyPaths` at the converged head.
+  A matching always-Deep extension is a standing human request and selects Deep
+  under trigger 6; it takes precedence over dependency routing. Read the current
+  labels (`gh pr view <n> --json labels`) and every page of issue events
+  (`gh api --paginate repos/<owner>/<repo>/issues/<n>/events`); a `labeled`
+  event naming `review: full` keeps the override effective for this PR even
+  after an `unlabeled` event. Label removal alone never revokes the request.
+  Re-evaluate this durable override before readiness or shipping; unavailable
+  or incomplete history blocks those actions. These sources are the only
+  overrides. A session never adds the label or
+  the flag on its own reading of the diff, and a prompt a launcher, runner, or
+  wrapper hook wrote is not the request.
 - **Small-change override.** After the recommendation is printed, a human's
   request to run the chain on this range, in any words, is the override: the
   entry point continues past this gate. The tier then resolves from triggers
@@ -194,7 +240,12 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   full, small-change recommendation included, before it starts the runner: the
   human who asked is there to answer. `agent-loop` classifies before its first
   review round and has no human to act on a recommendation, so it gates on
-  `skip` alone and ignores `smallChange`.
+  `skip` and `dependencyUpdate` alone and ignores `smallChange`. It does not
+  resolve the dependency review override, so it stops a dependency update even
+  when an override applies; run the chain from an interactive or herd entry
+  point instead. On a mixed
+  range it leaves the converged PR in draft and names `dep-analysis` instead of
+  marking it ready.
 - **Later pushes.** Every invocation classifies the whole range again. A push
   that adds a review-significant file takes the PR out of human glance, and tier
   resolution applies to the whole range.
@@ -220,9 +271,9 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger. Manifest or
-   lockfile-only dependency bumps do not select this trigger; see "What does not
-   set the tier".
+   bounded-repair exception below before selecting this trigger. A dependency
+   pin change never selects this trigger, except under the dependency review
+   override; see "What does not set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.
@@ -270,17 +321,15 @@ does diff size — a large mechanical refactor is Lean unless it also trips
 trigger 4. Nor does topic adjacency: code _about_ security that does not itself
 enforce a sensitive boundary is not trigger 1.
 
-**Dependency version updates (manifest and lockfile changes) do not select Deep.**
-Upgrading an external dependency (e.g. updating `package.json`, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`) does not trip
-Trigger 1 or Trigger 4 simply because the package itself handles authentication,
-cryptography, validation, networking, or concurrency. A multi-lane code review
-inspects code diffs in this repository; it cannot critique external package
-source from a version bump diff. Dependency risk is properly addressed through
-upfront research, release notes, security advisories, and running the consumer test
-suite—not through a multi-lane code review chain. Dependency updates that
-proceed to review remain Lean unless accompanied by material application code
-changes that touch sensitive boundaries or non-obvious runtime behaviour.
+**Dependency updates take no tier.** A dependency-only range takes the
+dependency route in [Human glance](#human-glance) and never reaches tier
+resolution. In a mixed range the dependency files do not set the tier either:
+a package that handles authentication, cryptography, validation, networking, or
+concurrency does not trip trigger 1 or 4 by being bumped. The tier comes from
+the code changes alone, and the bump gets the dependency analysis. The one
+exception is the [dependency review override](#human-glance): under it the
+range takes the mixed route and the dependency files are reviewed, and can set
+the tier, like any other file.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI
@@ -329,8 +378,8 @@ into every harness root. Invoke this root's copy:
 
 Every root's copy is the same bytes, so an engine reviewing from another root
 runs the same controller against the same markers. Its commands are `start-run`, `next-pass`,
-`authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
+`authorize-pass`, `finish-run`, `post-handoff`, `show-handoff`, and the read-only `run-state`
+(latest run state, restart and scope-decision requirements). It implements neither `status` nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts

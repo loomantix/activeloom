@@ -304,6 +304,32 @@ line churn keeps a range out, and comment lines count until a lexer can exclude
 them. Test lines are outside the limit, so a test-only range of any size is
 small; a caller reports `linesChanged.test` beside `smallChangeLines`.
 
+A third gate answer, `dependencyUpdate`, is exclusive of both. It is true when
+every review-significant file is a dependency pin change — a lockfile, a
+manifest or workspace-catalog version line, a GitHub Actions `uses:` pin, a
+container image tag or digest, or a submodule gitlink — and the range gets a
+dependency analysis instead of a review chain. `dependencyPaths` lists the pin
+changes whether or not the range is dependency-only, so a non-empty list with
+`dependencyUpdate` false marks a mixed range. Recognition reads each file's
+changed lines and is a best-effort heuristic, not a parser: a manifest with
+any non-version edit, a workflow with any line other than a `uses:` or `image:`
+pin, or a file of an unknown kind keeps the range on the normal route, but a
+line pattern cannot prove that a change is dependency-only.
+`--force-review` is the review override: on a range that would be a
+dependency update it reports `dependencyUpdate: false` and
+`dependencyReviewForced: true`, keeps `dependencyPaths`, and so sends the range
+down the mixed-range route. Entry points pass it under the workflow's durable
+dependency review override: a direct human request, a current or previously
+applied `review: full` label, or a matching always-Deep repository tier
+extension. A manifest under a test path
+is a fixture and is never a pin.
+
+YAML pins require a recognized schema location: workflow/composite-action
+steps, workflow containers and services, Docker actions, or Compose services.
+Arbitrary YAML mappings (including Helm values) remain on the review route.
+Gradle, Ruby, and Elixir manifests also remain on that route until their
+executable context can be parsed; a version-shaped line alone is insufficient.
+
 The test class is assigned by path, and a directory named `test` is not always
 tests. A `test`-class file that also matches a config or prompt-surface rule,
 such as `infra/environments/test/main.tf`, keeps its class and counts toward the

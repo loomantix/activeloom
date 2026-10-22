@@ -31,6 +31,7 @@ import {
   postFinding,
   postPrComment,
   preflightAnchor,
+  preflightFix,
   reconcile,
   reopenOccurrence,
   reply,
@@ -165,6 +166,7 @@ interface CliArgs {
   promptSurfaces?: string[] | undefined;
   truncated?: boolean | undefined;
   dryRun?: boolean | undefined;
+  forceReview?: boolean | undefined;
   prs?: string | undefined;
   since?: string | undefined;
   until?: string | undefined;
@@ -205,10 +207,12 @@ function readJsonArray(pathValue: string, label: string): unknown[] {
  * would report a changeset no reviewer saw.
  */
 function resolveChangesetReport(args: CliArgs): ChangesetReport {
-  const options =
-    args.promptSurfaces === undefined
-      ? undefined
-      : { promptSurfaces: args.promptSurfaces };
+  const options = {
+    ...(args.promptSurfaces === undefined
+      ? {}
+      : { promptSurfaces: args.promptSurfaces }),
+    ...(args.forceReview === true ? { forceReview: true } : {}),
+  };
   if (args.diffFile) {
     assertRegularFile(
       args.diffFile,
@@ -326,6 +330,12 @@ function parseCliArgs(argv: string[]): CliArgs {
 
     if (arg === '--dry-run') {
       args.dryRun = true;
+      i++;
+      continue;
+    }
+
+    if (arg === '--force-review') {
+      args.forceReview = true;
       i++;
       continue;
     }
@@ -635,6 +645,35 @@ function runCliCommand(argv: string[]): number {
   validateArgs(args);
 
   switch (args.command) {
+    case 'preflight-fix': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.fingerprint ||
+        args.occurrence === undefined
+      ) {
+        fail(
+          'preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence',
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightFix({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            fingerprint: args.fingerprint,
+            occurrence: args.occurrence,
+          }),
+        ) + '\n',
+      );
+      break;
+    }
     case 'preflight-anchor': {
       if (!args.repo || args.pr === undefined || !args.head || !args.path) {
         fail('preflight-anchor requires --repo, --pr, --head, and --path');
@@ -1064,6 +1103,9 @@ function runCliCommand(argv: string[]): number {
         smallChange: report.smallChange,
         smallChangeLines: report.smallChangeLines,
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
+        dependencyUpdate: report.dependencyUpdate,
+        dependencyPaths: report.dependencyPaths,
+        dependencyReviewForced: report.dependencyReviewForced,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications,
       });

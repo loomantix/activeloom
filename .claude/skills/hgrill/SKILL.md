@@ -49,7 +49,7 @@ A grill is not a review-chain pass: no ledger, no launcher, interactive sessions
 
 ## Dispatch
 
-1. `test "${HERDR_ENV:-}" = 1`, or stop. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `python3 -I $C repo` failing is a block.
+1. `test "${HERDR_ENV:-}" = 1`, or stop. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `python3 -I $C repo` failing is a block. Then the permissions preflight and its Claude auto-mode check (herdr.md) for this session's engine and every grill engine.
 2. Pick issues.
    - Named: use them as given.
    - `next <k>`: `python3 .claude/skills/backlog-refinement/scripts/candidates.py --grill --json`, highest priority first, filtered by `--kind` if given.

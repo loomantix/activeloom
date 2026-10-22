@@ -53,6 +53,7 @@ export { sha256Text, sha256Bytes, requireToken, requireSha } from './hash.js';
 
 export { parseDiffLines, validateAnchor, type DiffLines } from './diff.js';
 export { classifyRangeEffect, type RangeEffect } from './effect.js';
+export { isDependencyPinChange } from './dependency.js';
 
 export {
   readLegacyBody,
@@ -93,6 +94,7 @@ export {
   writeResult,
   recoverResult,
   preflightAnchor,
+  preflightFix,
   postFinding,
   reopenOccurrence,
   dispose,
@@ -216,6 +218,8 @@ export type {
   ValidateResultParams,
   PreflightAnchorParams,
   PreflightAnchorResult,
+  PreflightFixParams,
+  PreflightFixResult,
   PostFindingParams,
   PostFindingResult,
   ReopenOccurrenceParams,

@@ -15,11 +15,20 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `dep-analysis` instead: no review chain runs on a
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
+`--force-review` and continue as for a mixed range. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
@@ -76,7 +85,7 @@ separate-session protocol transition requires another reviewer.
 ## Stance Resolution
 
 Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
-or the round supplied by `deepcritique`. Otherwise select one past Codex's
+or the round supplied by `deepcritique`. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise select one past Codex's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only pass/complete comments after that run marker.
 Validate it with `local-review-handoff.py authorize-pass`. An ended run,
@@ -93,7 +102,7 @@ marker exists; it never consumes a restarted run's budget.
   unchanged, and the round cap does not move.
 
 The first pass after escalation and a reviewer's first cold read remain
-adversarial regardless of ordinal. Take the stance from `authorize-pass`'s `stance` field and state the round and
+adversarial regardless of ordinal. When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
 stance in the output. The ledger refuses a convergence result that fixed a
 non-blocking finding.
 
@@ -166,7 +175,15 @@ The actionability bar tightens further. Change the PR only for a **blocking**
 defect that also clears the Disposition Bar above — one that is realistically
 reachable and ships materially wrong behavior, loses or corrupts data, exposes
 a credible security or privacy exploit, breaks a public contract, or breaks
-deploy or rollout:
+deploy or rollout.
+
+Before editing or assigning a fix, settle and post the finding's severity and
+intended disposition. Run the controller's `authorize-fix` check described in
+the ledger's "Authorize a fix before editing" section. In convergence,
+`blocking` with supporting evidence is eligible for a fix; `major`, `minor`,
+and `nit` must be deferred. Hand a fixer only findings that passed this check.
+Resolve any mismatch before editing; severity follows impact evidence, not the
+desire to make a fix eligible.
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
@@ -315,7 +332,8 @@ role references needed for the selected lenses.
    required by `.codex/references/local-review-ledger.md` to post one inline
    comment on an exact GitHub diff anchor before editing. Do not hand-compose
    review-comment API requests.
-9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
+9. Apply the Disposition Bar and run `authorize-fix` for each intended fix before
+   editing or delegating it. Fix only findings whose expected harm reduction
    justifies the churn. Defer the rest, and create an issue only for an urgent
    follow-up that should be scheduled within roughly two weeks.
 10. Run targeted validation and commit. When

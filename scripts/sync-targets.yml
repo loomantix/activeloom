@@ -273,6 +273,18 @@ harnesses:
         destination: .claude/skills/feature-dev/SKILL.md
         substitutions: []
 
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .claude/skills/handoff/SKILL.md
+        destination: .claude/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .claude/skills/dep-analysis/SKILL.md
+        destination: .claude/skills/dep-analysis/SKILL.md
+        substitutions: []
+
       # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
       # model-invoked: its whole value is firing on "this is broken" before the
       # session has already guessed at a cause.
@@ -368,6 +380,22 @@ harnesses:
 
       - source: .claude/skills/hreview/scripts/herd-user.schema.json
         destination: .claude/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .claude/skills/promote/SKILL.md
+        destination: .claude/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .claude/skills/promote/scripts/promote-recipe.py
+        destination: .claude/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/promote/scripts/promote-recipe.schema.json
+        destination: .claude/skills/promote/scripts/promote-recipe.schema.json
         substitutions: []
         mode: '0644'
 
@@ -739,6 +767,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .codex/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -947,6 +977,22 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .codex/skills/promote/SKILL.md
+        destination: .codex/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .codex/skills/promote/scripts/promote-recipe.py
+        destination: .codex/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/promote/scripts/promote-recipe.schema.json
+        destination: .codex/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
       - source: .codex/references/herdr.md
         destination: .codex/references/herdr.md
         substitutions: []
@@ -957,6 +1003,18 @@ harnesses:
 
       - source: .codex/skills/feature-dev/SKILL.md
         destination: .codex/skills/feature-dev/SKILL.md
+        substitutions: []
+
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .codex/skills/handoff/SKILL.md
+        destination: .codex/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .codex/skills/dep-analysis/SKILL.md
+        destination: .codex/skills/dep-analysis/SKILL.md
         substitutions: []
 
       # diagnosing-bugs — debugging discipline gated on a tight, deterministic
@@ -1290,6 +1348,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .agents/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -1458,6 +1518,22 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .agents/skills/promote/SKILL.md
+        destination: .agents/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .agents/skills/promote/scripts/promote-recipe.py
+        destination: .agents/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/promote/scripts/promote-recipe.schema.json
+        destination: .agents/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
       - source: .agents/references/herdr.md
         destination: .agents/references/herdr.md
         substitutions: []
@@ -1468,6 +1544,18 @@ harnesses:
 
       - source: .agents/skills/feature-dev/SKILL.md
         destination: .agents/skills/feature-dev/SKILL.md
+        substitutions: []
+
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .agents/skills/handoff/SKILL.md
+        destination: .agents/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .agents/skills/dep-analysis/SKILL.md
+        destination: .agents/skills/dep-analysis/SKILL.md
         substitutions: []
 
       - source: .agents/skills/diagnosing-bugs/SKILL.md

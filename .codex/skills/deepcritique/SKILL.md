@@ -15,11 +15,20 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `dep-analysis` instead: no review chain runs on a
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
+`--force-review` and continue as for a mixed range. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
@@ -138,7 +147,7 @@ another engine — that pass is owed and belongs in its own fresh session. Anoth
 declared reviewer holding no attestation is not a stop: reviewer order within a
 round is a scheduling choice, not a protocol rule.
 
-Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise,
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise,
 within the latest authenticated `local-review-run:v1`, select one past this
 engine's highest completed round (1 when it has none), considering only its
 `local-review-pass:v3` and `local-review-complete:v3` comments after that run's

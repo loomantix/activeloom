@@ -103,7 +103,7 @@ stop_resumed_human_glance() {
     local head="$1" base
     base="$(jq -er '.baseSha' <<<"$RESUME_STATE_JSON")" || return 1
     human_glance_gate "$base" "$head" || return 0
-    recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+    recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
     return 1
 }
 
@@ -117,7 +117,7 @@ refuse_unfinished_batch_child() {
         base="$(jq -er '.baseSha' <<<"$child_json")" || return 1
         head="$(jq -er '.headSha' <<<"$child_json")" || return 1
         human_glance_gate "$base" "$head" || return 0
-        recovery_message "Batch issue #$issue stopped for a human glance and starts no review chain; read its draft PR before explicitly bailing it." human-glance
+        recovery_message "Batch issue #$issue stopped for $(human_glance_need) and starts no review chain; read its draft PR before explicitly bailing it." human-glance
         print_batch_bail_command "$issue" active
         return 1
     fi
@@ -169,7 +169,7 @@ resume_initial_publication() {
         return 1
     }
     if human_glance_gate "$base" "$(git rev-parse HEAD)"; then
-        recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+        recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
         return 1
     fi
 }

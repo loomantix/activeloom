@@ -10,8 +10,20 @@ hgrill, horch, hpromote):
 - `~/.config/activeloom/herd.json`, owned by the user: per-engine launch
   arguments, the worktree root, and the push-notification preference.
 
+The preflight also reads two things outside both files: the user's shell
+aliases for each engine CLI, and, when Claude Code runs in auto mode, the Claude
+settings files. It never writes either.
+
+A third, user-owned file family holds restart approvals: one record per
+`<repo>#<pr>` at an exact head, created by `approve-restart`, which the user
+runs in their own terminal. A herder claims a record (single use) before it
+restarts an ended review run; an orchestrator may print the command but never
+runs it. The terminal prompt guards against accidents; it is not a barrier
+against a process running as the same user, so the skills' rule that agents
+never approve or write a record is the control.
+
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
-2 usage or git error, 3 lock already held.
+2 usage or git error, 3 lock already held, 4 no valid restart approval.
 """
 
 from __future__ import annotations
@@ -20,8 +32,13 @@ import argparse
 import json
 import os
 import re
+import secrets
+import shlex
+import stat
 import subprocess
+import time
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +49,8 @@ ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
 DEFAULT_HOLD_LABEL = "agent-bail: grill-review"
+# The generic recipe-driven skill; a repository may name its own instead.
+DEFAULT_PROMOTION_SKILL = "promote"
 
 REPO_SECTIONS = (
     "schema_version",
@@ -60,6 +79,10 @@ class ConfigError(Exception):
     def __init__(self, errors: list[str]) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+
+
+class ApprovalError(Exception):
+    """No restart approval that matches and is still valid."""
 
 
 class UsageError(Exception):
@@ -290,9 +313,9 @@ def validate_repo(config: Any) -> dict[str, Any]:
     else:
         allowed = ("skill", "production_branch", "risk_engine", "preflight", "deploy_workflows", "post_merge")
         _check_keys(promotion, allowed, "promotion", errors)
-        skill = promotion.get("skill")
+        skill = promotion.get("skill", DEFAULT_PROMOTION_SKILL)
         if not isinstance(skill, str) or not SKILL_RE.match(skill):
-            errors.append("promotion.skill: required; must be a skill name")
+            errors.append("promotion.skill: must be a skill name")
         production = promotion.get("production_branch")
         if not isinstance(production, str) or not BRANCH_RE.match(production):
             errors.append("promotion.production_branch: required; must be a branch name")
@@ -536,6 +559,586 @@ def read_user(path: Path) -> dict[str, Any]:
     return {"source": {"path": str(path), "present": True}, "config": effective}
 
 
+# Flags each CLI documents as changing a safety check, by value. Each value maps
+# to (what it turns off, whether sessions stop asking); None for what it turns
+# off marks a value that turns nothing off, so `-s read-only` is recognized, not
+# a risk. A flag with no value is keyed by None. Codex `-c key=value` overrides
+# are classified by key. The tables only classify flags and launch nothing; they
+# are locked so that any edit to them is reviewed
+# (.claude/claude-cli-invocations.allowlist).
+# claude-cli-invocations:start
+FlagValues = dict[str | None, tuple[str | None, bool]]
+CODEX_APPROVAL: FlagValues = {
+    "never": ("approval prompts", True),
+    "on-request": (None, False),
+    "on-failure": (None, False),
+    "untrusted": (None, False),
+}
+CODEX_SANDBOX: FlagValues = {
+    "danger-full-access": ("the sandbox", False),
+    "workspace-write": (None, False),
+    "read-only": (None, False),
+}
+CODEX_BYPASS: FlagValues = {None: ("approval prompts and the sandbox", True)}
+PERMISSION_FLAGS: dict[str, dict[str, FlagValues]] = {
+    "claude": {
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--permission-mode": {
+            "bypassPermissions": ("every permission check", True),
+            "auto": ("approval prompts; a classifier allows or refuses each action instead", True),
+            "dontAsk": ("approval prompts; anything not allowed in advance is refused", True),
+            "acceptEdits": ("approval prompts for file edits", False),
+            "manual": (None, False),
+            "plan": (None, False),
+        },
+    },
+    "codex": {
+        "--dangerously-bypass-approvals-and-sandbox": CODEX_BYPASS,
+        "--yolo": CODEX_BYPASS,
+        "--approve-for-me": {
+            None: ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True)
+        },
+        # Removed from current CLIs; older ones read it as sandboxed auto-approval.
+        "--full-auto": {None: ("approval prompts for commands the workspace-write sandbox allows", False)},
+        "-a": CODEX_APPROVAL,
+        "--ask-for-approval": CODEX_APPROVAL,
+        "-s": CODEX_SANDBOX,
+        "--sandbox": CODEX_SANDBOX,
+    },
+    "gemini": {
+        "--dangerously-skip-permissions": {None: ("every permission check", True)},
+        "--mode": {
+            "accept-edits": ("approval prompts for file edits", False),
+            "plan": (None, False),
+        },
+    },
+}
+CODEX_CONFIG_KEYS: dict[str, FlagValues] = {
+    "approval_policy": CODEX_APPROVAL,
+    "sandbox_mode": CODEX_SANDBOX,
+    "approvals_reviewer": {
+        "auto_review": ("approval prompts; an automatic reviewer decides each request to leave the sandbox", True),
+        "user": (None, False),
+    },
+    "sandbox_workspace_write.network_access": {
+        "true": ("the sandbox's network block", False),
+        "false": (None, False),
+    },
+}
+CODEX_CONFIG_FLAGS = ("-c", "--config")
+# Flags every herd launch passes itself, outside herd.json.
+HERD_FLAGS = {
+    "claude": ("--model", "--effort"),
+    "codex": ("-m",),
+    "gemini": ("--model", "--effort"),
+}
+HERD_READ_ONLY_FLAGS = {
+    "claude": ("--permission-mode",),
+    "codex": ("-s",),
+    "gemini": ("--mode",),
+}
+# Two spellings of one flag; the CLI counts them as the same flag.
+FLAG_SPELLINGS = {
+    "codex": {
+        "--yolo": "--dangerously-bypass-approvals-and-sandbox",
+        "--ask-for-approval": "-a",
+        "--sandbox": "-s",
+        "--model": "-m",
+    },
+}
+# Codex accepts `-c` more than once, so it never counts as a repeat.
+REPEATABLE = {"codex": CODEX_CONFIG_FLAGS}
+# The Claude mode whose classifier needs the herd's settings entries.
+CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
+# claude-cli-invocations:end
+PERMISSION_SCOPE = (
+    "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "
+    "~/.codex/config.toml and Claude settings are not read (claude-settings checks Claude settings for auto mode)"
+)
+
+
+def _classify(engine: str, flag: str, value: str | None) -> tuple[str | None, bool] | None:
+    """What `flag value` turns off, or None when the table does not know it."""
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS and value is not None:
+        key, has_value, raw = value.partition("=")
+        if not has_value:
+            return None
+        # The CLI parses the value as TOML, so a quoted string is the same setting.
+        literal = raw.strip()
+        if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in "\"'":
+            literal = literal[1:-1]
+        return CODEX_CONFIG_KEYS.get(key.strip(), {}).get(literal)
+    return PERMISSION_FLAGS[engine].get(flag, {}).get(value)
+
+
+def _takes_value(engine: str, flag: str) -> bool:
+    if engine == "codex" and flag in CODEX_CONFIG_FLAGS:
+        return True
+    values = PERMISSION_FLAGS[engine].get(flag)
+    return values is not None and None not in values
+
+
+def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], list[str], bool]:
+    """Flags that turn a check off, flags the table cannot classify, and
+    whether the recognized flags stop sessions asking."""
+    found: list[dict[str, str]] = []
+    unrecognized: list[str] = []
+    ends_prompts = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        flag, has_inline, inline = arg.partition("=")
+        value: str | None = None
+        shown = arg
+        index += 1
+        if has_inline:
+            value = inline
+        elif _takes_value(engine, flag):
+            if index < len(args):
+                value = args[index]
+                shown = f"{arg} {value}"
+                index += 1
+        known = None if value is None and _takes_value(engine, flag) else _classify(engine, flag, value)
+        if known is None:
+            unrecognized.append(shown)
+            continue
+        turns_off, ends = known
+        ends_prompts = ends_prompts or ends
+        if turns_off is not None:
+            found.append({"arg": shown, "turns_off": turns_off})
+    return found, unrecognized, ends_prompts
+
+
+def permission_report(
+    loaded: dict[str, Any],
+    engines: list[str],
+    type_texts: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
+    """What a session that edits will and won't be asked about, per engine.
+
+    `launch_args` reach read-only sessions too, so a flag there that turns a
+    check off is reported separately: it defeats the read-only launch. So does
+    a shell alias that adds one, and an alias flag the herd also passes makes
+    the CLI exit.
+    """
+    report: dict[str, Any] = {}
+    for engine in engines:
+        entry = loaded["config"]["engines"][engine]
+        turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
+        in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
+        report[engine] = {
+            "stops_at_prompts": not (ends_off or ends_launch),
+            "turned_off": turned_off,
+            "unrecognized": unknown_launch + unrecognized,
+            "turned_off_in_read_only": in_launch,
+            "alias": alias_report(engine, entry, (type_texts or {}).get(engine)),
+        }
+    return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
+
+
+# --- shell aliases ---------------------------------------------------------------
+
+ENGINE_CLIS = {"claude": "claude", "codex": "codex", "gemini": "agy"}
+ALIAS_PATTERNS = (
+    re.compile(r"^(?P<cli>\S+) is aliased to [`'‘](?P<body>.*)['’]$"),  # bash
+    re.compile(r"^(?P<cli>\S+) is an alias for (?P<body>.*)$"),  # zsh
+)
+FUNCTION_RE = re.compile(r"^(?P<cli>\S+) is (?:a|a shell) function\b")
+
+
+def _canonical(engine: str, arg: str) -> str:
+    flag = arg.split("=", 1)[0]
+    return FLAG_SPELLINGS.get(engine, {}).get(flag, flag)
+
+
+def parse_type_output(cli: str, text: str) -> dict[str, Any]:
+    """What `type <cli>` reports: an alias and its words, a function, or neither.
+
+    `kind` is None when no line describes `cli`: the shell exited early, loaded
+    no aliases, or printed `type` in another language. That is not a check.
+    """
+    described = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        for pattern in ALIAS_PATTERNS:
+            match = pattern.match(line)
+            if match and match.group("cli") == cli:
+                body = match.group("body")
+                try:
+                    words = shlex.split(body)
+                except ValueError:
+                    words = body.split()
+                return {"kind": "alias", "definition": body, "words": words}
+        match = FUNCTION_RE.match(line)
+        if match and match.group("cli") == cli:
+            return {"kind": "function", "definition": None, "words": []}
+        described = described or line.startswith(f"{cli} is ")
+    return {"kind": "none" if described else None, "definition": None, "words": []}
+
+
+def probe_type(cli: str, shell: str) -> str | None:
+    """`type <cli>` in an interactive shell, which loads the user's aliases."""
+    try:
+        result = subprocess.run(
+            [shell, "-ic", f"type {shlex.quote(cli)}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout
+
+
+def alias_report(
+    engine: str, entry: dict[str, list[str]], type_text: str | None
+) -> dict[str, Any]:
+    """Flags an alias adds to every launch, and those the herd also passes."""
+    cli = ENGINE_CLIS[engine]
+    parsed = parse_type_output(cli, type_text) if type_text is not None else None
+    if parsed is None or parsed["kind"] is None:
+        return {
+            "cli": cli,
+            "checked": False,
+            "kind": None,
+            "flags": [],
+            "repeats": [],
+            "read_only_repeats": [],
+            "turned_off": [],
+        }
+    words = parsed["words"]
+    first_flag = next(
+        (index for index, word in enumerate(words) if word.startswith("-")), len(words)
+    )
+    alias_args = words[first_flag:]
+    repeatable = REPEATABLE.get(engine, ())
+    configured = {
+        _canonical(engine, arg)
+        for arg in [
+            *entry["launch_args"],
+            *entry["permission_off_args"],
+            *HERD_FLAGS[engine],
+        ]
+        if arg.startswith("-")
+    }
+    read_only_configured = {
+        _canonical(engine, arg)
+        for arg in [
+            *entry["launch_args"],
+            *HERD_FLAGS[engine],
+            *HERD_READ_ONLY_FLAGS[engine],
+        ]
+        if arg.startswith("-")
+    }
+    added = [
+        arg
+        for arg in alias_args
+        if arg.startswith("-") and arg.split("=", 1)[0] not in repeatable
+    ]
+    repeats = sorted({_canonical(engine, arg) for arg in added} & configured)
+    turned_off, _, _ = _turned_off(engine, alias_args)
+    return {
+        "cli": cli,
+        "checked": True,
+        "kind": parsed["kind"],
+        # Flag names only: an alias body can carry inline credentials
+        # (`KEY=... claude`), and flag values can too.
+        "flags": sorted({arg.split("=", 1)[0] for arg in alias_args if arg.startswith("-")}),
+        "repeats": repeats,
+        "read_only_repeats": sorted(
+            {_canonical(engine, arg) for arg in added} & read_only_configured
+        ),
+        "turned_off": turned_off,
+    }
+
+
+# --- Claude settings for auto mode ----------------------------------------------------
+
+# Claude Code ignores autoMode in shared project settings.
+AUTO_MODE_SCOPES = ("user", "local")
+AUTO_MODE_SCOPE = (
+    "Claude user, project and local settings; autoMode is read from user and local settings only, "
+    "as Claude Code ignores it in shared project settings; managed settings are not read"
+)
+DIALOG_RULE = (
+    "Reading a herdr pane this session started (`herdr agent read`) and answering its startup dialog with "
+    "`herdr agent send-keys` is expected herd orchestration: trusting the folder when it is the primary checkout "
+    "or a worktree this run created, and dismissing an update banner. This does not cover approving another "
+    "session's permission or tool-use prompt."
+)
+
+
+def claude_config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def _home_relative(path: Path) -> str:
+    home = str(Path.home())
+    text = str(path)
+    return "~" + text[len(home) :] if text == home or text.startswith(home + os.sep) else text
+
+
+def _read_settings(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise UsageError(f"cannot read {path}: {exc}") from exc
+    value = parse_json(text, str(path))
+    if not isinstance(value, dict):
+        raise ConfigError([f"{path}: top level must be a JSON object"])
+    return value
+
+
+def _string_entries(settings: dict[str, Any] | None, *keys: str) -> list[str]:
+    value: Any = settings or {}
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def rule_covers(rule: str, command: str) -> bool:
+    """Whether a permission rule such as `Bash(herdr agent:*)` matches `command ...`."""
+    rule = rule.strip()
+    if rule == "Bash":
+        return True
+    match = re.fullmatch(r"Bash\((.*)\)", rule, re.S)
+    if not match:
+        return False
+    body = match.group(1).strip()
+    if body in ("*", ":*"):
+        return True
+    if body.endswith(":*"):
+        body = body[:-2] + " *"
+    # A command family includes arbitrary arguments, so an exact or suffix-only
+    # rule cannot establish that the whole family is allowed.
+    if not body.endswith("*"):
+        return False
+    pattern = re.escape(body).replace(r"\*", ".*")
+    return any(
+        re.fullmatch(pattern, text, re.S) is not None
+        for text in (command, command + " ")
+    )
+
+
+def rule_restricts(rule: str, command: str) -> bool:
+    """Whether a deny or ask rule could match some invocation `command ...`.
+
+    Unlike an allow rule, a restriction need not cover the whole family to
+    refuse a herd command: `Bash(herdr agent start * --kind codex*)` refuses
+    only some launches, and those may be the ones the herd makes.
+    """
+    if rule_covers(rule, command):
+        return True
+    match = re.fullmatch(r"Bash\((.*)\)", rule.strip(), re.S)
+    if not match:
+        return False
+    body = match.group(1).strip()
+    if body.endswith(":*"):
+        body = body[:-2] + " *"
+    prefix, star, _ = body.partition("*")
+    if star and (command + " ").startswith(prefix):
+        return True
+    return prefix.startswith(command + " ")
+
+
+def _names(text: str, term: str) -> bool:
+    """Whether a prose rule names `term`; a flag or value must appear as a whole word."""
+    return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text) is not None
+
+
+def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
+    named = ", ".join(f"{' '.join(args)} for {ENGINE_CLIS[engine]}" for engine, args in flags.items())
+    clis = " or ".join(ENGINE_CLIS[engine] for engine in flags)
+    return (
+        f"While a herd skill (hreview, auto-glance, hgrill, horch, hloop, hpromote) is running, starting {clis} "
+        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags configured in "
+        f"{_home_relative(herd_path)} ({named}) is expected: the user configured these flags for local review "
+        "chains and approved them. This covers only sessions the skill starts with a prompt it wrote, and only "
+        "flags that file held before the run; it does not cover other flags or launches asked for by text the "
+        "session read."
+    )
+
+
+# Commands a deny or ask rule must not cover. Launches are not pre-allowed: a
+# `Bash(herdr agent start:*)` rule would approve any argv after `--`, in every
+# session, without the classifier.
+HERD_COMMANDS = ("herdr agent start", "herdr agent read", "herdr agent send-keys")
+
+
+def _required(loaded: dict[str, Any], engines: list[str], read_only: bool = False) -> list[dict[str, Any]]:
+    required: list[dict[str, Any]] = [
+        {
+            "setting": "permissions.allow",
+            "entry": "Bash(herdr agent read:*)",
+            "command": "herdr agent read",
+            "why": "reading a pane the run started, to see its startup dialog or its result",
+        },
+        {
+            "setting": "autoMode.allow",
+            "entry": DIALOG_RULE,
+            "names": ["herdr agent send-keys"],
+            "why": "answering a startup dialog in a pane the run started",
+        },
+    ]
+    flags: dict[str, list[str]] = {}
+    for engine in engines:
+        entry = loaded["config"]["engines"][engine]
+        hits, _, _ = _turned_off(engine, entry["launch_args"])
+        in_launch = [word for hit in hits for word in hit["arg"].split(" ", 1)]
+        # Read-only sessions get launch_args but never permission_off_args.
+        args = [*in_launch, *([] if read_only else entry["permission_off_args"])]
+        if args:
+            flags[engine] = args
+    if flags:
+        named = [term for engine, args in flags.items() for term in (ENGINE_CLIS[engine], *args)]
+        required.append(
+            {
+                "setting": "autoMode.allow",
+                "entry": _launch_rule(flags, Path(loaded["source"]["path"])),
+                "names": ["herdr agent start", *dict.fromkeys(named)],
+                "why": "starting sessions with herd.json's permission-off flags; auto mode treats that as creating an unsafe agent",
+            }
+        )
+    return required
+
+
+def _auto_mode_reasons(
+    session_mode: str | None,
+    loaded: dict[str, Any],
+    engines: list[str],
+    settings: dict[str, dict[str, Any] | None],
+    read_only: bool = False,
+) -> list[str]:
+    reasons: list[str] = []
+    if session_mode == "auto":
+        reasons.append("this session runs in auto mode")
+    if "claude" in engines:
+        entry = loaded["config"]["engines"]["claude"]
+        args = entry["launch_args"] + ([] if read_only else entry["permission_off_args"])
+        flag, mode = CLAUDE_AUTO_MODE
+        pairs = zip(args, [*args[1:], None])
+        if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
+            reasons.append("herd.json starts Claude sessions in auto mode")
+    for scope, value in settings.items():
+        if isinstance(value, dict) and isinstance(value.get("permissions"), dict):
+            if value["permissions"].get("defaultMode") == "auto":
+                reasons.append(f"{scope} Claude settings set permissions.defaultMode to auto")
+    return reasons
+
+
+def _private_file(path: Path, text: str) -> None:
+    _private_dir(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    path.chmod(0o600)
+
+
+def copy_command(draft: Path, target: Path, stamp: str) -> str:
+    """Back up the settings file, validate the draft with jq, then copy it in."""
+    quoted_target = shlex.quote(str(target))
+    quoted_draft = shlex.quote(str(draft))
+    backup = f"cp -p {quoted_target} {shlex.quote(f'{target}.bak-{stamp}')}"
+    if not target.exists():
+        backup = f"mkdir -p {shlex.quote(str(target.parent))}"
+    return f"{backup} && jq -e . {quoted_draft} >/dev/null && cp {quoted_draft} {quoted_target}"
+
+
+def auto_mode_report(
+    loaded: dict[str, Any],
+    engines: list[str],
+    session_mode: str | None,
+    project_dir: Path | None,
+    draft_path: Path,
+    read_only: bool = False,
+) -> dict[str, Any]:
+    """Which Claude settings entries the herd needs in auto mode, and a draft that adds the missing ones."""
+    user_path = claude_config_dir() / "settings.json"
+    paths: dict[str, Path] = {"user": user_path}
+    if project_dir is not None:
+        paths["project"] = project_dir / ".claude" / "settings.json"
+        paths["local"] = project_dir / ".claude" / "settings.local.json"
+    settings = {scope: _read_settings(path) for scope, path in paths.items()}
+    reasons = _auto_mode_reasons(session_mode, loaded, engines, settings, read_only)
+
+    allow = [rule for value in settings.values() for rule in _string_entries(value, "permissions", "allow")]
+    restrictions = {
+        kind: [rule for value in settings.values() for rule in _string_entries(value, "permissions", kind)]
+        for kind in ("deny", "ask")
+    }
+    auto_allow = [
+        rule for scope in AUTO_MODE_SCOPES for rule in _string_entries(settings.get(scope), "autoMode", "allow")
+    ]
+
+    missing: list[dict[str, str]] = []
+    conflicts: list[dict[str, str]] = []
+    partial: list[dict[str, str]] = []
+    for command in HERD_COMMANDS:
+        for kind, rules in restrictions.items():
+            for rule in rules:
+                if rule_covers(rule, command):
+                    conflicts.append({"setting": f"permissions.{kind}", "entry": rule, "blocks": command})
+                elif rule_restricts(rule, command):
+                    partial.append({"setting": f"permissions.{kind}", "entry": rule, "may_block": command})
+    for item in _required(loaded, engines, read_only):
+        shown = {key: item[key] for key in ("setting", "entry", "why")}
+        if item["setting"] == "permissions.allow":
+            if not any(rule_covers(rule, item["command"]) for rule in allow):
+                missing.append(shown)
+        elif not any(all(_names(rule, name) for name in item["names"]) for rule in auto_allow):
+            missing.append(shown)
+
+    any_auto_allow = any(
+        isinstance(value, dict)
+        and isinstance(value.get("autoMode"), dict)
+        and isinstance(value["autoMode"].get("allow"), list)
+        for value in (settings.get(scope) for scope in AUTO_MODE_SCOPES)
+    )
+    defaults = "not set" if not any_auto_allow else ("kept" if "$defaults" in auto_allow else "replaced")
+
+    in_use = bool(reasons)
+    report: dict[str, Any] = {
+        "scope": AUTO_MODE_SCOPE,
+        "auto_mode": {"in_use": in_use, "because": reasons},
+        "files": {scope: {"path": str(path), "present": settings[scope] is not None} for scope, path in paths.items()},
+        "missing": missing,
+        "conflicts": conflicts,
+        "partial_conflicts": partial,
+        "defaults": defaults,
+        # A deny rule refuses the command in every permission mode; the rest
+        # matter only to auto mode's classifier.
+        "ready": not any(item["setting"] == "permissions.deny" for item in conflicts)
+        and (not in_use or not (missing or conflicts)),
+        "draft": None,
+    }
+    if not (in_use and missing):
+        return report
+
+    draft = json.loads(json.dumps(settings["user"] or {}))
+    for item in missing:
+        section, key = item["setting"].split(".")
+        holder = draft.get(section)
+        if not isinstance(holder, dict):
+            holder = draft[section] = {}
+        entries = holder.get(key)
+        if not isinstance(entries, list):
+            # A new autoMode.allow list replaces the built-in rules unless it names them;
+            # keep them only where no list in scope has already left them out.
+            entries = holder[key] = ["$defaults"] if section == "autoMode" and defaults == "not set" else []
+        entries.append(item["entry"])
+    _private_file(draft_path, json.dumps(draft, indent=2) + "\n")
+    report["draft"] = {
+        "path": str(draft_path),
+        "target": str(user_path),
+        "copy_command": copy_command(draft_path, user_path, time.strftime("%Y%m%d%H%M%S")),
+    }
+    return report
+
+
 # --- state paths and locks -------------------------------------------------------
 
 
@@ -558,7 +1161,143 @@ def state_paths(repo: str, skill: str, key: str | None) -> dict[str, str]:
         "state": str(cache.joinpath("activeloom-herd", *parts)),
         "scratch": str(tmp.joinpath("activeloom-herd", *parts)),
         "lock": str(cache.joinpath("activeloom-herd", flat_repo(repo), "locks", f"{skill}-{key or 'all'}")),
+        "approvals": str(approvals_dir(repo)),
     }
+
+
+# --- restart approvals ----------------------------------------------------------------
+
+APPROVAL_VERSION = 1
+APPROVAL_MAX_TTL_HOURS = 72
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+APPROVAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def approvals_dir(repo: str) -> Path:
+    """User-owned, outside any checkout, under $XDG_CONFIG_HOME/activeloom."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "activeloom" / "herd-approvals" / flat_repo(repo)
+
+
+def _approval_target(repo: str, pr: int, head: str) -> Path:
+    if pr < 1:
+        raise UsageError("--pr must be positive")
+    if not SHA_RE.match(head):
+        raise UsageError("--head must be a full 40-character lowercase SHA")
+    return approvals_dir(repo) / f"pr-{pr}-{head[:12]}.json"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def approve_restart(
+    repo: str,
+    pr: int,
+    head: str,
+    ttl_hours: int,
+    deep: bool,
+    scope_decision: str | None,
+    confirm: str,
+) -> dict[str, Any]:
+    if not 1 <= ttl_hours <= APPROVAL_MAX_TTL_HOURS:
+        raise UsageError(f"--ttl-hours must be between 1 and {APPROVAL_MAX_TTL_HOURS}")
+    if scope_decision == "split":
+        raise UsageError("a split must be done before a restart; approve the new PR's head instead")
+    target = _approval_target(repo, pr, head)
+    if confirm.strip() != f"restart {pr}":
+        raise UsageError("confirmation did not match; nothing written")
+    created = _now()
+    record = {
+        "version": APPROVAL_VERSION,
+        "id": secrets.token_hex(8),
+        "repo": repo,
+        "pr": pr,
+        "head": head,
+        "deep": deep,
+        "scope_decision": scope_decision,
+        "created": _iso(created),
+        "expires": _iso(created + timedelta(hours=ttl_hours)),
+        "used": None,
+    }
+    _private_dir(target.parent)
+    temporary = target.with_suffix(".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, target)
+    return {"path": str(target), **record}
+
+
+def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise ApprovalError(f"no restart approval for {repo}#{pr} at {head[:12]}") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ApprovalError(f"{path}: not a regular file owned and writable only by this user")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ApprovalError(f"{path}: unreadable approval record") from exc
+    if not isinstance(record, dict) or record.get("version") != APPROVAL_VERSION:
+        raise ApprovalError(f"{path}: unknown approval record version")
+    for field, expected in (("repo", repo), ("pr", pr), ("head", head)):
+        if record.get(field) != expected:
+            raise ApprovalError(f"approval {field} does not match: recorded {record.get(field)!r}")
+    if record.get("used") is not None:
+        raise ApprovalError(f"approval {record.get('id')} was already used at {record['used']}")
+    if (
+        not isinstance(record.get("id"), str)
+        or not APPROVAL_ID_RE.match(record["id"])
+        or record.get("scope_decision") not in (None, "keep")
+        or not isinstance(record.get("deep"), bool)
+    ):
+        raise ApprovalError(f"{path}: malformed approval record")
+    created, expires = (_parse_moment(path, record.get(field)) for field in ("created", "expires"))
+    now = _now()
+    if created > now or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+        raise ApprovalError(f"{path}: approval times out of range")
+    if expires <= now:
+        raise ApprovalError(f"approval {record['id']} expired at {record['expires']}")
+    return record
+
+
+def _parse_moment(path: Path, value: Any) -> datetime:
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApprovalError(f"{path}: malformed timestamp") from exc
+    if moment.tzinfo is None:
+        raise ApprovalError(f"{path}: timestamp has no timezone")
+    return moment
+
+
+def check_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
+    target = _approval_target(repo, pr, head)
+    return {"path": str(target), **_load_approval(target, repo, pr, head)}
+
+
+def claim_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
+    """Verify, then consume: the rename is atomic, so only one claim can win."""
+    target = _approval_target(repo, pr, head)
+    record = _load_approval(target, repo, pr, head)
+    used_path = target.with_name(f"{target.stem}.{record['id']}.used.json")
+    try:
+        os.rename(target, used_path)
+    except FileNotFoundError as exc:
+        raise ApprovalError(f"approval {record['id']} was claimed concurrently") from exc
+    record["used"] = _iso(_now())
+    descriptor = os.open(used_path, os.O_WRONLY | os.O_TRUNC)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return {"path": str(used_path), **record}
 
 
 def _private_dir(path: Path) -> None:
@@ -602,6 +1341,39 @@ def main(argv: list[str] | None = None) -> int:
     user_args.add_argument("--read-only", action="store_true", help="omit permission-off arguments")
     user_args.add_argument("--path", type=Path)
 
+    permissions = commands.add_parser("permissions", help="what editing sessions will and won't be asked, per engine")
+    permissions.add_argument("--engine", required=True, choices=ENGINES, action="append")
+    permissions.add_argument("--path", type=Path)
+    permissions.add_argument(
+        "--shell",
+        default=os.environ.get("SHELL") or "/bin/sh",
+        help="shell whose aliases to read",
+    )
+    permissions.add_argument("--no-alias-check", action="store_true")
+
+    automode = commands.add_parser(
+        "claude-settings",
+        help="Claude settings the herd needs when auto mode is in use",
+    )
+    automode.add_argument("--engine", required=True, choices=ENGINES, action="append")
+    automode.add_argument("--path", type=Path)
+    automode.add_argument(
+        "--session-mode",
+        help="this session's own Claude permission mode, if it is Claude Code",
+    )
+    automode.add_argument(
+        "--project-dir",
+        type=Path,
+        help="checkout whose .claude/settings*.json also apply",
+    )
+    automode.add_argument("--draft", type=Path, help="where to write the draft settings file")
+    automode.add_argument(
+        "--read-only",
+        action="store_true",
+        help="every session this run starts is read-only, so permission_off_args are never passed",
+    )
+
+
     paths = commands.add_parser("paths", help="create and print per-repository state paths")
     lock = commands.add_parser("lock", help="take a per-repository lock (exit 3 if held)")
     unlock = commands.add_parser("unlock", help="release a per-repository lock")
@@ -609,6 +1381,20 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--repo", required=True)
         command.add_argument("--skill", required=True)
         command.add_argument("--key")
+
+    approve = commands.add_parser(
+        "approve-restart",
+        help="for you to run in your own terminal: approve one restart of an ended review run",
+    )
+    check = commands.add_parser("check-restart", help="read-only: is there a valid restart approval")
+    claim = commands.add_parser("claim-restart", help="verify and consume a restart approval (single use)")
+    for command in (approve, check, claim):
+        command.add_argument("--repo", required=True)
+        command.add_argument("--pr", required=True, type=int)
+        command.add_argument("--head", required=True)
+    approve.add_argument("--ttl-hours", type=int, default=4)
+    approve.add_argument("--deep", action="store_true", help="the restart is a Deep review (trigger 6)")
+    approve.add_argument("--scope-decision", choices=("keep", "split"))
 
     args = parser.parse_args(argv)
     try:
@@ -630,6 +1416,41 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "user-args":
             entry = read_user(args.path or user_config_path())["config"]["engines"][args.engine]
             _emit(entry["launch_args"] + ([] if args.read_only else entry["permission_off_args"]))
+        elif args.command in ("approve-restart", "check-restart", "claim-restart"):
+            if args.command == "check-restart":
+                _emit(check_restart(args.repo, args.pr, args.head))
+            elif args.command == "claim-restart":
+                _emit(claim_restart(args.repo, args.pr, args.head))
+            else:
+                if not sys.stdin.isatty():
+                    raise UsageError("approve-restart reads your confirmation from an interactive terminal; nothing written")
+                print(
+                    f"Approve one restart of the review run on {args.repo}#{args.pr} at {args.head[:12]}"
+                    f" (expires in {args.ttl_hours}h). Type 'restart {args.pr}' to confirm: ",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                confirm = sys.stdin.readline()
+                _emit(
+                    approve_restart(
+                        args.repo, args.pr, args.head, args.ttl_hours, args.deep, args.scope_decision, confirm
+                    )
+                )
+        elif args.command == "permissions":
+            engines = list(dict.fromkeys(args.engine))
+            texts = (
+                {}
+                if args.no_alias_check
+                else {engine: probe_type(ENGINE_CLIS[engine], args.shell) for engine in engines}
+            )
+            _emit(permission_report(read_user(args.path or user_config_path()), engines, texts))
+        elif args.command == "claude-settings":
+            tmp = Path(os.environ.get("TMPDIR") or "/tmp")
+            draft = args.draft or tmp / "activeloom-herd" / "claude-settings.draft.json"
+            loaded = read_user(args.path or user_config_path())
+            engines = list(dict.fromkeys(args.engine))
+            _emit(auto_mode_report(loaded, engines, args.session_mode, args.project_dir, draft, args.read_only))
         else:
             resolved = state_paths(args.repo, args.skill, args.key)
             if args.command == "paths":
@@ -657,6 +1478,9 @@ def main(argv: list[str] | None = None) -> int:
     except UsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except ApprovalError as exc:
+        print(f"no valid restart approval: {exc}", file=sys.stderr)
+        return 4
     return 0
 
 

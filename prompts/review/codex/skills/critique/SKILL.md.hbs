@@ -50,7 +50,7 @@ separate-session protocol transition requires another reviewer.
 ## Stance Resolution
 
 Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
-or the round supplied by `deepcritique`. Otherwise select one past Codex's
+or the round supplied by `deepcritique`. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise select one past Codex's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only pass/complete comments after that run marker.
 Validate it with `local-review-handoff.py authorize-pass`. An ended run,
@@ -67,7 +67,7 @@ marker exists; it never consumes a restarted run's budget.
   unchanged, and the round cap does not move.
 
 The first pass after escalation and a reviewer's first cold read remain
-adversarial regardless of ordinal. Take the stance from `authorize-pass`'s `stance` field and state the round and
+adversarial regardless of ordinal. When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
 stance in the output. The ledger refuses a convergence result that fixed a
 non-blocking finding.
 
@@ -140,7 +140,15 @@ The actionability bar tightens further. Change the PR only for a **blocking**
 defect that also clears the Disposition Bar above — one that is realistically
 reachable and ships materially wrong behavior, loses or corrupts data, exposes
 a credible security or privacy exploit, breaks a public contract, or breaks
-deploy or rollout:
+deploy or rollout.
+
+Before editing or assigning a fix, settle and post the finding's severity and
+intended disposition. Run the controller's `authorize-fix` check described in
+the ledger's "Authorize a fix before editing" section. In convergence,
+`blocking` with supporting evidence is eligible for a fix; `major`, `minor`,
+and `nit` must be deferred. Hand a fixer only findings that passed this check.
+Resolve any mismatch before editing; severity follows impact evidence, not the
+desire to make a fix eligible.
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
@@ -289,7 +297,8 @@ role references needed for the selected lenses.
    required by `.codex/references/local-review-ledger.md` to post one inline
    comment on an exact GitHub diff anchor before editing. Do not hand-compose
    review-comment API requests.
-9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
+9. Apply the Disposition Bar and run `authorize-fix` for each intended fix before
+   editing or delegating it. Fix only findings whose expected harm reduction
    justifies the churn. Defer the rest, and create an issue only for an urgent
    follow-up that should be scheduled within roughly two weeks.
 10. Run targeted validation and commit. When
