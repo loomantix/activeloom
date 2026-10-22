@@ -128,7 +128,7 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
-7. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied.
+7. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The agent-loop controller has already authorized `$AGENT_LOOP_REVIEW_ROUND` and posts no run marker, so when it is set, skip `authorize-pass` and run initialization.
    Otherwise select one past Claude's highest completed round within the latest
    authenticated `local-review-run:v1` (1 when it has none), using only its
    pass/complete comments after that run marker. Honor the run's cap and use

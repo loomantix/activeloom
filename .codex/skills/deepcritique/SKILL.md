@@ -147,7 +147,7 @@ another engine — that pass is owed and belongs in its own fresh session. Anoth
 declared reviewer holding no attestation is not a stop: reviewer order within a
 round is a scheduling choice, not a protocol rule.
 
-Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise,
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The agent-loop controller has already authorized `$AGENT_LOOP_REVIEW_ROUND` and posts no run marker, so when it is set, skip `authorize-pass` and run initialization. Otherwise,
 within the latest authenticated `local-review-run:v1`, select one past this
 engine's highest completed round (1 when it has none), considering only its
 `local-review-pass:v3` and `local-review-complete:v3` comments after that run's

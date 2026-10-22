@@ -90,7 +90,7 @@ Do not proceed in the current session unless the user explicitly overrides.
 ## Stance Resolution
 
 Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
-or the round supplied by `deepcritique`. Otherwise select one past the active
+or the round supplied by `deepcritique`. The agent-loop controller has already authorized `$AGENT_LOOP_REVIEW_ROUND` and posts no run marker, so when it is set, skip `authorize-pass` and run initialization. Otherwise select one past the active
 engine's highest completed round within the latest authenticated
 `local-review-run:v1` (1 when it has none), using only pass/complete comments after
 that run marker. Resolve Agy as `gemini`, including historical `antigravity`
