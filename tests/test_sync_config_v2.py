@@ -659,21 +659,29 @@ UNSYNCED_SKILL_FILES: dict[str, str] = {}
 def test_every_harness_skill_file_has_a_sync_target() -> None:
     """A skill file nobody syncs reaches no consumer, silently.
 
-    A file counts as covered when a target names it as `source:` or as
-    `destination:` (a root's copy can be delivered from another root's
-    identical source). Tracked files only: an untracked nested worktree would
+    A file counts as covered when a copy target names it as `source:`, or as
+    `destination:` with byte-identical source, so that the tracked copy is
+    what ships. A `delete: true` target removes its path from consumers, so it
+    covers nothing. Tracked files only: an untracked nested worktree would
     otherwise add every root's copy a second time.
     """
     root = Path(__file__).resolve().parents[1]
     manifest = yaml.safe_load((root / "scripts/sync-targets.yml").read_text())
     target_sets = [h["targets"] for h in manifest["harnesses"].values()]
     target_sets.append(manifest["shared"]["targets"])
-    covered = {
-        target[key]
+    copies = [
+        target
         for targets in target_sets
         for target in targets
-        for key in ("source", "destination")
-        if key in target
+        if target.get("delete") is not True
+    ]
+    covered = {target["source"] for target in copies}
+    covered |= {
+        target["destination"]
+        for target in copies
+        if (root / target["destination"]).is_file()
+        and (root / target["destination"]).read_bytes()
+        == (root / target["source"]).read_bytes()
     }
     listing = subprocess.run(
         ["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True, text=True
