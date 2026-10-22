@@ -163,6 +163,9 @@ def test_skills_claim_but_never_write_an_approval(root: str) -> None:
     assert "user restart approval <id>, recorded <created>" in ended
     assert "Never run `approve-restart` or write a record" in ended
     assert "approve-restart --repo <repo> --pr <n> --head <full head sha>" in ended
+    # A start-run failure after a successful claim reports the spent approval and never re-claims.
+    assert ended.index("`claim-restart`") < ended.index("never claim again for this attempt")
+    assert "[--deep]" not in ended
 
     horch = skill("horch")
     chain = horch.split("**Review chain**", 1)[1].split("**Build**", 1)[0]

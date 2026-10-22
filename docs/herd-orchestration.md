@@ -390,7 +390,7 @@ python3 -I .claude/skills/hreview/scripts/herd-config.py approve-restart \
 - The record goes to `~/.config/activeloom/herd-approvals/<owner>__<name>/` (`herd-config.py paths` prints it as `approvals`), outside every checkout, created readable and writable only by you. It holds the repository, PR, exact head, created and expiry times (default 4 hours, at most 72), and your `--deep` and `--scope-decision` choices.
 - The herder first reads the record with `check-restart`. If the run controller will ask for a scope decision and the record has none, it stops without using the approval. Otherwise it runs `claim-restart` just before `start-run --restart`: the repository, PR and exact head must match, the record must be unexpired and unused, and claiming marks it used, so it authorizes one restart. The run's authorization comment cites the approval's ID and time, never your words.
 - The orchestrator may print the command; it never runs it or writes a record. `check-restart` is the read-only check it uses before starting a herder.
-- Under Claude Code auto mode, the classifier may still refuse the herder's `start-run --restart`. A settings entry for it belongs with the `claude-settings` check (loomantix/activeloom#457); until that check covers it, a refusal there is a block, and typing `--restart` in the herder's tab is the fallback.
+- Under Claude Code auto mode, the classifier may still refuse the herder's `start-run --restart`. A settings entry for it belongs with the `claude-settings` check (loomantix/activeloom#457); until that check covers it, a refusal there is a block that has already used the approval, and typing `--restart` in the herder's tab is the fallback.
 
 ## Running unattended safely
 
