@@ -99,6 +99,28 @@ remote_head="${remote_line%%[[:space:]]*}"
     exit 1
 }
 
+# Refuse a push the review result could not attest while the reviewer can still
+# correct it. write-result remains the authority; this moves its post-before-fix
+# and convergence blocking-only failures ahead of publication.
+# Contract v2 ledgers carry v1 findings, which preflight-publish cannot read.
+if [ "${AGENT_LOOP_REVIEW_CONTRACT_VERSION:-2}" -ge 3 ]; then
+    publish_fixes="${AGENT_LOOP_LOG_DIR:?AGENT_LOOP_LOG_DIR is required}/ledger-content/publish-fixes.json"
+    [ -f "$publish_fixes" ] && [ ! -L "$publish_fixes" ] || {
+        echo "review-push requires $publish_fixes: a JSON array of {\"fingerprint\", \"occurrence\"} for every finding this push fixes, each posted before publication" >&2
+        exit 1
+    }
+    node "${AGENT_LOOP_REVIEW_LEDGER:?AGENT_LOOP_REVIEW_LEDGER is required}" preflight-publish \
+        --repo "${GH_REPO:?GH_REPO is required}" \
+        --pr "${AGENT_LOOP_PR_NUMBER:?AGENT_LOOP_PR_NUMBER is required}" \
+        --head "$expected_remote_head" \
+        --engine "${AGENT_LOOP_REVIEW_ENGINE:?AGENT_LOOP_REVIEW_ENGINE is required}" \
+        --round "${AGENT_LOOP_REVIEW_ROUND:?AGENT_LOOP_REVIEW_ROUND is required}" \
+        --findings-file "$publish_fixes" >/dev/null || {
+        echo "review-push refused publication; correct the findings above, then publish again" >&2
+        exit 1
+    }
+fi
+
 require_origin_identity
 "$real_git" push origin \
     "--force-with-lease=refs/heads/$AGENT_LOOP_BRANCH:$expected_remote_head" \

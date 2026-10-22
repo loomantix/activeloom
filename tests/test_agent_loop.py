@@ -14,6 +14,36 @@ from pathlib import Path
 import pytest
 
 
+# A v3 reviewer posts each finding before publishing its fix and names it in the
+# publish-fixes manifest; review-push refuses the push otherwise. Hooks that
+# commit a fix call this first: `fixture-post-fix <engine> <fingerprint> <severity>`.
+POST_FIX = r"""#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys
+engine, fingerprint, severity = sys.argv[1:4]
+content = 'Fixture finding.'
+marker = (
+    f"<!-- local-review:v3 engine={engine} round={os.environ['AGENT_LOOP_REVIEW_ROUND']} "
+    f"head={os.environ['AGENT_LOOP_PR_HEAD_SHA']} fingerprint={fingerprint} occurrence=1 "
+    f"severity={severity} lens=correctness "
+    f"content-sha256={hashlib.sha256(content.encode()).hexdigest()} -->"
+)
+threads_file = pathlib.Path(os.environ['AGENT_STATE_DIR']) / 'review-threads.json'
+threads = json.loads(threads_file.read_text()) if threads_file.exists() else []
+threads.append({
+    'id': f'THREAD-PREPUBLISH-{fingerprint}', 'isResolved': False,
+    'repository': {'nameWithOwner': 'fixture/consumer'}, 'pullRequest': {'number': 1},
+    'comments': {'nodes': [{'databaseId': 7000 + len(threads), 'body': marker + '\n' + content,
+        'author': {'login': 'tester'}}], 'pageInfo': {'hasNextPage': False}},
+})
+threads_file.write_text(json.dumps(threads))
+content_dir = pathlib.Path(os.environ['AGENT_LOOP_LOG_DIR']) / 'ledger-content'
+content_dir.mkdir(parents=True, exist_ok=True)
+(content_dir / 'publish-fixes.json').write_text(
+    json.dumps([{'fingerprint': fingerprint, 'occurrence': 1}])
+)
+"""
+
+
 pytestmark = pytest.mark.regression
 
 
@@ -163,6 +193,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo
     )
 
+    _write_executable(bin_dir / "fixture-post-fix", POST_FIX)
     gh = bin_dir / "gh"
     _write_executable(
         gh,
@@ -426,6 +457,15 @@ elif args[0] == 'api' and any(value.startswith('repos/') for value in args):
             'merge_base_commit': {'sha': before},
             'commits': [{'sha': after}],
         }))
+    elif endpoint_path.endswith('pulls/1/comments'):
+        threads_file = state / 'review-threads.json'
+        nodes = json.loads(threads_file.read_text()) if threads_file.exists() else []
+        rows = [
+            {'id': comment['databaseId'], 'body': comment['body'],
+             'user': {'login': comment.get('author', {}).get('login', 'tester')}}
+            for node in nodes for comment in node['comments']['nodes']
+        ]
+        print(json.dumps([rows] if '--slurp' in args else rows))
     elif endpoint_path.endswith('pulls/1/reviews'):
         reviews_file = state / 'reviews.json'
         reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
@@ -1091,7 +1131,8 @@ def test_park_mode_still_stops_on_an_uncertain_push(
     claude = (
         'if [ "$AGENT_LOOP_ISSUE_ID" = 53 ]; then '
         "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
-        "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
+        "git commit -m 'fix: early'; fixture-post-fix claude early-fix major; "
+        "\"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
         + _clean_v3_hook("claude")
     )
     result = _run(
@@ -1816,7 +1857,11 @@ def test_v3_cleanup_only_minor_transition_requires_ledger_evidence(
         ),
     )
     assert result.returncode != 0
-    assert "valid contract v3 result" in result.stderr
+    # The unposted cleanup is refused at publication, so the unpublished commit
+    # stops the run before any result is written.
+    assert "push checkpoint did not match its final head" in result.stderr
+    hook_log = next((tmp_path / "logs").glob("*-issue-32-*/codex-review-round-1.log"))
+    assert "posted before publication" in hook_log.read_text(encoding="utf-8")
     assert not (consumer[3] / "pr-ready").exists()
 
 
@@ -1921,6 +1966,7 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
         'before="$AGENT_LOOP_PR_HEAD_SHA"; '
         "printf 'material fix\\n' > final-round-fix.txt; "
         "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
+        "fixture-post-fix codex final-round-material major; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
@@ -2361,6 +2407,7 @@ def _minor_committed_v3_hook(engine: str) -> str:
         'before="$AGENT_LOOP_PR_HEAD_SHA"; '
         f"printf 'minor fix\\n' > minor-fix-{engine}.txt; "
         f"git add minor-fix-{engine}.txt; git commit -m 'fix: minor finding'; "
+        f"fixture-post-fix {engine} minor-finding minor; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
         f"printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine={engine} "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=minor-finding "
@@ -2470,6 +2517,7 @@ before = os.environ["AGENT_LOOP_PR_HEAD_SHA"]
 Path("material-fix.txt").write_text("fixed\\n", encoding="utf-8")
 subprocess.run(["git", "add", "material-fix.txt"], check=True)
 subprocess.run(["git", "commit", "-m", "fix: material review finding"], check=True)
+subprocess.run(["fixture-post-fix", "codex", "material-fix", "major"], check=True)
 subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
 after = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -3752,6 +3800,7 @@ if round_number != "1":
 Path("catalog.ts").write_text("// Corrected note.\\nexport const entries = [];\\n", encoding="utf-8")
 subprocess.run(["git", "add", "catalog.ts"], check=True)
 subprocess.run(["git", "commit", "-m", "fix: correct catalog note"], check=True)
+subprocess.run(["fixture-post-fix", "claude", "catalog-note", "minor"], check=True)
 subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
 after = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True

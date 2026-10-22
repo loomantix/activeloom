@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -62,7 +63,44 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
         }
     )
     (tmp_path / "review-push-state").write_text(f"{start}\n", encoding="utf-8")
+    _install_fake_ledger(tmp_path, env)
     return repo, env, start
+
+
+FAKE_LEDGER = """
+const { appendFileSync, readFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+const manifest = readFileSync(args[args.indexOf('--findings-file') + 1], 'utf8');
+appendFileSync(process.env.FAKE_LEDGER_LOG, JSON.stringify({ args, manifest }) + '\\n');
+if (process.env.FAKE_LEDGER_REFUSE) {
+  console.error('review-ledger: ' + process.env.FAKE_LEDGER_REFUSE);
+  process.exit(1);
+}
+"""
+
+
+def _install_fake_ledger(tmp_path: Path, env: dict[str, str]) -> None:
+    """Stand in for the ledger's preflight-publish so no test reaches GitHub."""
+    ledger = tmp_path / "review-ledger.cjs"
+    ledger.write_text(FAKE_LEDGER, encoding="utf-8")
+    log_dir = tmp_path / "logs"
+    (log_dir / "ledger-content").mkdir(parents=True)
+    (log_dir / "ledger-content" / "publish-fixes.json").write_text(
+        '[{"fingerprint": "window", "occurrence": 1}]\n', encoding="utf-8"
+    )
+    env.update(
+        {
+            "AGENT_LOOP_LOG_DIR": str(log_dir),
+            "AGENT_LOOP_REVIEW_LEDGER": str(ledger),
+            "AGENT_LOOP_PR_NUMBER": "12",
+            "AGENT_LOOP_REVIEW_ENGINE": "codex",
+            "AGENT_LOOP_REVIEW_ROUND": "3",
+            "AGENT_LOOP_REVIEW_CONTRACT_VERSION": "3",
+            "GH_REPO": "example/repo",
+            "FAKE_LEDGER_LOG": str(tmp_path / "fake-ledger.log"),
+        }
+    )
+    env.pop("FAKE_LEDGER_REFUSE", None)
 
 
 def test_rejects_external_head_incorporated_after_helper_push(
@@ -356,3 +394,76 @@ def test_rejects_stale_remote_head(
         ).split()[0]
         == competing_head
     )
+
+
+def _remote_head(repo: Path) -> str:
+    return _git(
+        repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+    ).split()[0]
+
+
+def test_checks_named_fixes_against_the_ledger_before_push(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    result = _run(repo, env)
+    assert result.returncode == 0, result.stderr
+    [call] = [
+        json.loads(line)
+        for line in Path(env["FAKE_LEDGER_LOG"]).read_text().splitlines()
+    ]
+    assert call["args"] == [
+        "preflight-publish",
+        "--repo",
+        "example/repo",
+        "--pr",
+        "12",
+        "--head",
+        start,
+        "--engine",
+        "codex",
+        "--round",
+        "3",
+        "--findings-file",
+        str(Path(env["AGENT_LOOP_LOG_DIR"]) / "ledger-content/publish-fixes.json"),
+    ]
+    assert json.loads(call["manifest"]) == [{"fingerprint": "window", "occurrence": 1}]
+
+
+def test_refuses_publication_without_a_fix_manifest(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    (Path(env["AGENT_LOOP_LOG_DIR"]) / "ledger-content/publish-fixes.json").unlink()
+    result = _run(repo, env)
+    assert result.returncode != 0
+    assert "publish-fixes.json" in result.stderr
+    assert "posted before publication" in result.stderr
+    assert _remote_head(repo) == start
+
+
+def test_refuses_publication_the_ledger_rejects(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    env["FAKE_LEDGER_REFUSE"] = (
+        "convergence fixes require a posted blocking finding; "
+        "label occurrence 1 is major: defer it and leave its change out of the push"
+    )
+    result = _run(repo, env)
+    assert result.returncode != 0
+    assert "label occurrence 1 is major" in result.stderr
+    assert "refused publication" in result.stderr
+    assert _remote_head(repo) == start
+    assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text() == f"{start}\n"
+
+
+def test_contract_v2_publication_skips_the_v3_ledger_check(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, _ = review_repo
+    env["AGENT_LOOP_REVIEW_CONTRACT_VERSION"] = "2"
+    (Path(env["AGENT_LOOP_LOG_DIR"]) / "ledger-content/publish-fixes.json").unlink()
+    result = _run(repo, env)
+    assert result.returncode == 0, result.stderr
+    assert not Path(env["FAKE_LEDGER_LOG"]).exists()

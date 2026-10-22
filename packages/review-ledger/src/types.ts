@@ -168,6 +168,26 @@ export interface PreflightFixResult extends PreflightFixParams {
   verified: true;
 }
 
+/** Parameters for the read-only `preflightPublish`. */
+export interface PreflightPublishParams {
+  repo: string;
+  pr: number;
+  head: string;
+  engine: SupportedEngine;
+  round: number;
+  findings: Array<{ fingerprint: string; occurrence: number }>;
+}
+
+export interface PreflightPublishResult extends PreflightPublishParams {
+  findings: Array<{
+    fingerprint: string;
+    occurrence: number;
+    severity: SupportedSeverity;
+  }>;
+  stance: 'adversarial' | 'convergence';
+  verified: true;
+}
+
 /** Parameters for `postFinding`. */
 export interface PostFindingParams {
   repo: string;

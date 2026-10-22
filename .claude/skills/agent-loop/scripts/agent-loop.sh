@@ -24,6 +24,7 @@ NC='\033[0m'
 # Review context is owned by this wrapper. Do not leak state from an outer
 # agent-loop/deepcritique invocation into setup, worker, or worker validation.
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_LEDGER \
     AGENT_LOOP_REVIEW_ACTOR \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
@@ -3514,6 +3515,7 @@ resume_review_run() {
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     [ "$state_phase" != draft-open ] || stop_resumed_human_glance "$state_head" || return 1
     case "$state_phase" in
         worker-running|worker-complete|integrating|integrated|publishing|pushed)
@@ -4379,6 +4381,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     update_run_state worker-complete 1 "$start_sha" "$(git rev-parse HEAD)" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed." validation-red; exit 1; }

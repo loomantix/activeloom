@@ -244,8 +244,42 @@ describe('CLI command parser and execution', () => {
     ['reconcile', /reconcile requires/],
     ['read-result', /read-result requires --file or --result-file/],
     ['format-findings', /format-findings requires/],
+    ['preflight-publish', /preflight-publish requires/],
   ])('dispatches %s to its command-specific validation', (command, message) => {
     expect(() => runCli([command])).toThrowError(message);
+  });
+
+  it.each([
+    [{ fingerprint: 'fp' }],
+    [{ fingerprint: 'fp', occurrence: 0 }],
+    [{ fingerprint: 'bad token', occurrence: 1 }],
+    [{ fingerprint: 'fp', occurrence: 1, severity: 'blocking' }],
+    ['fp'],
+  ])('rejects a malformed publish manifest row %j', (row) => {
+    const dir = mkdtempSync(join(tmpdir(), 'publish-manifest-'));
+    try {
+      const manifest = join(dir, 'fixes.json');
+      writeFileSync(manifest, JSON.stringify([row]));
+      expect(() =>
+        runCli([
+          'preflight-publish',
+          '--repo',
+          'a/b',
+          '--pr',
+          '1',
+          '--head',
+          'a'.repeat(40),
+          '--engine',
+          'codex',
+          '--round',
+          '1',
+          '--findings-file',
+          manifest,
+        ]),
+      ).toThrowError(/publish findings must be objects/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([

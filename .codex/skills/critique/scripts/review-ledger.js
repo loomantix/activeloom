@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.11.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.12.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16753,33 +16753,67 @@ function preflightAnchor(params) {
 function preflightFix(params) {
   verifyHead(params.repo, params.pr, params.head);
   const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const severity = fixableFindingSeverity(comments, params, stance);
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, severity, stance, verified: true };
+}
+function preflightPublish(params) {
+  if (params.findings.length === 0) {
+    fail(
+      "preflight-publish requires the finding identity of every fix in the push; post each finding before publishing its fix"
+    );
+  }
+  const keys = params.findings.map(
+    ({ fingerprint, occurrence }) => `${fingerprint}#${occurrence}`
+  );
+  if (new Set(keys).size !== keys.length) {
+    fail("preflight-publish findings must not repeat");
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const findings = params.findings.map((finding) => ({
+    ...finding,
+    severity: fixableFindingSeverity(
+      comments,
+      { ...params, ...finding },
+      stance
+    )
+  }));
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, findings, stance, verified: true };
+}
+function roundStance(repo, pr, round) {
+  return round >= convergenceStartRound(repo, pr) ? "convergence" : "adversarial";
+}
+function fixableFindingSeverity(comments, params, stance) {
+  const label = `${params.fingerprint} occurrence ${params.occurrence}`;
   const records = findingRows(comments, params.fingerprint);
   const matches = records.filter(
     ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === params.occurrence
   );
   if (matches.length !== 1) {
     fail(
-      "preflight-fix requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence"
+      `fixing ${label} requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence; post the finding before its fix is published`
     );
   }
   if (records.some(({ match }) => match.occurrence > params.occurrence)) {
-    fail("preflight-fix requires the latest finding occurrence");
+    fail(`fixing ${label} requires the latest finding occurrence`);
   }
   if (comments.some((row) => {
     const disposition = matchDisposition(String(row.body ?? ""));
     return disposition?.engine === params.engine && disposition.round === params.round && disposition.fingerprint === params.fingerprint && disposition.occurrence === params.occurrence;
   })) {
-    fail("preflight-fix requires an undisposed finding");
+    fail(`fixing ${label} requires an undisposed finding`);
   }
   const severity = matches[0].match.severity;
-  const stance = params.round >= convergenceStartRound(params.repo, params.pr) ? "convergence" : "adversarial";
   if (stance === "convergence" && severity !== "blocking") {
     fail(
-      "convergence fixes require a posted blocking finding; defer non-blocking findings before editing"
+      `convergence fixes require a posted blocking finding; ${label} is ${severity}: defer it and leave its change out of the push`
     );
   }
-  verifyHead(params.repo, params.pr, params.head);
-  return { ...params, severity, stance, verified: true };
+  return severity;
 }
 function findingRows(comments, fingerprint) {
   const rows = [];
@@ -20088,6 +20122,20 @@ function readJsonArray(pathValue, label) {
   }
   return parsed;
 }
+function readPublishFindings(pathValue) {
+  return readJsonArray(pathValue, "publish findings file").map((entry) => {
+    const row = entry;
+    if (typeof row !== "object" || row === null || Array.isArray(row) || Object.keys(row).sort().join(",") !== "fingerprint,occurrence" || typeof row.fingerprint !== "string" || !TOKEN_RE.test(row.fingerprint) || !Number.isSafeInteger(row.occurrence) || row.occurrence < 1) {
+      fail(
+        "publish findings must be objects with a fingerprint token and a positive occurrence"
+      );
+    }
+    return {
+      fingerprint: row.fingerprint,
+      occurrence: row.occurrence
+    };
+  });
+}
 function resolveChangesetReport(args) {
   const options = {
     ...args.promptSurfaces === void 0 ? {} : { promptSurfaces: args.promptSurfaces },
@@ -20476,6 +20524,26 @@ function runCliCommand(argv) {
             round: args.round,
             fingerprint: args.fingerprint,
             occurrence: args.occurrence
+          })
+        ) + "\n"
+      );
+      break;
+    }
+    case "preflight-publish": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.findingsFile) {
+        fail(
+          "preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file"
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightPublish({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            findings: readPublishFindings(args.findingsFile)
           })
         ) + "\n"
       );

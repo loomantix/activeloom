@@ -735,6 +735,18 @@ two.
    `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke that wrapper-owned helper with
    no arguments exactly once for the pass, not once per finding. Otherwise push
    normally without force. A pass with no new commits needs no publication.
+
+   Before invoking the helper, write
+   `$AGENT_LOOP_LOG_DIR/ledger-content/publish-fixes.json` with the file-editing
+   tool: a JSON array of `{"fingerprint": "<stable-id>", "occurrence": <n>}`
+   naming every finding the push fixes, inherited cleanup included. The helper
+   runs `preflight-publish` and refuses to publish unless each named finding is
+   posted at the current PR head by this engine and round, is its latest
+   occurrence, has no disposition, and, in convergence, is `blocking`. On a
+   refusal nothing is published: post the missing finding, or defer the
+   non-blocking one and remove its change from the local commits, then invoke
+   the helper again. `write-result` still validates the result.
+
 3. For each finding, put the fix SHA, validation result, and concise rationale
    in a content file. Use `dispose` with the matching fingerprint and occurrence
    at the published head. For dismissal or tracked deferral, use
