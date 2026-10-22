@@ -341,8 +341,8 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hloop, hpromote). The six move together with the shared herdr reference and
-      # the config helper beside hreview, which the other four call. The
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .claude/skills/hreview/SKILL.md
         destination: .claude/skills/hreview/SKILL.md
@@ -366,6 +366,10 @@ harnesses:
 
       - source: .claude/skills/hpromote/SKILL.md
         destination: .claude/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hred-team/SKILL.md
+        destination: .claude/skills/hred-team/SKILL.md
         substitutions: []
 
       - source: .claude/skills/hreview/scripts/herd-config.py
@@ -935,8 +939,8 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hloop, hpromote). The six move together with the shared herdr reference and
-      # the config helper beside hreview, which the other four call. The
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .codex/skills/hreview/SKILL.md
         destination: .codex/skills/hreview/SKILL.md
@@ -960,6 +964,10 @@ harnesses:
 
       - source: .codex/skills/hpromote/SKILL.md
         destination: .codex/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hred-team/SKILL.md
+        destination: .codex/skills/hred-team/SKILL.md
         substitutions: []
 
       - source: .codex/skills/hreview/scripts/herd-config.py
@@ -1476,8 +1484,8 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hloop, hpromote). The six move together with the shared herdr reference and
-      # the config helper beside hreview, which the other four call. The
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .agents/skills/hreview/SKILL.md
         destination: .agents/skills/hreview/SKILL.md
@@ -1501,6 +1509,10 @@ harnesses:
 
       - source: .agents/skills/hpromote/SKILL.md
         destination: .agents/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hred-team/SKILL.md
+        destination: .agents/skills/hred-team/SKILL.md
         substitutions: []
 
       - source: .agents/skills/hreview/scripts/herd-config.py

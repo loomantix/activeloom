@@ -4,14 +4,15 @@ The herd skills let one agent session drive other agent sessions in visible term
 
 They run on [herdr](https://herdr.dev), a terminal workspace manager for coding agents. Any of the three harnesses (Claude Code, Codex, Gemini/Agy) can drive, and any of them can be driven.
 
-| Skill         | What it does                                                                                                          | Stops for you when                                         |
-| ------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.                | It converged (merge is yours), or it is blocked            |
-| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.          | The read found something, or CI is red                     |
-| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check.  | Always: the assumptions block waits for your sign-off      |
-| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.        | A ship gate fails, a chain blocks, or a call is yours      |
-| `hloop`       | Runs a batch of agent-ready issues: a build tab per issue, then a review chain, then a ship through `horch`'s gate.   | An issue's design is open, a gate fails, or a chain blocks |
-| `hpromote`    | Runs your repository's promotion recipe across at most six visible panes, with a read-only risk review and fix lanes. | The promotion PR is ready: approving and merging it        |
+| Skill         | What it does                                                                                                            | Stops for you when                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.                  | It converged (merge is yours), or it is blocked                                      |
+| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.            | The read found something, or CI is red                                               |
+| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check.    | Always: the assumptions block waits for your sign-off                                |
+| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.          | A ship gate fails, a chain blocks, or a call is yours                                |
+| `hloop`       | Runs a batch of agent-ready issues: a build tab per issue, then a review chain, then a ship through `horch`'s gate.     | An issue's design is open, a gate fails, or a chain blocks                           |
+| `hpromote`    | Runs your repository's promotion recipe across at most six visible panes, with a read-only risk review and fix lanes.   | The promotion PR is ready: approving and merging it                                  |
+| `hred-team`   | Red-teams a reviewed PR in a read-only pane; the author engine fixes blocker and high findings, the rest become issues. | It pushed fixes (the review chain needs a restart), or a high finding stayed unfixed |
 
 These are orchestration tools, not a second evidence system. Each review pass is the engine's ordinary interactive review, recorded in the PR ledger exactly as if you had run it yourself. Tiers, round caps, convergence and attestations are unchanged; for runner-owned, attested chains keep using the [automatic review chain](workflows.md#the-automatic-review-chain). The design records are loomantix/activeloom#419 (the live review chain) and loomantix/activeloom#422 (these skills).
 
@@ -30,7 +31,7 @@ Check what is installed:
 
 ```bash
 herdr --version
-ls .claude/skills .codex/skills .agents/skills 2>/dev/null | grep -E '^(hreview|auto-glance|hgrill|horch|hloop|hpromote)$'
+ls .claude/skills .codex/skills .agents/skills 2>/dev/null | grep -E '^(hreview|auto-glance|hgrill|horch|hloop|hpromote|hred-team)$'
 python3 -I .codex/skills/hreview/scripts/herd-config.py repo
 ```
 
@@ -380,6 +381,19 @@ Check a draft before you commit it:
 python3 -I .codex/skills/promote/scripts/promote-recipe.py validate .activeloom-promote.json
 python3 -I .codex/skills/promote/scripts/promote-recipe.py layout --recipe .activeloom-promote.json
 ```
+
+### `hred-team <pr>` — red team on herdr
+
+What you type: `/hred-team <pr>`, after the review chain converges and before you merge. `--author` names the PR's author engine when the commit trailers don't; `--engine` picks the red-team engine, otherwise the first non-author engine in your deep review order.
+
+It runs the `red-team` pass in a read-only pane, then routes every finding by severity instead of asking you:
+
+- **blocker** and **high** are fixed on the PR by a fresh editing session for the author engine, one commit per finding, reproduced first;
+- **medium** and **low** become follow-up issues, linked to an existing open issue when one matches, and a medium or low finding the red team marks as accepted is only listed;
+- a high finding the fixer cannot reproduce or fix, or one that predates the PR, becomes a follow-up issue and notifies you;
+- a security finding in a public repository that is not fixed stays out of issues and the PR comment, and is left for you to report through `SECURITY.md`.
+
+It posts one `red-team:v1` comment on the PR listing each finding's outcome. If it pushed fixes, the review chain's attestations name an older head: it moves a ready PR back to draft and tells you to run `hreview <pr> --restart`, which only you can authorize. It refuses a PR whose review run is still active, never writes to the review ledger, and never merges or marks a PR ready.
 
 ## Restart approvals
 
