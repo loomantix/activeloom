@@ -217,13 +217,44 @@ def test_dependency_evidence_rejects_edits_before_ready_or_shipping(root: str) -
     assert "never fall back to an older report" in evidence
     assert "immediately before readiness or shipping" in evidence
     analysis = " ".join(_skill(root, "dep-analysis").split())
-    ready = analysis.split("### 6. Ready", 1)[1]
+    ready = analysis.split("### 7. Ready", 1)[1]
     assert "label-event history and tier extensions" in ready
     assert "unedited exact-head `clear` report" in ready
     for skill in ("horch", "hreview"):
         consumer = " ".join(_skill(root, skill).split())
         assert "lastEditedAt" in consumer
         assert "durable" in consumer
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_gap_fix_pr_takes_the_review_route_and_is_handed_back(root: str) -> None:
+    analysis = " ".join(_skill(root, "dep-analysis").split())
+    fix = analysis.split("### 6. Fix test gaps", 1)[1].split("### 7. Ready", 1)[0]
+    for requirement in (
+        "Runs only on verdict `gaps`",
+        "step 1 reported `\"dependencyUpdate\": true`",
+        "`--no-fix`",
+        "A missing signal, or a test that needs a change to product code",
+        "no open PR already updates these dependencies or claims the issue",
+        "never hand-edit a lockfile",
+        "must fail at the base and pass with the fix",
+        "`dependencyPaths` plus test-class files only",
+        "`gh pr create --draft --base <base-branch>`",
+        "This skill does not review, mark ready or merge the fix PR",
+        "takes the normal review route",
+        "DEP-FIX-PR: <fix pr number> <fix head sha> issue=<issue number> supersedes=<analysed pr number>",
+    ):
+        assert requirement in fix, requirement
+    rules = analysis.split("## Rules", 1)[1]
+    assert "No merge." in rules
+    assert "belong to its review chain and the orchestrator" in rules
+    horch = " ".join(_skill(root, "horch").split())
+    assert "prints a `DEP-FIX-PR: <fix> <head> issue=<i> supersedes=<n>` line" in horch
+    assert "start a review chain for it as for any PR" in horch
+    assert "Leave `<n>` unshipped" in horch
+    hreview = " ".join(_skill(root, "hreview").split())
+    assert "end this PR's final report with its `DEP-FIX-PR` line" in hreview
+    assert "Start no chain for the fix PR in this invocation" in hreview
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
@@ -250,7 +281,7 @@ def test_the_dependency_analysis_skill_records_a_verdict_at_the_head(root: str) 
         "### 4. Telemetry",
         "### 5. Report",
         "<!-- dependency-analysis:v1 head=<head sha> verdict=<clear|gaps|broken|blocked> -->",
-        "Recommend a separate issue documenting each gap, to close before merge.",
+        "opens an issue documenting each gap, to close before merge.",
         "the repository's own gate commands",
         "No review chain on a dependency update",
         "No merge.",
