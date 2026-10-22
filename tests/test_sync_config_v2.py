@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -648,3 +649,46 @@ def test_telemetry_store_renders_with_existing_gates(
 @pytest.mark.parametrize("store", [True, False, "on", "typo", 123])
 def test_telemetry_store_rejects_invalid_values(sync_engine: ModuleType, store: object) -> None:
     assert sync_engine.render_telemetry_env({"store": store}, Path("config.yml")) is None
+
+
+# Tracked files under a harness `skills/` directory that deliberately do not
+# ship to consumers. Each entry needs a reason; keep this empty where possible.
+UNSYNCED_SKILL_FILES: dict[str, str] = {}
+
+
+def test_every_harness_skill_file_has_a_sync_target() -> None:
+    """A skill file nobody syncs reaches no consumer, silently.
+
+    A file counts as covered when a copy target names it as `source:`, or as
+    `destination:` with byte-identical source, so that the tracked copy is
+    what ships. A `delete: true` target removes its path from consumers, so it
+    covers nothing. Tracked files only: an untracked nested worktree would
+    otherwise add every root's copy a second time.
+    """
+    root = Path(__file__).resolve().parents[1]
+    manifest = yaml.safe_load((root / "scripts/sync-targets.yml").read_text())
+    target_sets = [h["targets"] for h in manifest["harnesses"].values()]
+    target_sets.append(manifest["shared"]["targets"])
+    copies = [
+        target
+        for targets in target_sets
+        for target in targets
+        if target.get("delete") is not True
+    ]
+    covered = {target["source"] for target in copies}
+    covered |= {
+        target["destination"]
+        for target in copies
+        if (root / target["destination"]).is_file()
+        and (root / target["destination"]).read_bytes()
+        == (root / target["source"]).read_bytes()
+    }
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout
+    skill_dirs = tuple(f"{h['root']}/skills/" for h in manifest["harnesses"].values())
+    skill_files = {path for path in listing.split("\0") if path.startswith(skill_dirs)}
+
+    assert sorted(skill_files - covered - UNSYNCED_SKILL_FILES.keys()) == []
+    # An exclusion for a file that is now synced, or gone, is stale.
+    assert sorted(UNSYNCED_SKILL_FILES.keys() - (skill_files - covered)) == []
