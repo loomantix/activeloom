@@ -107,23 +107,26 @@ def test_pull_request_heads_are_superseded_but_main_is_never_queued(path: Path) 
     land in a group of its own rather than sharing one keyed on `github.ref`.
     """
     workflow = _load(path)
-    concurrency = workflow.get("concurrency")
-    assert concurrency, f"{path.name} declares no concurrency group"
-    group = concurrency["group"]
     triggers = workflow.get("on", {})
-    if "push" in triggers or "schedule" in triggers:
-        assert "github.ref" not in group, (
-            f"{path.name} keys non-PR runs on github.ref, so push and schedule share "
-            "a group and a pending run can be cancelled"
-        )
-        assert "github.event.pull_request.number" in group, (
-            f"{path.name} must still group PR runs by PR number"
-        )
-    assert (
-        concurrency["cancel-in-progress"] == "false"
-        or "pull_request" in str(concurrency["cancel-in-progress"])
-        or ("push" not in triggers and "schedule" not in triggers)
-    ), f"{path.name} may cancel a push or scheduled run in progress"
+    scopes = [workflow] if workflow.get("concurrency") else list(_jobs(workflow).values())
+    assert scopes, f"{path.name} declares no concurrency scopes"
+    for scope in scopes:
+        concurrency = scope.get("concurrency")
+        assert concurrency, f"{path.name} has a scope without a concurrency group"
+        group = concurrency["group"]
+        if "push" in triggers or "schedule" in triggers:
+            assert "github.ref" not in group, (
+                f"{path.name} keys non-PR runs on github.ref, so push and schedule share "
+                "a group and a pending run can be cancelled"
+            )
+            assert "github.event.pull_request.number" in group, (
+                f"{path.name} must still group PR runs by PR number"
+            )
+        assert (
+            concurrency["cancel-in-progress"] == "false"
+            or "pull_request" in str(concurrency["cancel-in-progress"])
+            or ("push" not in triggers and "schedule" not in triggers)
+        ), f"{path.name} may cancel a push or scheduled run in progress"
 
 
 @pytest.mark.parametrize("path", _workflow_paths(), ids=lambda p: p.name)

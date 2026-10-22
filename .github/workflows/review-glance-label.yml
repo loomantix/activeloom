@@ -15,15 +15,19 @@
 # diffs) or no vendored classifier exists on the base ref, the label is removed
 # and the job exits 0 with a notice, so an unclassified PR never keeps a stale
 # human-glance claim.
+#
+# Each runner job has a minimum billable duration, so classify on opened and
+# reopened, and on later pushes only while the label is present. A push to an
+# unlabelled PR skips the job. If later pushes turn that PR docs-only, it stays
+# unlabelled until reopened; a missing label makes no claim. Labelled PRs still
+# get reclassified on every push so review-significant changes remove the label.
+# Keep concurrency on the job so a skipped push cannot cancel an opened run
+# that is still classifying.
 name: Review glance label
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-
-concurrency:
-  group: review-glance-label-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -32,6 +36,12 @@ permissions:
 jobs:
   classify:
     name: Human-glance classification
+    if: >-
+      github.event.action != 'synchronize' ||
+      contains(github.event.pull_request.labels.*.name, 'review: human-glance')
+    concurrency:
+      group: review-glance-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
