@@ -73,6 +73,29 @@ COMPLETE_V3_RE = re.compile(
     r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
+RECOVERY_V1_RE = re.compile(
+    r"^<!-- local-review-recovery:v1 run=(?P<run_id>[0-9a-f]{64}) "
+    r"engine=(?P<engine>codex|claude|gemini) round=(?P<round>[1-9][0-9]*) "
+    r"base=(?P<base>[0-9a-f]{40}) before=(?P<before>[0-9a-f]{40}) "
+    r"head=(?P<head>[0-9a-f]{40}) result-sha256=(?P<result_sha>[0-9a-f]{64}) "
+    r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
+    re.MULTILINE,
+)
+
+
+def _recovery_body(
+    run_id: str, engine: str, number: int, base: str, before: str,
+    head: str, result_sha: str, content: str,
+) -> str:
+    digest = _canonical_digest(dict(
+        run_id=run_id, engine=engine, round=number, base=base,
+        before=before, head=head, result_sha=result_sha, content=content,
+    ))
+    return (
+        f"<!-- local-review-recovery:v1 run={run_id} engine={engine} round={number} "
+        f"base={base} before={before} head={head} result-sha256={result_sha} "
+        f"content-sha256={digest} -->\n{content}"
+    )
 
 
 class HandoffError(RuntimeError):
@@ -842,7 +865,7 @@ def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)):
+        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body), *RECOVERY_V1_RE.finditer(body)):
             engine = marker.group("engine")
             if engine == "antigravity":
                 engine = "gemini"
@@ -1304,11 +1327,13 @@ def _sequence_decision(
         body = row.get("body", "")
         if not isinstance(body, str):
             continue
-        markers = [*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)]
+        recoveries = list(RECOVERY_V1_RE.finditer(body))
+        markers = [*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body), *recoveries]
         if not markers:
             if (
                 "<!-- local-review-pass:" in body
                 or "<!-- local-review-complete:" in body
+                or "<!-- local-review-recovery:" in body
             ):
                 _fail(
                     "sequence contains an unsupported or malformed attestation "
@@ -1321,6 +1346,16 @@ def _sequence_decision(
                 f"in comment {comment_id}"
             )
         marker = markers[0]
+        recovered = bool(recoveries)
+        if recovered:
+            content = body[marker.end() + 1:]
+            expected = _recovery_body(
+                run["run_id"], marker.group("engine"), int(marker.group("round")),
+                marker.group("base"), marker.group("before"), marker.group("head"),
+                marker.group("result_sha"), content,
+            )
+            if marker.group("run_id") != run["run_id"] or body != expected:
+                _fail(f"sequence recovery digest or run identity is invalid in comment {comment_id}")
         # Keep participation aligned with the ledger's matchAttestationMarker:
         # examples and empty markers are not evidence of a completed pass.
         if (
@@ -1361,7 +1396,7 @@ def _sequence_decision(
             "engine": engine,
             "round": number,
             "head": marker.group("head"),
-            "classification": marker.groupdict().get("classification", "clean"),
+            "classification": "blocked" if recovered else marker.groupdict().get("classification", "clean"),
         }
         seen[identity] = marker.group(0)
         events.append(event)
@@ -1383,7 +1418,7 @@ def _sequence_decision(
     clean = (
         len(latest) == len(set(sequence))
         and all(latest[engine]["head"] == head for engine in sequence)
-        and all(latest[engine]["classification"] != "material" for engine in sequence)
+        and all(latest[engine]["classification"] in ("clean", "minor") for engine in sequence)
     )
     if fixed and len(events) == len(sequence):
         return {
@@ -1413,6 +1448,63 @@ def _next_pass(args: argparse.Namespace) -> None:
     decision = _sequence_decision(rows, run, args.head)
     _verify_head(args.repo, args.pr, args.head)
     print(json.dumps(decision, sort_keys=True))
+
+
+def _recover_pass(args: argparse.Namespace) -> None:
+    helper = Path(__file__).with_name("review-ledger.js")
+    identity = [
+        "--head", args.head, "--base", args.base, "--before", args.before,
+        "--engine", args.engine, "--round", str(args.round),
+    ]
+
+    def ledger(operation: str, fields: list[str]) -> dict[str, Any]:
+        result = subprocess.run(
+            ["node", str(helper), operation, *fields],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode:
+            _fail(f"{operation} refused blocked-pass recovery: {result.stderr.strip()}")
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            _fail("blocked-pass recovery requires an object receipt")
+        return value
+
+    result = ledger("validate-result", [*identity, "--result-file", args.result_file])
+    if result.get("status") != "blocked":
+        _fail("only a blocked result can consume a failed pass")
+    rows = _issue_comments(args.repo, args.pr)
+    run = _handoff_run(rows)
+    if run is None or run["run_id"] != args.run_id or run["base"] != args.base:
+        _fail("blocked-pass recovery names a different active run")
+    content = (
+        "This blocked pass consumed its review budget and is not an attestation. "
+        "The resolved label or ordering slip requires fresh review in the next round.\n"
+    )
+    body = _recovery_body(
+        args.run_id, args.engine, args.round, args.base, args.before, args.head,
+        result["resultSha256"], content,
+    )
+    marker = body.split("\n", 1)[0]
+    replayed = _matching_body(rows, marker, body)
+    if replayed is None:
+        _pass_authorization(args)
+    # An unchanged pass may inherit a slip from an earlier publishing pass.
+    # Validate that history across the PR, without pretending this pass published it.
+    recovery_before = args.base if args.before == args.head else args.before
+    receipt = ledger("check-blocked-round", [
+        "--repo", args.repo, "--pr", str(args.pr), "--head", args.head,
+        "--base", args.base, "--before", recovery_before,
+        "--engine", args.engine, "--round", str(args.round),
+    ])
+    if receipt.get("recoverable") is not True:
+        _fail("ledger did not verify the blocked pass's recovery")
+    if hashlib.sha256(Path(args.result_file).read_bytes()).hexdigest() != result["resultSha256"]:
+        _fail("blocked result changed during recovery")
+    _verify_reviewable_head(args.repo, args.pr, args.head)
+    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
+    _verify_handoff_run(args.repo, args.pr, args.run_id)
+    print(json.dumps(dict(verified=True, comment_id=comment_id, replayed=replayed)))
 
 
 def _verify_convergence_ledger(args: argparse.Namespace) -> None:
@@ -1520,6 +1612,18 @@ def _parser() -> argparse.ArgumentParser:
     next_pass.add_argument("--pr", required=True, type=int)
     next_pass.add_argument("--head", required=True, type=_sha)
     next_pass.set_defaults(handler=_next_pass)
+
+    recover = commands.add_parser("recover-pass")
+    recover.add_argument("--repo", required=True)
+    recover.add_argument("--pr", required=True, type=int)
+    recover.add_argument("--head", required=True, type=_sha)
+    recover.add_argument("--base", required=True, type=_sha)
+    recover.add_argument("--before", required=True, type=_sha)
+    recover.add_argument("--engine", required=True, choices=ENGINES)
+    recover.add_argument("--round", required=True, type=int)
+    recover.add_argument("--run-id", required=True)
+    recover.add_argument("--result-file", required=True)
+    recover.set_defaults(handler=_recover_pass)
 
     finish = commands.add_parser("finish-run")
     finish.add_argument("--repo", required=True)
