@@ -34,6 +34,7 @@ import {
   preflightAnchor,
   preflightFix,
   preflightPublish,
+  checkBlockedRound,
   reconcile,
   reopenOccurrence,
   reply,
@@ -951,6 +952,35 @@ function runCliCommand(argv: string[]): number {
             })
           : writeResult(params);
       writeSortedJson(out);
+      break;
+    }
+    case 'check-blocked-round': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.base ||
+        !args.before
+      ) {
+        fail(
+          'check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before',
+        );
+      }
+      writeSortedJson(
+        checkBlockedRound({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          base: args.base,
+          before: args.before,
+          allowedHeadsFile: args.allowedHeadsFile,
+          historicalCommentIdsFile: args.historicalCommentIdsFile,
+        }),
+      );
       break;
     }
     case 'write-blocked-result': {

@@ -663,6 +663,12 @@ change and defer it through supported recovery. An already posted `fixed`
 disposition cannot be erased or overwritten to claim a clean pass. Recovery
 does not reset the run budget.
 
+Under agent-loop, when `write-result` refuses a result after its fix was
+published, write a blocked result naming the refusal. If the ledger is otherwise
+complete and the refusal is only that slip, or a finding posted at its fix head,
+the wrapper's `check-blocked-round` keeps the published head and reviews it
+again in the next round. Do not correct the ledger by hand to avoid that.
+
 When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 
