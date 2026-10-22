@@ -54,7 +54,7 @@ No consumer repository or GitHub credential is needed to copy public skills. Run
 activeloom add critique
 ```
 
-That copies `critique` and supporting harness files into the selected personal configuration roots. Use `--harness claude`, `--harness codex`, or `--harness gemini` explicitly; otherwise the installer uses machine detection. Start a new agent session and check which skill it loads before running it. A review chain can require additional skills and peer reviewer clients.
+That copies `critique`, the skills it requires (`dep-analysis`, `deepcritique`, `refactorpass`, `review-setup`), and supporting harness files into the selected personal configuration roots. Each added dependency is printed with the skill that requires it; the list is [`scripts/skill-requires.txt`](../scripts/skill-requires.txt). Use `--harness claude`, `--harness codex`, or `--harness gemini` explicitly; otherwise the installer uses machine detection. Start a new agent session and check which skill it loads before running it. A review chain can also require peer reviewer clients.
 
 ```bash
 activeloom add                 # list every skill available
@@ -63,7 +63,7 @@ activeloom add critique --harness codex
 activeloom add critique --dry-run   # show what would happen, write nothing
 ```
 
-Re-run with `--force` to replace something already installed.
+Re-run with `--force` to replace something already installed, required dependencies included. `add` copies, so an installed skill does not change until you re-run it: upgrade the skills you use together, with `--force`. Support files you already have are kept, and `add` warns when one differs from upstream; a skill reading an old reference can fail partway through, so replace them with `--force` after reading the preview.
 
 This tier installs into your home directory rather than a consumer repository. Review its preview because supporting references and agent definitions are installed alongside the selected skills. Existing destinations are preserved unless you request replacement.
 
@@ -335,7 +335,15 @@ cd activeloom
 ./scripts/install-skills.sh
 ```
 
-With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`, and falls back to Claude Code. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. Re-run it after a pull that adds, renames, or retires a skill. It links skill directories only; `activeloom add` also installs the shared support files skills read from beside their skills directory.
+With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`, and falls back to Claude Code. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. It also links the support files skills read beside their skills directory (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …), one file at a time, never replacing a file you already have.
+
+A `git pull` updates every linked skill at once, but a skill added upstream is not linked until the script runs again, while the linked skills that call it already expect it. After each pull, check:
+
+```bash
+./scripts/install-skills.sh --check
+```
+
+It writes nothing, and lists every skill not installed (naming the installed skills that require it), every copy that differs from this clone, and every missing support file, each with the command that fixes it. It exits 1 when there is anything to fix. A normal run ends with the same report.
 
 After installing skills, choose each engine's model and effort with the `review-setup` skill or `activeloom review-config`; see [Review profile](#review-profile).
 

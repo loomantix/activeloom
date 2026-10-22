@@ -627,6 +627,42 @@ node <ledger-helper> post-finding \
   --content-file <regular-utf8-file>
 ```
 
+### Authorize a fix before editing
+
+For a `critique` / `deepcritique` pass in an authenticated run, after posting a
+finding and before editing or handing it to a fixer, run the controller beside
+the ledger helper with the `run_id` returned by
+`authorize-pass`:
+
+```bash
+python3 <controller> authorize-fix \
+  --repo <owner/repo> --pr <number> --head <current-pr-head> \
+  --base <pinned-base-sha> --run-id <authorized-run-id> \
+  --engine <engine> --round <n> --fingerprint <stable-id> --occurrence <n>
+```
+
+This read-only check revalidates the active run, pass order, budget, and head,
+then invokes `node <ledger-helper> preflight-fix` to read the authenticated
+posted finding. The finding must match the head, engine, round, fingerprint,
+and latest occurrence and have no disposition yet. In convergence its recorded
+severity must be `blocking`; defer `major`, `minor`, and `nit` findings. An
+adversarial finding still needs to clear the skill's Disposition Bar.
+
+Only pass eligible findings to a fixing stage. Re-run authorization if the PR
+head changes before starting another fix; the check grants no permission to
+edit unrelated findings. It is a cooperative preflight, not a filesystem write
+barrier. Final result validation remains required and rejects ineligible fixes
+even when the preflight was skipped.
+
+If a convergence result is rejected for a non-blocking fix, preserve the result
+and ledger evidence. Never edit a marker or relabel a finding just to satisfy
+validation. A demonstrably mistaken classification requires impact evidence
+and a supported ledger operation; if none exists, report that boundary. For a
+correctly classified non-blocking finding, remove only its ineligible code
+change and defer it through supported recovery. An already posted `fixed`
+disposition cannot be erased or overwritten to claim a clean pass. Recovery
+does not reset the run budget.
+
 When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 

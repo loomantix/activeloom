@@ -75,7 +75,7 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
-Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise
 select one past the active engine's highest completed round within the latest
 authenticated `local-review-run:v1` (1 when it has none), using only pass/complete
 comments after that run marker. Resolve Agy as `gemini`, including historical

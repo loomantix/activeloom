@@ -90,7 +90,7 @@ Do not proceed in the current session unless the user explicitly overrides.
 ## Stance Resolution
 
 Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
-or the round supplied by `deepcritique`. Otherwise select one past the active
+or the round supplied by `deepcritique`. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise select one past the active
 engine's highest completed round within the latest authenticated
 `local-review-run:v1` (1 when it has none), using only pass/complete comments after
 that run marker. Resolve Agy as `gemini`, including historical `antigravity`
@@ -113,7 +113,7 @@ call and result.
   unchanged, and the round cap does not move.
 
 The first pass after escalation and a reviewer's first cold read remain
-adversarial regardless of ordinal. Take the stance from `authorize-pass`'s `stance` field and state the round and
+adversarial regardless of ordinal. When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
 stance in the output. The ledger refuses a convergence result that fixed a
 non-blocking finding.
 

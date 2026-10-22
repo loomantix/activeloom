@@ -98,6 +98,86 @@ def marker(engine: str, round_number: int) -> str:
     )
 
 
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_authorize_fix_checks_posted_finding_before_handoff(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    returncode: int,
+) -> None:
+    rows = [{"id": 21, "body": marker("codex", 1)},
+            {"id": 22, "body": marker("codex", 2)}]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: rows)
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_: Any) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout=json.dumps({"verified": True, "stance": "convergence",
+                               "severity": "blocking", "fingerprint": "window"}),
+            stderr="convergence fixes require a posted blocking finding",
+        )
+
+    monkeypatch.setattr(handoff.subprocess, "run", run)
+    args = handoff._parser().parse_args([
+        "authorize-fix", "--repo", "example/repo", "--pr", "7",
+        "--head", "a" * 40, "--base", "b" * 40,
+        "--run-id", "d" * 64, "--engine", "codex", "--round", "3",
+        "--fingerprint", "window", "--occurrence", "1",
+    ])
+    if returncode:
+        with pytest.raises(handoff.HandoffError, match="fix authorization refused"):
+            args.handler(args)
+        assert capsys.readouterr().out == ""
+    else:
+        args.handler(args)
+        result = json.loads(capsys.readouterr().out)
+        assert result["run_id"] == "d" * 64
+        assert result["severity"] == "blocking"
+    assert len(calls) == 1
+    assert calls[0][2:] == [
+        "preflight-fix", "--repo", "example/repo", "--pr", "7",
+        "--head", "a" * 40, "--engine", "codex", "--round", "3",
+        "--fingerprint", "window", "--occurrence", "1",
+    ]
+
+
+@pytest.mark.parametrize("failure", ["stance", "ended-run"])
+def test_authorize_fix_rechecks_controller_after_finding_preflight(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: [])
+
+    def run(*_: Any, **__: Any) -> SimpleNamespace:
+        if failure == "ended-run":
+            monkeypatch.setattr(handoff, "_run_end", lambda *_: {"outcome": "aborted"})
+        return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
+            "verified": True, "stance": "convergence" if failure == "stance" else "adversarial",
+        }))
+
+    monkeypatch.setattr(handoff.subprocess, "run", run)
+    args = SimpleNamespace(repo="example/repo", pr=7, head="a" * 40,
+                           base="b" * 40, run_id="d" * 64,
+                           engine="codex", round=1, fingerprint="window", occurrence=1)
+    with pytest.raises(handoff.HandoffError, match="stance disagrees|run has ended"):
+        handoff._authorize_fix(args)
+
+
+def test_authorize_fix_rejects_stale_run_before_finding_check(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: [])
+    def unexpected(*_: Any, **__: Any) -> None:
+        pytest.fail("must reject stale run before launching finding preflight")
+    monkeypatch.setattr(handoff.subprocess, "run", unexpected)
+    args = SimpleNamespace(repo="example/repo", pr=7, head="a" * 40,
+                           base="b" * 40, run_id="e" * 64,
+                           engine="codex", round=1, fingerprint="window", occurrence=1)
+    with pytest.raises(handoff.HandoffError, match="active run changed"):
+        handoff._authorize_fix(args)
+
+
 def test_restart_authorizes_fresh_identity_not_occupied_round(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

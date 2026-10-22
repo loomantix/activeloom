@@ -3,6 +3,10 @@ import {
   dispose,
   postFinding,
   preflightAnchor,
+  preflightFix,
+  buildFindingBody,
+  buildDispositionBody,
+  sha256Text,
   reconcile,
   reopenOccurrence,
   resolve,
@@ -207,6 +211,143 @@ describe('ledger operations and workflow verification', () => {
     });
     expect(res.verified).toBe(true);
     expect(res.anchor).toBe('RIGHT:2');
+  });
+
+  describe('preflight-fix', () => {
+    const params = {
+      repo: 'example/repo',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+      fingerprint: 'window',
+      occurrence: 1,
+    };
+    function post(severity: 'blocking' | 'major' | 'minor' | 'nit', round = 3) {
+      mock.reviewComments.push({
+        id: 201,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          round,
+          severity,
+          lens: 'code-reviewer',
+          content: 'Reachable defect.',
+        }).body,
+      });
+    }
+
+    it.each(['major', 'minor', 'nit'] as const)(
+      'rejects a convergence %s before any write',
+      (severity) => {
+        post(severity);
+        const before = JSON.stringify(mock.reviewComments);
+        expect(() => preflightFix(params)).toThrow(
+          /convergence fixes require a posted blocking finding/,
+        );
+        expect(JSON.stringify(mock.reviewComments)).toBe(before);
+        expect(mock.commentIdSeq).toBe(200);
+      },
+    );
+
+    it('permits a posted blocker in convergence', () => {
+      post('blocking');
+      expect(preflightFix(params)).toMatchObject({
+        verified: true,
+        severity: 'blocking',
+        stance: 'convergence',
+      });
+    });
+
+    it('permits a major in an adversarial round', () => {
+      post('major', 1);
+      expect(preflightFix({ ...params, round: 1 })).toMatchObject({
+        stance: 'adversarial',
+      });
+    });
+
+    it('uses the authenticated Lean run for the round-two boundary', () => {
+      const content = 'Authorized run.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 2,
+          start_head: headSha,
+          supersedes: null,
+          tier: 'lean',
+        }),
+      );
+      mock.issueComments = [
+        {
+          id: 20,
+          user: { login: mock.actor },
+          body: `<!-- local-review-run:v1 id=${digest} tier=lean max-rounds=2 base=${mock.prBase} start-head=${headSha} supersedes=none content-sha256=${digest} -->\n${content}`,
+        },
+      ];
+      post('major', 2);
+      expect(() => preflightFix({ ...params, round: 2 })).toThrow(
+        /convergence fixes require/,
+      );
+    });
+
+    it.each([
+      { head: 'a'.repeat(40) },
+      { engine: 'claude' as const },
+      { round: 4 },
+      { fingerprint: 'other' },
+      { occurrence: 2 },
+    ])('rejects an identity mismatch: %j', (change) => {
+      post('blocking');
+      expect(() => preflightFix({ ...params, ...change })).toThrow();
+    });
+
+    it('rejects a missing or foreign-owned finding', () => {
+      expect(() => preflightFix(params)).toThrow(
+        /exactly one authenticated finding/,
+      );
+      post('blocking');
+      mock.reviewComments[0]!['user'] = { login: 'someone-else' };
+      expect(() => preflightFix(params)).toThrow(
+        /exactly one authenticated finding/,
+      );
+    });
+
+    it('rejects tampered content', () => {
+      post('blocking');
+      mock.reviewComments[0]!['body'] += 'tampered';
+      expect(() => preflightFix(params)).toThrow(/digest|hash/);
+    });
+
+    it('rejects duplicate, superseded, and already disposed findings', () => {
+      post('blocking');
+      post('blocking');
+      expect(() => preflightFix(params)).toThrow(/exactly one/);
+      mock.reviewComments.pop();
+      mock.reviewComments.push({
+        id: 202,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          occurrence: 2,
+          severity: 'blocking',
+          lens: 'code-reviewer',
+          content: 'Later occurrence.',
+        }).body,
+      });
+      expect(() => preflightFix(params)).toThrow(/latest finding occurrence/);
+      mock.reviewComments.pop();
+      mock.reviewComments.push({
+        id: 202,
+        user: { login: mock.actor },
+        body: buildDispositionBody({
+          ...params,
+          outcome: 'deferred',
+          content: 'Follow-up.',
+        }).body,
+      });
+      expect(() => preflightFix(params)).toThrow(/undisposed finding/);
+    });
   });
 
   it('posts a finding and records comment', () => {
