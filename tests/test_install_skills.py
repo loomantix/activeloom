@@ -303,3 +303,61 @@ def test_real_manifest_declares_every_harness(home: Path) -> None:
     for harness, root in (("claude", ".claude"), ("codex", ".codex"), ("gemini", ".agents")):
         assert f"{harness}: {root}/skills → {home / DESTS[harness]}" in result.stdout
     assert not any(home.iterdir())
+
+
+def test_check_names_a_missing_required_skill_and_its_fix(upstream: Path, home: Path) -> None:
+    (upstream / "scripts" / "skill-requires.txt").write_text("critique: issues | other\n")
+    dest = home / DESTS["claude"]
+    dest.mkdir(parents=True)
+    (dest / "critique").symlink_to(upstream / ".claude" / "skills" / "critique")
+
+    result = run(upstream, home, "--harness", "claude", "--check")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "issues is not installed (required by: critique)" in result.stdout
+    assert f"fix: {upstream}/scripts/install-skills.sh --harness claude" in result.stdout
+    assert linked(dest) == {"critique": str(upstream / ".claude" / "skills" / "critique")}
+
+
+def test_check_passes_after_install_and_links_support_files(upstream: Path, home: Path) -> None:
+    refs = upstream / ".claude" / "references"
+    refs.mkdir()
+    (refs / "herdr.md").write_text("mechanics\n")
+    (upstream / ".claude" / "REVIEW_WORKFLOW.md").write_text("workflow\n")
+    own = home / ".claude" / "REVIEW_WORKFLOW.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("the user's own\n")
+
+    assert run(upstream, home, "--harness", "claude").returncode == 0
+    result = run(upstream, home, "--harness", "claude", "--check")
+
+    assert result.returncode == 0, result.stdout
+    assert os.readlink(home / ".claude" / "references" / "herdr.md") == str(refs / "herdr.md")
+    # An existing support file is never replaced.
+    assert not own.is_symlink() and own.read_text() == "the user's own\n"
+
+
+def test_check_reports_missing_support_file_and_stale_copy(upstream: Path, home: Path) -> None:
+    (upstream / ".claude" / "references").mkdir()
+    (upstream / ".claude" / "references" / "herdr.md").write_text("mechanics\n")
+    assert run(upstream, home, "--harness", "claude").returncode == 0
+    (home / ".claude" / "references" / "herdr.md").unlink()
+    copy = home / DESTS["claude"] / "issues"
+    copy.unlink()
+    copy.mkdir()
+    (copy / "SKILL.md").write_text("an older copy\n")
+
+    result = run(upstream, home, "--harness", "claude", "--check")
+
+    assert result.returncode == 1
+    assert "support file references/herdr.md is missing" in result.stdout
+    assert "issues is a copy that differs from this checkout" in result.stdout
+    assert "--force (backs it up)" in result.stdout
+
+
+def test_check_writes_nothing(upstream: Path, home: Path) -> None:
+    result = run(upstream, home, "--harness", "claude", "--check")
+
+    assert result.returncode == 1
+    assert "critique is not installed" in result.stdout
+    assert not (home / ".claude").exists()

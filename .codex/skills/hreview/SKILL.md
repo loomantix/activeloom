@@ -34,7 +34,7 @@ Run from the repository the PRs belong to.
 - `C` = `.codex/skills/hreview/scripts/herd-config.py`
 - State and scratch: `python3 -I $C paths --repo $repo --skill hreview --key pr-<n>`.
 
-If `H` or `L` is missing, stop: the checkout lacks the synced review surface.
+If `H`, `L`, `P` or `C` is missing, stop: classify it per herdr.md's [Missing or stale skills](../../references/herdr.md#missing-or-stale-skills) and put that report line in the block. The same applies when an engine pane does not know a skill this run invokes (`dep-analysis`, `auto-glance`, a review entry point).
 
 Every engine, Gemini included, runs as an interactive session in its pane. These are the ordinary interactive reviews, not the headless launchers.
 

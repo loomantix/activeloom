@@ -9,6 +9,7 @@
 #   ./scripts/install-skills.sh --harness codex   # only the named harness(es)
 #   ./scripts/install-skills.sh --force           # replace entries (backed up)
 #   ./scripts/install-skills.sh --dry-run         # report only, write nothing
+#   ./scripts/install-skills.sh --check           # is the install complete?
 #   ./scripts/install-skills.sh --dest gemini=DIR # install a harness elsewhere
 #
 # Harnesses come from the `harnesses:` block in scripts/sync-targets.yml:
@@ -21,6 +22,15 @@
 #   --dest ID=DIR      skills directory for one harness; repeatable
 #   --force            replace entries that are not this checkout's links
 #   --dry-run          print what would happen and write nothing
+#   --check            write nothing; list every skill not installed (and the
+#                      skills that require it), stale copy, and missing support
+#                      file, with the command that fixes it; exit 1 if any
+#
+# Each harness also gets the support files skills read beside their skills
+# directory (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, ...), linked one
+# file at a time; an existing file there is never replaced. Required skill
+# dependencies come from scripts/skill-requires.txt. Every run ends with the
+# same completeness report `--check` prints.
 #
 # A destination can also be set with `<ID>_SKILLS_DIR` (CLAUDE_SKILLS_DIR,
 # CODEX_SKILLS_DIR, GEMINI_SKILLS_DIR); `--dest` wins over the variable.
@@ -40,6 +50,7 @@ fi
 # Absolute, so link targets and the prune prefix compare exactly.
 UPSTREAM_ROOT="$(cd "$UPSTREAM_ROOT" && pwd)"
 MANIFEST="$UPSTREAM_ROOT/scripts/sync-targets.yml"
+REQUIRES="$UPSTREAM_ROOT/scripts/skill-requires.txt"
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
@@ -47,12 +58,17 @@ usage() {
 
 FORCE=0
 DRY_RUN=0
+CHECK=0
 REQUESTED=""
 DESTS=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --force) FORCE=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --check)
+      CHECK=1
+      DRY_RUN=1
+      ;;
     --harness | --dest)
       if [ "$#" -lt 2 ]; then
         echo "$1 needs a value" >&2
@@ -332,6 +348,101 @@ install_harness() {
   prune_dangling "$dest"
 }
 
+# Files skills read beside their skills directory, as `../../<path>`. The same
+# list as SUPPORT_PATHS in cli/lib/add.js.
+SUPPORT_PATHS="MODEL_NOTES.md REVIEW_WORKFLOW.md SKILL_AUTHORING.md agents prompt-stack.json references"
+
+# Link each support file of $1 (a harness root in this checkout) into $2 (the
+# directory holding the skills directory). Existing files are never replaced.
+install_support() {
+  local src_root="$1" dest_root="$2" rel src file to
+  for rel in $SUPPORT_PATHS; do
+    src="$src_root/$rel"
+    [ -e "$src" ] || continue
+    if [ -d "$src" ]; then
+      while IFS= read -r file; do
+        to="$dest_root/$rel/${file#"$src"/}"
+        [ -e "$to" ] || [ -L "$to" ] && continue
+        echo "  ➕ support file ${to#"$dest_root"/}"
+        if [ "$DRY_RUN" -eq 0 ]; then
+          mkdir -p "$(dirname "$to")"
+          ln -s "$file" "$to"
+        fi
+      done < <(find "$src" -type f ! -path '*/__pycache__/*' | sort)
+    else
+      to="$dest_root/$rel"
+      [ -e "$to" ] || [ -L "$to" ] && continue
+      echo "  ➕ support file $rel"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        mkdir -p "$dest_root"
+        ln -s "$src" "$to"
+      fi
+    fi
+  done
+}
+
+# Required dependencies of skill $1, from scripts/skill-requires.txt.
+required_of() {
+  [ -f "$REQUIRES" ] || return 0
+  awk -v skill="$1" '
+    { sub(/#.*/, "") }
+    index($0, skill ":") == 1 { sub(/^[^:]*:/, ""); sub(/\|.*/, ""); print; exit }
+  ' "$REQUIRES"
+}
+
+# Installed skills in $2 that require $1, space-separated.
+required_by() {
+  local dep="$1" dest="$2" entry name out=""
+  for entry in "$dest"/*; do
+    [ -e "$entry/SKILL.md" ] || continue
+    name="$(basename "$entry")"
+    case " $(required_of "$name") " in *" $dep "*) out="$out $name" ;; esac
+  done
+  printf '%s\n' "${out# }"
+}
+
+problems=0
+
+# Report what the harness still lacks: upstream skills not installed (naming
+# the installed skills that require them), stale copies shadowing an upstream
+# skill, and missing support files. Each line ends in the command that fixes it.
+check_harness() {
+  local id="$1" src_root="$2" src_dir="$3" dest="$4" fix="$5" src name target needers rel to file
+  for src in "$src_dir"/*/; do
+    [ -d "$src" ] || continue
+    name="$(basename "$src")"
+    target="$dest/$name"
+    if [ ! -e "$target" ]; then
+      needers="$(required_by "$name" "$dest")"
+      if [ -n "$needers" ]; then
+        echo "  ❌ $name is not installed (required by: $needers) — fix: $fix"
+      else
+        echo "  ❌ $name is not installed — fix: $fix"
+      fi
+      problems=$((problems + 1))
+    elif [ ! -L "$target" ] && [ -d "$target" ] &&
+      ! diff -rq -x __pycache__ -x '*.pyc' "$target" "$src" >/dev/null 2>&1; then
+      echo "  ❌ $name is a copy that differs from this checkout (stale or local edits) — fix: $fix --force (backs it up)"
+      problems=$((problems + 1))
+    fi
+  done
+  for rel in $SUPPORT_PATHS; do
+    [ -e "$src_root/$rel" ] || continue
+    if [ -d "$src_root/$rel" ]; then
+      while IFS= read -r file; do
+        to="$(dirname "$dest")/$rel/${file#"$src_root/$rel"/}"
+        if [ ! -e "$to" ]; then
+          echo "  ❌ support file $rel/${file#"$src_root/$rel"/} is missing — fix: $fix"
+          problems=$((problems + 1))
+        fi
+      done < <(find "$src_root/$rel" -type f ! -path '*/__pycache__/*' | sort)
+    elif [ ! -e "$(dirname "$dest")/$rel" ]; then
+      echo "  ❌ support file $rel is missing — fix: $fix"
+      problems=$((problems + 1))
+    fi
+  done
+}
+
 while IFS=$'\t' read -r id root _home skills legacy _cli; do
   case " $SELECTED " in *" $id "*) ;; *) continue ;; esac
   src_dir="$UPSTREAM_ROOT/$root/skills"
@@ -343,25 +454,48 @@ while IFS=$'\t' read -r id root _home skills legacy _cli; do
     missing_src=$((missing_src + 1))
     continue
   fi
-  install_harness "$id" "$src_dir" "$dest"
-  if [ "$legacy" != "-" ] && [ "$HOME/$legacy" != "$dest" ]; then
-    prune_dangling "$HOME/$legacy"
-    report_legacy "$HOME/$legacy"
+  fix="$UPSTREAM_ROOT/scripts/install-skills.sh --harness $id"
+  if [ "$dest" != "$(canonical_dest "$HOME/$skills")" ]; then
+    fix="$fix --dest $id=$dest"
+  fi
+  if [ "$CHECK" -eq 0 ]; then
+    install_harness "$id" "$src_dir" "$dest"
+    install_support "$UPSTREAM_ROOT/$root" "$(dirname "$dest")"
+    if [ "$legacy" != "-" ] && [ "$HOME/$legacy" != "$dest" ]; then
+      prune_dangling "$HOME/$legacy"
+      report_legacy "$HOME/$legacy"
+    fi
+  fi
+  # A dry run has written nothing, so its check would only repeat the plan.
+  if [ "$CHECK" -eq 1 ] || [ "$DRY_RUN" -eq 0 ]; then
+    check_harness "$id" "$UPSTREAM_ROOT/$root" "$src_dir" "$dest" "$fix"
   fi
 done <<<"$HARNESS_TABLE"
 
 echo ""
-if [ "$DRY_RUN" -eq 1 ]; then
+if [ "$CHECK" -eq 1 ]; then
+  if [ "$problems" -gt 0 ]; then
+    echo "Check: $problems problem(s). A skill that calls a missing one fails partway through; run the fix shown."
+  else
+    echo "Check: complete — every skill, required dependency and support file is installed."
+  fi
+elif [ "$DRY_RUN" -eq 1 ]; then
   echo "Dry run: $installed would install, $replaced would replace, $pruned would prune, $skipped left alone."
   echo "(no changes written)"
 else
   echo "Done: $installed installed, $replaced replaced, $pruned pruned, $skipped left alone."
   echo "Run \`git pull\` in $UPSTREAM_ROOT to update — no re-install needed."
-  echo "Re-run this script after a pull that adds, renames, or retires a skill."
+  echo "Re-run this script after a pull that adds, renames, or retires a skill; \`--check\` tells you whether one did."
+  if [ "$problems" -gt 0 ]; then
+    echo "⚠️  $problems problem(s) left above; each names its fix."
+  fi
   echo 'Next: run review-setup for personal review settings and the repository auto-glance choice (one local non-author reviewer for small changes).'
   echo 'glance.auto is opt-in in each repository, not a personal setting; setup asks before writing it.'
 fi
 
 if [ "$missing_src" -gt 0 ]; then
   exit 2
+fi
+if [ "$CHECK" -eq 1 ] && [ "$problems" -gt 0 ]; then
+  exit 1
 fi

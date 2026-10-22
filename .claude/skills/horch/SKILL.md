@@ -31,13 +31,14 @@ Never ask a herder to restart a review run, or send it `--restart`. Only the use
 - Inside this workspace you own every tab, pane and agent session, including ones the user opened by hand and ones an earlier orchestrator left behind. You may read, prompt, rename and direct any of them.
 - Leave review tabs open after they ship; they are the record. Close a build tab only once its PR exists and its session has finished. Keep a production-lane tab open until the user approves its artifact; it carries the revision context. Never close the tab you run in.
 - Outside this workspace: read `herdr workspace list` for awareness only (herdr.md). If work needs to cross workspaces, tell the user.
+- One exception crosses repositories: an upstream fix build for a missing or stale skill ([below](#missing-or-stale-skill-fix-it-upstream)). Invoking this skill authorizes it unless the instruction file says not to; it runs in a tab of this workspace and never ships.
 - The repository is the workspace's primary checkout. It stays clean on the integration branch.
 
 ## Preflight
 
 1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine this session may start a build, fix or review on.
 2. **Instruction of record.** Read the file the user named, in full, before any other tool call. With no file, use the newest `orchestrator-*.md` in the state directory (below); if there is none, ask the user what this push covers. Its hard stops, decisions-reserved list and sequencing govern; this skill adds the mechanics. The instruction file stays local; never commit it.
-3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `.claude/skills/hreview/scripts/herd-config.py`; `H` = `.claude/skills/critique/scripts/local-review-handoff.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
+3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `.claude/skills/hreview/scripts/herd-config.py`; `H` = `.claude/skills/critique/scripts/local-review-handoff.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block, and a missing `C` or `H` is a [missing skill](#missing-or-stale-skill-fix-it-upstream). The integration branch is the config's `integration_branch`.
 4. Read the repository's `AGENTS.md or CLAUDE.md` and `.claude/REVIEW_WORKFLOW.md` if not already in context. Tier, round caps, authorship and convergence come from there.
 5. **Inventory the workspace.** `herdr tab list --workspace $HERDR_WORKSPACE_ID`, `herdr pane list --workspace $HERDR_WORKSPACE_ID`, `herdr agent list` filtered to this workspace. Map each pane's cwd to a worktree, its branch (`git -C <cwd> branch --show-current`) and its PR (`gh pr list --head <branch>`). Give every agent without a name one now (`herdr agent rename <pane id> <name>`): the pattern under [Starting work](#starting-work-in-a-new-tab) once its role is known, `user-<k>` until then. `herdr agent prompt` cannot address an unnamed session, and the user may have started some by hand. Where a session's task is not clear from its pane, prompt it once for issue, PR, worktree and role (building, running a chain, one review pass) and read the answer from its pane. Don't guess.
    - **Resuming an earlier orchestrator:** a build may have printed its `BUILD-PR` line while nothing was watching; read each build pane for it, and find its PR with `gh pr list --search <issue>`. Background waits the earlier session started can outlive it: list running processes before starting a wait, and never run two for one PR.
@@ -89,8 +90,9 @@ Add `--deep` to either command only when the user asked for Deep. When `scope_de
   - a dependency analysis at `gaps`, `broken` or `blocked` → alert with its report. Never route a dependency update to a review chain or auto-glance yourself; only a human applies the `review: full` label. The herder honours the workflow's durable override, including previous label application and standing always-Deep extensions;
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
+  - blocked or failed on a missing or stale skill, helper or reference → [Missing or stale skill](#missing-or-stale-skill-fix-it-upstream);
   - exhausted, blocked, or a run end with no ready flip → alert. For a run that ended, include the restart words from Review chain.
-- **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A finished build with no `BUILD-PR` line gets asked why.
+- **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A finished build with no `BUILD-PR` line gets asked why. A build stopped by a missing or stale skill goes to the section below.
 - A session blocked on a question in its own skill's lane: answer only if the instruction file or that skill's contract decides it. Product and scope calls go to the user. Never answer a prompt that dismisses or downgrades a finding.
 - If the user merges a PR themselves, that is their call: record it, tidy the tab, move on.
 
@@ -125,6 +127,17 @@ Invoking this skill is the user's standing request to ship, into the integration
    Notify `<repo>#<n>` `shipped to <integration branch>`.
 
 6. **Follow on.** Tell every session whose PR now needs a merge from the new base, start the next queued work, and log the ship.
+
+## Missing or stale skill: fix it upstream
+
+When a session stops because a skill, helper or reference is missing or stale, classify it with herdr.md's [Missing or stale skills](../../references/herdr.md#missing-or-stale-skills) and log the report line in `state.md`. Leave the PR and its run as they are; this section never restarts a run.
+
+- **Local install gap** or **not yet distributed:** alert with the report line. The fix is the user's (an install command, a sync PR, a ref move). When they say it is done, classify again; once it passes, tell the stopped session to continue from where it stopped, or, for a run that ended, follow Review chain's restart rules.
+- **Upstream defect:** fix it upstream unless the instruction file says not to.
+  1. Find an open upstream issue for the piece (`gh issue list --repo <upstream> --search '<path>'`), else open one: the path, the skill that needs it, the class, and the observed error line. The upstream may be public: no repository name, PR, issue text or detail from this workspace.
+  2. **Upstream build.** When this workspace's repository is the upstream, start a Build for the issue as usual. Otherwise find a local upstream clone: the target of a personal skill symlink into one (herdr.md), else ask the user for its path. Start a build tab in this workspace labelled `up-<issue>`, agent `up<issue>-build`, with its cwd in that clone, on the Build engine and profile, and the Build prompt pointed at the upstream: the `issues` skill, a worktree under the user's `worktree_root` cut from the upstream's default branch, a draft PR with `Refs` or `Closes`, no review, the public-text rule above, and the `BUILD-PR` line. No clone and no answer: alert with the issue link instead.
+  3. Read its `BUILD-PR` line, then alert: the upstream PR, that it needs review and merge in a workspace for that repository (this orchestrator ships nothing outside its own repository), and the resync step that follows a merge: `git -C <clone> pull --ff-only` and `<clone>/scripts/install-skills.sh --check` for a clone install, `npx activeloom add <skill> --force` for a copy, or the next sync PR (after the distribution ref moves) for the checkout.
+  4. Watch the upstream PR with `gh` alongside the workspace. When it merges, classify the piece again and carry on as for a local gap.
 
 ## Problems: alert the user
 

@@ -1242,3 +1242,110 @@ test('checkPython ignores a yaml.py in the working directory', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('readRequires parses required dependencies and tolerates a missing file', () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  try {
+    assert.deepStrictEqual(addLib.readRequires(upstream), new Map());
+    fs.mkdirSync(path.join(upstream, 'scripts'));
+    fs.writeFileSync(
+      path.join(upstream, 'scripts', 'skill-requires.txt'),
+      '# comment\ncritique: dep-analysis review-setup | reviewit\ngrill: | issues\n',
+    );
+    assert.deepStrictEqual(
+      addLib.readRequires(upstream),
+      new Map([
+        ['critique', ['dep-analysis', 'review-setup']],
+        ['grill', []],
+      ]),
+    );
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+  }
+});
+
+test('requiredClosure follows required skills transitively within the harness', () => {
+  const requires = new Map([
+    ['horch', ['hreview', 'ship-staging']],
+    ['hreview', ['critique']],
+    ['critique', ['dep-analysis']],
+  ]);
+  const { order, requiredBy } = addLib.requiredClosure(
+    ['horch', 'horch'],
+    requires,
+    ['critique', 'dep-analysis', 'horch', 'hreview'],
+  );
+  assert.deepStrictEqual(order, [
+    'horch',
+    'hreview',
+    'critique',
+    'dep-analysis',
+  ]);
+  assert.strictEqual(requiredBy.get('dep-analysis'), 'critique');
+  assert.strictEqual(requiredBy.has('ship-staging'), false);
+});
+
+test('add installs the required dependencies of a requested skill', async () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    for (const name of ['critique', 'dep-analysis', 'issues']) {
+      const dir = path.join(upstream, '.claude', 'skills', name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), `# ${name}\n`);
+    }
+    fs.mkdirSync(path.join(upstream, 'scripts'));
+    fs.writeFileSync(
+      path.join(upstream, 'scripts', 'skill-requires.txt'),
+      'critique: dep-analysis | issues\n',
+    );
+    const code = await addLib.add({
+      skills: ['critique'],
+      upstreamDir: upstream,
+      facts: facts({ homeDir: home }),
+      harnesses: ['claude'],
+      dryRun: false,
+      force: false,
+    });
+    assert.strictEqual(code, 0);
+    const installed = fs
+      .readdirSync(path.join(home, '.claude', 'skills'))
+      .sort();
+    assert.deepStrictEqual(installed, ['critique', 'dep-analysis']);
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('installSupportFiles reports a kept support file that differs from upstream', () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    fs.mkdirSync(path.join(upstream, '.claude', 'references'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(upstream, '.claude', 'references', 'herdr.md'),
+      'new\n',
+    );
+    const kept = path.join(home, '.claude', 'references', 'herdr.md');
+    fs.mkdirSync(path.dirname(kept), { recursive: true });
+    fs.writeFileSync(kept, 'old\n');
+    const harness = { id: 'claude', root: '.claude', skills: '.claude/skills' };
+    const stale = addLib.installSupportFiles(
+      upstream,
+      harness,
+      home,
+      false,
+      false,
+    );
+    assert.deepStrictEqual(stale, [kept]);
+    assert.strictEqual(fs.readFileSync(kept, 'utf8'), 'old\n');
+    addLib.installSupportFiles(upstream, harness, home, false, true);
+    assert.strictEqual(fs.readFileSync(kept, 'utf8'), 'new\n');
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,37 @@
+# Skill dependencies, read by scripts/install-skills.sh and `activeloom add`.
+#
+#   <skill>: <required ...> | <optional ...>
+#
+# Required: the skill reads or runs another skill's files, or hands its normal
+# work to that skill, and fails partway through without it. Installers install
+# the required closure and report any required skill that is missing.
+# Optional: the skill names or suggests another skill (a hand-off the user may
+# take, a hosted or retired path). Never installed or reported.
+#
+# Names are harness-neutral; a dependency a harness root does not ship is
+# skipped for that harness. tests/test_skill_requires.py fails when a skill
+# references another skill's files without declaring it required, or invokes
+# one without declaring it at all.
+
+agent-loop: critique issues review-setup | deepcritique grill handoff refactorpass reviewit
+auto-glance: critique dep-analysis hreview review-setup |
+backlog-refinement: | agent-loop grill issues product-grill
+codex-review: critique dep-analysis | deepcritique
+critique: deepcritique dep-analysis refactorpass review-setup | reviewit
+deepcritique: critique dep-analysis refactorpass review-setup | reviewit
+dep-analysis: critique |
+diagnosing-bugs: | refactorpass
+grill: backlog-refinement | critique deepcritique issues pr-critique product-grill
+hgrill: backlog-refinement grill hreview product-grill review-setup | horch
+hloop: critique hreview issues review-setup | auto-glance backlog-refinement hgrill horch
+horch: critique dep-analysis hreview issues review-setup | auto-glance hgrill hloop hpromote ship-staging
+hpromote: hreview promote | horch
+hreview: auto-glance critique dep-analysis review-setup | deepcritique horch promote refactorpass
+issues: | diagnosing-bugs grill
+onboard: | agent-loop review-setup
+pr-critique: critique dep-analysis review-setup | deepcritique refactorpass reviewit
+product-grill: backlog-refinement | grill issues
+promote: | hpromote
+refactorpass: critique dep-analysis | deepcritique
+review-setup: hreview | agent-loop auto-glance critique deepcritique hgrill hloop horch hpromote onboard reviewit
+reviewit: critique dep-analysis review-setup | codex-review deepcritique refactorpass

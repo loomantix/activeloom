@@ -34,6 +34,8 @@ ls .claude/skills .codex/skills .agents/skills 2>/dev/null | grep -E '^(hreview|
 python3 -I .codex/skills/hreview/scripts/herd-config.py repo
 ```
 
+Herd sessions also invoke skills from your personal skills directories, so those must be complete too. With a clone install, run `scripts/install-skills.sh --check` in the clone after every pull; with `activeloom add`, install the herd skill you drive and its required skills come with it (`npx activeloom add hreview horch --harness claude`).
+
 ## Three layers of configuration
 
 | Layer          | Where                                                            | Holds                                                                                          |
@@ -254,6 +256,8 @@ It inventories every tab and session in the workspace, checks your instruction f
 
 Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one.
 
+When a chain or build stops on a missing or stale skill, helper or reference, it works out where the gap is (herdr.md, _Missing or stale skills_). A gap in your install or the repository's sync is yours to fix, and it gives you the one command or PR. A gap upstream it fixes there, unless your instruction file says not to: it finds or opens an upstream issue, starts a build tab in your upstream clone that ends at a draft PR, and tells you the PR and the resync step. That PR is reviewed and merged in a workspace for the upstream repository; `horch` never ships outside its own.
+
 It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
 
 ### `hloop next <k>` — batch loop
@@ -452,6 +456,8 @@ Each engine launches with its model and effort from your review profile and its 
 **Typed into a pane by accident.** That is the intended way to step in. The driver reads the pane before acting and continues from whatever state you left.
 
 **A ghost suggestion in an input box.** Greyed text in an agent's input box is the client's autosuggestion. The driver never sends `tab` or `right` to a session, so it is never accepted.
+
+**A chain or build stops on a missing skill, helper or reference.** The block names the piece, the skill that needs it, and a class. _Local install gap:_ run the command it gives (`scripts/install-skills.sh --check` in your clone, `npx activeloom add <skill> --force`, or merge the repository's sync PR), then tell the driver to continue. _Not yet distributed:_ the fix is on upstream `main` but not at the sync ref; an upstream maintainer moves the ref. _Upstream defect:_ `horch` opens or finds the upstream issue and starts a fix build; anything else reports it.
 
 **`herd-config.py` exits 1 or 2.** 1 is an invalid config (the message names every problem); 2 is a git problem, often a missing `origin/HEAD`. Pass `--default-branch <name>` or run `git remote set-head origin --auto`.
 

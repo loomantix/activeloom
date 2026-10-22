@@ -6,7 +6,7 @@ Shared mechanics for `hreview`, `auto-glance`, `hgrill`, `horch`, `hloop` and `h
 
 - herdr 0.9.0 or later, and this session running inside it: `test "${HERDR_ENV:-}" = 1`. Otherwise say so and stop.
 - `gh` authenticated for the repository, `git`, `jq`, Python 3.
-- The review surface the skill names (ledger helper, run controller, review profile) installed in the checkout.
+- The review surface the skill names (ledger helper, run controller, review profile) installed in the checkout. `<skills root>` below is the checkout's skills directory for the driving harness: `.claude/skills`, `.codex/skills` or `.agents/skills`, the same root the skill's own paths use. A missing one is a [missing skill](#missing-or-stale-skills).
 - The [permissions preflight](#permissions-preflight), including its [Claude auto-mode check](#claude-auto-mode), before the first engine launch.
 
 ## Configuration
@@ -151,6 +151,20 @@ Send the engine's exit (table above), then confirm the shell is in the foregroun
 - Routine (started, landed, relaunched): `herdr notification show "<title>" --body "<one line>"`.
 - Needs the user (converged, exhausted, ready for a human action, any block): the same with `--sound request`, plus the harness's push notification when the user's config has `push_notifications` on. One line under 200 characters, leading with the action needed.
 - The title is `<owner/name>#<n>` or `<owner/name> <activity>`. Never put issue text, findings or customer data in a notification.
+
+## Missing or stale skills
+
+A herd run needs two installs to agree: helpers run from `<skills root>` in the checkout (the repository's sync), and the skills its sessions invoke load from the checkout or from the engine's personal skills directory (`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/antigravity-cli/skills`). A skill, helper or reference absent from both, or older than the skill that calls it, fails the run partway through. Signs: a helper path that does not exist, `No such file` from `python3` or `node`, an engine that does not know a skill name, or a helper rejecting a subcommand, flag or marker the calling skill uses.
+
+Classify before reporting, from external state only:
+
+1. **Name the piece:** its path, the skill that ships it, and the skill that needs it. `scripts/skill-requires.txt` upstream lists required skills.
+2. **Upstream and ref:** the upstream is `UPSTREAM_REPO` in the checkout's `.github/workflows/sync-from-upstream.yml` (default `loomantix/activeloom`), and its distribution ref is that file's `UPSTREAM_REF` (default `sync-v2`). Read the piece at the ref and on `main` with `gh api repos/<upstream>/contents/<path>?ref=<ref>`, and look for its path as a `destination:` in `scripts/sync-targets.yml` at each.
+3. **Class:**
+   - **local install gap**: shipped at the distribution ref. A checkout copy is missing → the repository's open sync PR (`gh pr list --search 'head:sync/upstream'`) needs merging, or its `.activeloom-config.yml` `skip_targets` drops the path. A personal copy is missing or stale → if the personal skill directory is a symlink, its target is a clone: `<clone>/scripts/install-skills.sh --check` lists the fix. Otherwise `npx activeloom add <skill> --harness <id>`, with `--force` for a stale copy.
+   - **not yet distributed**: on `main` and shipped there, but not at the distribution ref. An upstream maintainer moves the ref; nothing to build.
+   - **upstream defect**: not on `main`, or on `main` with no sync target, or present at both and still wrong. Only an upstream change fixes it.
+4. **Report** one line per piece: path, needed by, class, and the one command or PR that fixes it. Never copy a file into the checkout or a skills directory yourself to get past it.
 
 ## Blocks
 
