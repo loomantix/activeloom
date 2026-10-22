@@ -9,6 +9,7 @@ so it detects renames rather than regressions.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import subprocess
 from typing import Any
 
@@ -51,6 +52,78 @@ def _jobs(workflow: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _draft_gated(job: dict[str, Any]) -> bool:
     return "draft == false" in job.get("if", "")
+
+
+def test_glance_job_skips_only_unlabelled_pushes() -> None:
+    workflow = _workflow("review-glance-label.yml")
+    job = workflow["jobs"]["classify"]
+    assert "concurrency" not in workflow
+    assert "github.event.pull_request.number" in job["concurrency"]["group"]
+    assert job["concurrency"]["cancel-in-progress"] == "true"
+    expression = job["if"]
+    for action in ("opened", "reopened", "synchronize"):
+        for labelled in (False, True):
+            evaluated = expression.replace("github.event.action", repr(action)).replace(
+                "contains(github.event.pull_request.labels.*.name, 'review: human-glance')",
+                str(labelled).lower(),
+            )
+            result = subprocess.run(
+                ["node", "-e", f"console.log(Boolean({evaluated}))"],
+                capture_output=True, text=True, check=True,
+            )
+            assert result.stdout.strip() == str(action != "synchronize" or labelled).lower()
+
+
+@pytest.mark.parametrize(
+    ("heads", "expected"),
+    [
+        ("old old old", "POST"),
+        ("new", ""),
+        ("old new", ""),
+        ("old old new", "POST DELETE"),
+        ("old old error", "POST DELETE"),
+    ],
+)
+def test_glance_label_is_bound_to_classified_head(
+    tmp_path: Path, heads: str, expected: str,
+) -> None:
+    step = _workflow("review-glance-label.yml")["jobs"]["classify"]["steps"][-1]
+    event = tmp_path / "event.json"
+    event.write_text('{"pull_request":{"head":{"sha":"old"}}}')
+    classifier = tmp_path / ".claude/skills/critique/scripts/review-ledger.js"
+    classifier.parent.mkdir(parents=True)
+    classifier.write_text('console.log(JSON.stringify({skip:true,classifications:[{}]}))')
+    (tmp_path / "heads").write_text(heads)
+    gh = tmp_path / "gh"
+    gh.write_text('''#!/usr/bin/env python3
+import pathlib
+import sys
+args = sys.argv[1:]
+if "-X" in args:
+    with open("calls", "a") as log:
+        log.write(args[args.index("-X") + 1] + " ")
+elif ".head.sha" in args:
+    path = pathlib.Path("heads")
+    heads = path.read_text().split()
+    head = heads.pop(0)
+    path.write_text(" ".join(heads))
+    if head == "error":
+        sys.exit(1)
+    print(head)
+elif "-H" in args:
+    print("synthetic diff")
+''')
+    gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "GH_REPO": "example/project", "PR_NUMBER": "1", "GITHUB_EVENT_PATH": str(event),
+             "LABEL": "review: human-glance", "RUNNER_TEMP": str(tmp_path)},
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = tmp_path / "calls"
+    assert (calls.read_text().strip() if calls.exists() else "") == expected
 
 
 @pytest.mark.parametrize("cross_set_delete", [False, True])
