@@ -43,5 +43,6 @@
     "preflight": [["pnpm", "typecheck"]],
     "deploy_workflows": ["Deploy"],
     "post_merge": [["pnpm", "verify:prod"]]
-  }
+  },
+  "telemetry": { "store": "issue" }
 }

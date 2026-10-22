@@ -48,6 +48,10 @@ USER_ENV = "ACTIVELOOM_HERD_USER_CONFIG"
 ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
+TELEMETRY_STORES = ("pr", "issue")
+# The review ledger reads its metrics destination from this variable. Herd sets
+# it on every pane it opens, so the repository decides, not the engine harness.
+TELEMETRY_STORE_ENV = "LOOM_REVIEW_TELEMETRY_STORE"
 DEFAULT_HOLD_LABEL = "agent-bail: grill-review"
 # The generic recipe-driven skill; a repository may name its own instead.
 DEFAULT_PROMOTION_SKILL = "promote"
@@ -63,6 +67,7 @@ REPO_SECTIONS = (
     "grill",
     "production_lanes",
     "promotion",
+    "telemetry",
 )
 USER_SECTIONS = ("schema_version", "worktree_root", "push_notifications", "engines")
 
@@ -336,9 +341,23 @@ def validate_repo(config: Any) -> dict[str, Any]:
             "post_merge": _argv_list(promotion.get("post_merge", []), "promotion.post_merge", errors),
         }
 
+    telemetry = _section(config, "telemetry", errors) or {}
+    _check_keys(telemetry, ("store",), "telemetry", errors)
+    store = telemetry.get("store")
+    if store is not None and store not in TELEMETRY_STORES:
+        errors.append(f"telemetry.store: must be one of {', '.join(TELEMETRY_STORES)}")
+        store = None
+    effective["telemetry"] = {"store": store}
+
     if errors:
         raise ConfigError(errors)
     return effective
+
+
+def pane_env(config: dict[str, Any]) -> list[str]:
+    """`KEY=VALUE` entries herd passes as `--env` to every pane it opens, any engine."""
+    store = config["telemetry"]["store"]
+    return [] if store is None else [f"{TELEMETRY_STORE_ENV}={store}"]
 
 
 def parse_json(text: str, where: str) -> Any:
@@ -1328,6 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
     repo = commands.add_parser("repo", help="effective repository config from the integration branch")
     add_source(repo)
 
+    env = commands.add_parser("pane-env", help="environment entries for every pane herd opens")
+    add_source(env)
+
     gate = commands.add_parser("gate-fix-paths", help="classify a gate fix's changed paths")
     add_source(gate)
     gate.add_argument("--base", required=True)
@@ -1407,6 +1429,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit(validate_repo(parse_json(text, str(path))))
         elif args.command == "repo":
             _emit(read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch))
+        elif args.command == "pane-env":
+            _emit(pane_env(read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)["config"]))
         elif args.command == "gate-fix-paths":
             loaded = read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
             result = classify_paths(loaded["config"]["gate_fix"], changed_paths(args.repo_dir, args.base, args.head))
