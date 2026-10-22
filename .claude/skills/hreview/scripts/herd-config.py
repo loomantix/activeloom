@@ -14,8 +14,16 @@ The preflight also reads two things outside both files: the user's shell
 aliases for each engine CLI, and, when Claude Code runs in auto mode, the Claude
 settings files. It never writes either.
 
+A third, user-owned file family holds restart approvals: one record per
+`<repo>#<pr>` at an exact head, created by `approve-restart`, which the user
+runs in their own terminal. A herder claims a record (single use) before it
+restarts an ended review run; an orchestrator may print the command but never
+runs it. The terminal prompt guards against accidents; it is not a barrier
+against a process running as the same user, so the skills' rule that agents
+never approve or write a record is the control.
+
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
-2 usage or git error, 3 lock already held.
+2 usage or git error, 3 lock already held, 4 no valid restart approval.
 """
 
 from __future__ import annotations
@@ -24,10 +32,13 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shlex
+import stat
 import subprocess
 import time
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +79,10 @@ class ConfigError(Exception):
     def __init__(self, errors: list[str]) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+
+
+class ApprovalError(Exception):
+    """No restart approval that matches and is still valid."""
 
 
 class UsageError(Exception):
@@ -1146,7 +1161,143 @@ def state_paths(repo: str, skill: str, key: str | None) -> dict[str, str]:
         "state": str(cache.joinpath("activeloom-herd", *parts)),
         "scratch": str(tmp.joinpath("activeloom-herd", *parts)),
         "lock": str(cache.joinpath("activeloom-herd", flat_repo(repo), "locks", f"{skill}-{key or 'all'}")),
+        "approvals": str(approvals_dir(repo)),
     }
+
+
+# --- restart approvals ----------------------------------------------------------------
+
+APPROVAL_VERSION = 1
+APPROVAL_MAX_TTL_HOURS = 72
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+APPROVAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def approvals_dir(repo: str) -> Path:
+    """User-owned, outside any checkout, under $XDG_CONFIG_HOME/activeloom."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "activeloom" / "herd-approvals" / flat_repo(repo)
+
+
+def _approval_target(repo: str, pr: int, head: str) -> Path:
+    if pr < 1:
+        raise UsageError("--pr must be positive")
+    if not SHA_RE.match(head):
+        raise UsageError("--head must be a full 40-character lowercase SHA")
+    return approvals_dir(repo) / f"pr-{pr}-{head[:12]}.json"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def approve_restart(
+    repo: str,
+    pr: int,
+    head: str,
+    ttl_hours: int,
+    deep: bool,
+    scope_decision: str | None,
+    confirm: str,
+) -> dict[str, Any]:
+    if not 1 <= ttl_hours <= APPROVAL_MAX_TTL_HOURS:
+        raise UsageError(f"--ttl-hours must be between 1 and {APPROVAL_MAX_TTL_HOURS}")
+    if scope_decision == "split":
+        raise UsageError("a split must be done before a restart; approve the new PR's head instead")
+    target = _approval_target(repo, pr, head)
+    if confirm.strip() != f"restart {pr}":
+        raise UsageError("confirmation did not match; nothing written")
+    created = _now()
+    record = {
+        "version": APPROVAL_VERSION,
+        "id": secrets.token_hex(8),
+        "repo": repo,
+        "pr": pr,
+        "head": head,
+        "deep": deep,
+        "scope_decision": scope_decision,
+        "created": _iso(created),
+        "expires": _iso(created + timedelta(hours=ttl_hours)),
+        "used": None,
+    }
+    _private_dir(target.parent)
+    temporary = target.with_suffix(".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, target)
+    return {"path": str(target), **record}
+
+
+def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise ApprovalError(f"no restart approval for {repo}#{pr} at {head[:12]}") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ApprovalError(f"{path}: not a regular file owned and writable only by this user")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ApprovalError(f"{path}: unreadable approval record") from exc
+    if not isinstance(record, dict) or record.get("version") != APPROVAL_VERSION:
+        raise ApprovalError(f"{path}: unknown approval record version")
+    for field, expected in (("repo", repo), ("pr", pr), ("head", head)):
+        if record.get(field) != expected:
+            raise ApprovalError(f"approval {field} does not match: recorded {record.get(field)!r}")
+    if record.get("used") is not None:
+        raise ApprovalError(f"approval {record.get('id')} was already used at {record['used']}")
+    if (
+        not isinstance(record.get("id"), str)
+        or not APPROVAL_ID_RE.match(record["id"])
+        or record.get("scope_decision") not in (None, "keep")
+        or not isinstance(record.get("deep"), bool)
+    ):
+        raise ApprovalError(f"{path}: malformed approval record")
+    created, expires = (_parse_moment(path, record.get(field)) for field in ("created", "expires"))
+    now = _now()
+    if created > now or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+        raise ApprovalError(f"{path}: approval times out of range")
+    if expires <= now:
+        raise ApprovalError(f"approval {record['id']} expired at {record['expires']}")
+    return record
+
+
+def _parse_moment(path: Path, value: Any) -> datetime:
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApprovalError(f"{path}: malformed timestamp") from exc
+    if moment.tzinfo is None:
+        raise ApprovalError(f"{path}: timestamp has no timezone")
+    return moment
+
+
+def check_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
+    target = _approval_target(repo, pr, head)
+    return {"path": str(target), **_load_approval(target, repo, pr, head)}
+
+
+def claim_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
+    """Verify, then consume: the rename is atomic, so only one claim can win."""
+    target = _approval_target(repo, pr, head)
+    record = _load_approval(target, repo, pr, head)
+    used_path = target.with_name(f"{target.stem}.{record['id']}.used.json")
+    try:
+        os.rename(target, used_path)
+    except FileNotFoundError as exc:
+        raise ApprovalError(f"approval {record['id']} was claimed concurrently") from exc
+    record["used"] = _iso(_now())
+    descriptor = os.open(used_path, os.O_WRONLY | os.O_TRUNC)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return {"path": str(used_path), **record}
 
 
 def _private_dir(path: Path) -> None:
@@ -1231,6 +1382,20 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--skill", required=True)
         command.add_argument("--key")
 
+    approve = commands.add_parser(
+        "approve-restart",
+        help="for you to run in your own terminal: approve one restart of an ended review run",
+    )
+    check = commands.add_parser("check-restart", help="read-only: is there a valid restart approval")
+    claim = commands.add_parser("claim-restart", help="verify and consume a restart approval (single use)")
+    for command in (approve, check, claim):
+        command.add_argument("--repo", required=True)
+        command.add_argument("--pr", required=True, type=int)
+        command.add_argument("--head", required=True)
+    approve.add_argument("--ttl-hours", type=int, default=4)
+    approve.add_argument("--deep", action="store_true", help="the restart is a Deep review (trigger 6)")
+    approve.add_argument("--scope-decision", choices=("keep", "split"))
+
     args = parser.parse_args(argv)
     try:
         if args.command == "validate":
@@ -1251,6 +1416,27 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "user-args":
             entry = read_user(args.path or user_config_path())["config"]["engines"][args.engine]
             _emit(entry["launch_args"] + ([] if args.read_only else entry["permission_off_args"]))
+        elif args.command in ("approve-restart", "check-restart", "claim-restart"):
+            if args.command == "check-restart":
+                _emit(check_restart(args.repo, args.pr, args.head))
+            elif args.command == "claim-restart":
+                _emit(claim_restart(args.repo, args.pr, args.head))
+            else:
+                if not sys.stdin.isatty():
+                    raise UsageError("approve-restart reads your confirmation from an interactive terminal; nothing written")
+                print(
+                    f"Approve one restart of the review run on {args.repo}#{args.pr} at {args.head[:12]}"
+                    f" (expires in {args.ttl_hours}h). Type 'restart {args.pr}' to confirm: ",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                confirm = sys.stdin.readline()
+                _emit(
+                    approve_restart(
+                        args.repo, args.pr, args.head, args.ttl_hours, args.deep, args.scope_decision, confirm
+                    )
+                )
         elif args.command == "permissions":
             engines = list(dict.fromkeys(args.engine))
             texts = (
@@ -1292,6 +1478,9 @@ def main(argv: list[str] | None = None) -> int:
     except UsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except ApprovalError as exc:
+        print(f"no valid restart approval: {exc}", file=sys.stderr)
+        return 4
     return 0
 
 
