@@ -15,15 +15,19 @@
 # diffs) or no vendored classifier exists on the base ref, the label is removed
 # and the job exits 0 with a notice, so an unclassified PR never keeps a stale
 # human-glance claim.
+#
+# Each runner job has a minimum billable duration, so classify on opened and
+# reopened, and on later pushes only while the label is present. A push to an
+# unlabelled PR skips the job. If later pushes turn that PR docs-only, it stays
+# unlabelled until reopened; a missing label makes no claim. Labelled PRs still
+# get reclassified on every push so review-significant changes remove the label.
+# Keep concurrency on the job so a skipped push cannot cancel an opened run
+# that is still classifying.
 name: Review glance label
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-
-concurrency:
-  group: review-glance-label-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -32,6 +36,12 @@ permissions:
 jobs:
   classify:
     name: Human-glance classification
+    if: >-
+      github.event.action != 'synchronize' ||
+      contains(github.event.pull_request.labels.*.name, 'review: human-glance')
+    concurrency:
+      group: review-glance-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -52,7 +62,7 @@ jobs:
           node-version: 26
       - name: Classify the pull request and set the label
         env:
-          # Every value here is either a constant or an integer GitHub
+          # Every value here is either a constant or metadata GitHub
           # controls. No PR-authored text is interpolated into this script.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -60,15 +70,34 @@ jobs:
           LABEL: 'review: human-glance'
         run: |
           set -euo pipefail
+          CLASSIFIED_HEAD=$(jq -er '.pull_request | .head.sha' "$GITHUB_EVENT_PATH")
 
           present=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
             --jq '.[].name' | grep -Fx "$LABEL" || true)
 
           add_label() {
+            if ! head_is_current; then
+              remove_label
+              return
+            fi
             # A label the repository does not have yet is created by this call.
             gh api -X POST "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
               -f "labels[]=$LABEL" >/dev/null
+            present="$LABEL"
+            if ! head_is_current; then
+              remove_label
+              return
+            fi
             echo "labelled: $LABEL"
+          }
+
+          head_is_current() {
+            local current_head
+            if ! current_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha') ||
+                [ "$current_head" != "$CLASSIFIED_HEAD" ]; then
+              echo "::notice::Head changed or could not be verified; not claiming human glance."
+              return 1
+            fi
           }
 
           remove_label() {
@@ -98,6 +127,10 @@ jobs:
           fi
 
           diff_file="$RUNNER_TEMP/pull-request.diff"
+          if ! head_is_current; then
+            remove_label
+            exit 0
+          fi
           if ! gh api -H 'Accept: application/vnd.github.diff' \
               "repos/$GH_REPO/pulls/$PR_NUMBER" > "$diff_file"; then
             echo "::notice::Could not fetch the pull request diff; not claiming human glance."
