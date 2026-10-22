@@ -6480,6 +6480,12 @@ def test_resume_preserves_receipt_across_gate_order_change(
     assert saved["gates"] == ["aaa_baseline", "backend"]
     # A receipt written before selection was sorted keeps declaration order.
     saved["gates"] = ["backend", "aaa_baseline"]
+    saved["environment_sha256"] = h.module.json_digest(
+        [
+            {**contract["base_environment"], **contract["contract"]["gates"][name]["environment"]}
+            for name in saved["gates"]
+        ]
+    )
     if tamper:
         saved[tamper] = (
             ["aaa_baseline", "backend", "backend"] if tamper == "gates" else "changed"
