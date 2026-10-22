@@ -746,6 +746,7 @@ two.
    refusal nothing is published: post the missing finding, or defer the
    non-blocking one and remove its change from the local commits, then invoke
    the helper again. `write-result` still validates the result.
+
 3. For each finding, put the fix SHA, validation result, and concise rationale
    in a content file. Use `dispose` with the matching fingerprint and occurrence
    at the published head. For dismissal or tracked deferral, use

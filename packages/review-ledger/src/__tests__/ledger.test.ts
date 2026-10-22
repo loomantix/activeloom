@@ -403,7 +403,9 @@ describe('ledger operations and workflow verification', () => {
       const before = JSON.stringify(mock.reviewComments);
       expect(() =>
         preflightPublish({ ...params, findings: fixes('window', 'label') }),
-      ).toThrow(/label occurrence 1 is major: defer it and leave its change out/);
+      ).toThrow(
+        /label occurrence 1 is major: defer it and leave its change out/,
+      );
       expect(JSON.stringify(mock.reviewComments)).toBe(before);
     });
 
