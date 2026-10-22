@@ -84,6 +84,8 @@ import type {
   PostPrCommentParams,
   PreflightAnchorParams,
   PreflightAnchorResult,
+  PreflightFixParams,
+  PreflightFixResult,
   ReconcileParams,
   ReconcileResult,
   RecoverResultParams,
@@ -907,8 +909,55 @@ export function preflightAnchor(
 }
 
 /**
- * Parse each comment once and keep the rows whose finding marker matches.
+ * Check the posted finding before a controller hands it to a fixer.
  */
+export function preflightFix(params: PreflightFixParams): PreflightFixResult {
+  verifyHead(params.repo, params.pr, params.head);
+  const comments = getReviewComments(params.repo, params.pr);
+  const records = findingRows(comments, params.fingerprint);
+  const matches = records.filter(
+    ({ match }) =>
+      match.engine === params.engine &&
+      match.round === params.round &&
+      match.head === params.head &&
+      match.occurrence === params.occurrence,
+  );
+  if (matches.length !== 1) {
+    fail(
+      'preflight-fix requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence',
+    );
+  }
+  if (records.some(({ match }) => match.occurrence > params.occurrence)) {
+    fail('preflight-fix requires the latest finding occurrence');
+  }
+  if (
+    comments.some((row) => {
+      const disposition = matchDisposition(String(row.body ?? ''));
+      return (
+        disposition?.engine === params.engine &&
+        disposition.round === params.round &&
+        disposition.fingerprint === params.fingerprint &&
+        disposition.occurrence === params.occurrence
+      );
+    })
+  ) {
+    fail('preflight-fix requires an undisposed finding');
+  }
+  const severity = matches[0]!.match.severity;
+  const stance =
+    params.round >= convergenceStartRound(params.repo, params.pr)
+      ? 'convergence'
+      : 'adversarial';
+  if (stance === 'convergence' && severity !== 'blocking') {
+    fail(
+      'convergence fixes require a posted blocking finding; defer non-blocking findings before editing',
+    );
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, severity, stance, verified: true };
+}
+
+/** Parse each comment once and keep matching finding rows. */
 function findingRows(
   comments: GitHubReviewCommentNode[],
   fingerprint: string | undefined,

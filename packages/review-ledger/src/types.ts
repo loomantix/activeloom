@@ -151,6 +151,23 @@ export interface PreflightAnchorResult {
   verified: true;
 }
 
+/** Parameters for the read-only `preflightFix`. */
+export interface PreflightFixParams {
+  repo: string;
+  pr: number;
+  head: string;
+  engine: SupportedEngine;
+  round: number;
+  fingerprint: string;
+  occurrence: number;
+}
+
+export interface PreflightFixResult extends PreflightFixParams {
+  severity: SupportedSeverity;
+  stance: 'adversarial' | 'convergence';
+  verified: true;
+}
+
 /** Parameters for `postFinding`. */
 export interface PostFindingParams {
   repo: string;

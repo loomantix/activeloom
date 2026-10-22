@@ -140,7 +140,15 @@ The actionability bar tightens further. Change the PR only for a **blocking**
 defect that also clears the Disposition Bar above — one that is realistically
 reachable and ships materially wrong behavior, loses or corrupts data, exposes
 a credible security or privacy exploit, breaks a public contract, or breaks
-deploy or rollout:
+deploy or rollout.
+
+Before editing or assigning a fix, settle and post the finding's severity and
+intended disposition. Run the controller's `authorize-fix` check described in
+the ledger's "Authorize a fix before editing" section. In convergence,
+`blocking` with supporting evidence is eligible for a fix; `major`, `minor`,
+and `nit` must be deferred. Hand a fixer only findings that passed this check.
+Resolve any mismatch before editing; severity follows impact evidence, not the
+desire to make a fix eligible.
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
@@ -289,7 +297,8 @@ role references needed for the selected lenses.
    required by `.codex/references/local-review-ledger.md` to post one inline
    comment on an exact GitHub diff anchor before editing. Do not hand-compose
    review-comment API requests.
-9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
+9. Apply the Disposition Bar and run `authorize-fix` for each intended fix before
+   editing or delegating it. Fix only findings whose expected harm reduction
    justifies the churn. Defer the rest, and create an issue only for an urgent
    follow-up that should be scheduled within roughly two weeks.
 10. Run targeted validation and commit. When
