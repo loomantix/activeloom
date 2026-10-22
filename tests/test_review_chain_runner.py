@@ -6339,3 +6339,109 @@ def test_control_copy_pins_the_rendered_metrics_destination(
     pinned.write_text('{"LOOM_REVIEW_TELEMETRY_STORE": "pr"}\n')
     with pytest.raises(harness.module.Blocked, match="pinned controller"):
         runner.verify_control()
+
+
+def test_recovered_pass_consumes_budget_without_convergence(harness: Any) -> None:
+    spec = importlib.util.spec_from_file_location("recovery_controller", SCRIPTS / "local-review-handoff.py")
+    assert spec and spec.loader
+    controller = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(controller)
+    run = dict(comment_id=1, run_id="d" * 64, base=BASE, sequence=["codex", "claude"], max_rounds=2, plan_mode="cycle")
+    rows: list[dict[str, Any]] = [{"id": 2, "body": f"<!-- local-review-pass:v3 engine=codex round=1 base={BASE} head={HEAD} result-sha256={'e' * 64} -->\nClean."}]
+    body = controller._recovery_body(run["run_id"], "claude", 1, BASE, HEAD, HEAD, "f" * 64, "Failed pass consumed; review again.")
+    rows.append({"id": 3, "body": body})
+    decision = controller._sequence_decision(rows, run, HEAD)
+    assert (decision["status"], decision["engine"], decision["round"]) == ("next", "codex", 2)
+    assert decision["passes"][-1]["classification"] == "blocked"
+    rows.append({"id": 4, "body": f"<!-- local-review-pass:v3 engine=codex round=2 base={BASE} head={HEAD} result-sha256={'a' * 64} -->\nClean again."})
+    assert controller._sequence_decision(rows, run, HEAD)["status"] == "next"
+    rows.append({"id": 5, "body": f"<!-- local-review-pass:v3 engine=claude round=2 base={BASE} head={HEAD} result-sha256={'b' * 64} -->\nFresh review."})
+    assert controller._sequence_decision(rows, run, HEAD)["status"] == "converged"
+    rows[1]["body"] += "tampered"
+    with pytest.raises(controller.HandoffError, match="recovery"):
+        controller._sequence_decision(rows, run, HEAD)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_runner_recovers_inherited_slip_then_requires_fresh_reviews(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, interrupted: bool,
+) -> None:
+    h = harness
+    original = h.runner.helper
+    original_managed = h.module.managed
+    recovered = False
+    commands: list[tuple[str, dict[str, str]]] = []
+    spec = importlib.util.spec_from_file_location("blocked_controller", SCRIPTS / "local-review-handoff.py")
+    assert spec and spec.loader
+    controller = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(controller)
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        if env.get("AGENT_LOOP_REVIEW_ENGINE") == "claude" and not recovered:
+            h.controls.outcome = "blocked"
+        else:
+            h.controls.outcome = "clean"
+        original_managed(argv, log, env, *args, **kwargs)
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        nonlocal recovered, interrupted
+        options = dict(zip(parts[1::2], parts[2::2], strict=True))
+        if parts[0] == "check-blocked-round":
+            commands.append((parts[0], options))
+            return dict(recoverable=True, slips=["synthetic inherited ordering slip"])
+        if parts[0] == "recover-pass":
+            commands.append((parts[0], options))
+            body = controller._recovery_body(
+                self.state["run_id"], options["--engine"], int(options["--round"]),
+                BASE, HEAD, HEAD, "e" * 64, "A failed pass, not an attestation.\n",
+            )
+            if not any(e["body"] == body for e in h.events):
+                h.events.append(dict(id=len(h.events) + 2, body=body))
+            recovered = True
+            if interrupted:
+                interrupted = False
+                raise h.module.Blocked("interrupted after posting recovery")
+            return dict(verified=True)
+        return dict(original(self, name, *parts))
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    monkeypatch.setattr(h.runner, "helper", helper)
+    runner = h.runner(h.args, h.directory)
+    if interrupted:
+        with pytest.raises(h.module.Blocked, match="after posting recovery"):
+            runner.run()
+        h.args.resume = True
+        runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert h.launches == ["codex", "claude", "codex", "claude"]
+    assert [p["classification"] for p in runner.state["completed"]] == ["clean", "blocked", "clean", "clean"]
+    assert h.module.read(h.directory / "pass-2/result.json")["status"] == "blocked"
+    assert (h.directory / "pass-2/blocked-recovery.json").is_file()
+    assert commands[0][1]["--before"] == BASE
+    assert commands[1][1]["--before"] == HEAD
+    assert len([e for e in h.events if "local-review-recovery:" in e["body"]]) == 1
+
+
+def test_v2_migration_preserves_attempts_and_pins(harness: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = harness
+    h.controls.outcome = "blocked"
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    prior = h.module.read(h.directory / "state.json")
+    original = h.module.command
+
+    def command(argv: list[str]) -> str:
+        if argv[:1] == ["git"] and "-C" in argv:
+            if "--show-toplevel" in argv:
+                return str(ROOT)
+            return "" if "status" in argv else HEAD
+        return str(original(argv))
+
+    monkeypatch.setattr(h.module, "command", command)
+    h.args.resume = True
+    h.args.migrate_controller = HEAD
+    runner = h.runner(h.args, h.directory)
+    runner.initialize()
+    assert h.module.read(h.directory / f"state-v2-{HEAD}.json") == prior
+    for key in ("attempts", "pending", "completed", "run_id", "review_settings", "installation_revision"):
+        assert runner.state.get(key) == prior.get(key)

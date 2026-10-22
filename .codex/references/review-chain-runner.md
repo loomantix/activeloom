@@ -437,6 +437,28 @@ failure reason. A crash between the boundary write and process creation remains
 unknown; it is not evidence that a retry is safe. Local logs name the failing
 checkout and changed paths, and blocked output prints the exact resume command.
 
+### Recover a blocked ordering or label slip
+
+After a successful observed worker return, a blocked canonical result can consume
+its scheduled pass without becoming an attestation. The runner requires the
+ledger's `check-blocked-round` to verify that every thread is settled and the only
+failures are the supported ordering or convergence-label slips. For an unchanged
+pass blocked by historical findings with the same engine and round, it checks
+the published transition from the pinned PR base to the current head; it does
+not claim the unchanged pass published those fixes.
+
+The runner validates the current head, preserves the original blocked result,
+and posts an actor-owned, digest-bound `local-review-recovery:v1` event naming
+the run and result digest. This event consumes the engine's scheduled round and
+cannot satisfy coverage or convergence. Subsequent engines follow the existing
+plan; the failed engine must review again within the original cap. At the cap,
+the result is exhausted, not converged. An interruption after the event was
+posted replays that event without spending another pass.
+
+Unknown worker exits, missing results, unsettled findings and unsupported ledger
+failures remain blocked. Recovery never edits earlier comments, promotes the
+blocked result, resets the budget, or starts another authenticated run.
+
 After repairing a proven preflight-only failure, add `--recover-preflight` to
 that command. Proof requires a recorded unsuccessful launcher exit and completed
 process-group cleanup; a preflight marker alone cannot authorize a retry.
@@ -469,12 +491,18 @@ process exit; do not edit the checkpoint to mark it returned.
 
 ### Migrate an existing checkpoint
 
-Version 1 checkpoints require an explicit adoption step. Validate the new
+Checkpoints require an explicit adoption step when their pinned controller changes. Validate the new
 controller in a clean checkout at a full commit SHA, then invoke that checkout's
 runner with the original arguments plus `--resume --migrate-controller <sha>`.
 The migration validates old control hashes, saves `state-v1.json`, retains the
 old control directory, and records the new hashes and source revision. It does
 not restart or renumber the run. Future resumes use the newly printed command.
+
+Version 2 checkpoints can use the same command when no worker is pending or the
+pending worker has a known returned phase. The migration saves
+`state-v2-<sha>.json` and retains all attempts, completed passes, model settings,
+installation pins and prior controls. It never turns an unknown exit into a
+returned one. Version 1 checkpoints retain their existing migration behavior.
 
 For a version 1 Gemini attempt with a supported preflight rejection,
 an operator can additionally supply `--recover-preflight

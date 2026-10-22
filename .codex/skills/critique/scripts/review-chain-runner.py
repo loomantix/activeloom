@@ -1561,10 +1561,14 @@ class Runner:
 
     def migrate(self, revision: str) -> None:
         """Explicitly adopt committed controller bytes, retaining every old file."""
-        if self.state["version"] != 1:
-            if self.state.get("migrations", [{}])[-1].get("revision") == revision:
-                return
-            raise Blocked("only version 1 checkpoints support this migration")
+        if self.state.get("migrations", [{}])[-1].get("revision") == revision:
+            return
+        version = self.state["version"]
+        if version not in (1, 2):
+            raise Blocked("unsupported checkpoint migration")
+        pending = self.state.get("pending")
+        if version == 2 and pending and pending["phase"] != "returned":
+            raise Blocked("controller migration requires a known returned worker")
         source = Path(__file__).resolve().parent
         root = command(["git", "-C", str(source), "rev-parse", "--show-toplevel"])
         if (
@@ -1577,7 +1581,7 @@ class Runner:
             )
         if self.boundary() != self.state["head"]:
             raise Blocked("reconcile the pending review head before migration")
-        backup = self.directory / "state-v1.json"
+        backup = self.directory / ("state-v1.json" if version == 1 else f"state-v2-{revision}.json")
         if not backup.exists():
             save(backup, self.state)
         elif read(backup) != self.state:
@@ -1607,10 +1611,10 @@ class Runner:
             version=2,
             control_directory=replacement.name,
             control_hashes={name: digest(replacement / name) for name in names},
-            migrations=[migration],
-            attempts=[],
-            installation_revision=self.state["head"],
+            migrations=[*self.state.get("migrations", []), migration],
         )
+        if version == 1:
+            self.state.update(attempts=[], installation_revision=self.state["head"])
         self.persist()
 
     def prepare_installation(self) -> None:
@@ -3048,10 +3052,8 @@ class Runner:
             result = self.helper("ledger", "validate-result", *fields)
         if result["status"] == "blocked":
             self.emit_fallback_telemetry(pending, "blocked")
-            raise Blocked(
-                "reviewer reported blocked without recoverable completed evidence; "
-                "inspect saved result and recover the owed pass"
-            )
+            self.recover_blocked_pass(pending, head, result)
+            return
         self.dco(head)
         validation = self.resolved_validation(head)
         expected_validation = {
@@ -3184,6 +3186,49 @@ class Runner:
         ) != (pending["engine"], pending["round"], head):
             raise Blocked("ledger did not advance by exactly the authorized pass")
         self.emit_fallback_telemetry(pending, result["status"], head)
+        self.state.update(head=head, completed=passes, pending=None, status="running")
+        self.persist()
+
+    def recover_blocked_pass(
+        self, pending: dict[str, Any], head: str, result: dict[str, Any]
+    ) -> None:
+        attempts = [a for a in self.state["attempts"] if a["attempt_id"] == pending["attempt_id"]]
+        if len(attempts) != 1 or attempts[0].get("exit_status") != 0:
+            raise Blocked("blocked-pass recovery requires a successful observed worker return")
+        folder = self.directory / pending["folder"]
+        check_before = self.state["base"] if pending["before"] == head else pending["before"]
+        receipt = self.helper(
+            "ledger", "check-blocked-round", *self.scope(head),
+            "--base", self.state["base"], "--before", check_before,
+            "--engine", pending["engine"], "--round", str(pending["round"]),
+        )
+        if receipt.get("recoverable") is not True:
+            raise Blocked("blocked pass has no verified ordering or label slip")
+        self.dco(head)
+        validation = self.resolved_validation(head)
+        expected = dict(head=head, result=result["resultSha256"], validation=validation, receipt=receipt)
+        saved = folder / "blocked-recovery.json"
+        if saved.exists():
+            if read(saved) != expected:
+                raise Blocked("blocked-pass recovery evidence changed")
+        else:
+            for index, check in enumerate(validation["commands"]):
+                managed(check["argv"], folder / f"recovery-check-{index}.log", check["environment"])
+            if self.boundary() != head:
+                raise Blocked("validation changed the blocked pass's head")
+            save(saved, expected)
+        self.helper(
+            "controller", "recover-pass", *self.scope(head),
+            "--base", self.state["base"], "--before", pending["before"],
+            "--engine", pending["engine"], "--round", str(pending["round"]),
+            "--run-id", self.state["run_id"], "--result-file", str(folder / "result.json"),
+        )
+        decision = self.decision(head)
+        passes = decision["passes"]
+        if len(passes) != len(self.state["completed"]) + 1 or passes[-1] != dict(
+            engine=pending["engine"], round=pending["round"], head=head, classification="blocked",
+        ):
+            raise Blocked("ledger did not consume exactly the blocked pass")
         self.state.update(head=head, completed=passes, pending=None, status="running")
         self.persist()
 

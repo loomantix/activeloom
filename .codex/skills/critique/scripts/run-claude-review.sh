@@ -103,7 +103,9 @@ Continue review on PR #${pr} in ${repo}.
 
 This is automatic local-convergence mode. Run a fresh Claude deepcritique pass
 for round ${round} against the pinned base ${base} and exact reviewed head
-${head}. Reconstruct context from the PR description, commits, diff, checks,
+${head}. The launching controller already authorized this exact engine and
+round; do not repeat authorize-pass or initialize a run through an older
+installed helper. Reconstruct context from the PR description, commits, diff, checks,
 and complete local-review ledger,
 including resolved threads and prior attestations. Post verified findings inline
 before edits, then validate, push, reply, resolve, and publish the normal review
