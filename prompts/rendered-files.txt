@@ -20,6 +20,7 @@
 .agents/skills/diagnosing-bugs/SKILL.md
 .agents/skills/feature-dev/SKILL.md
 .agents/skills/grill/SKILL.md
+.agents/skills/handoff/SKILL.md
 .agents/skills/hgrill/SKILL.md
 .agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
@@ -73,6 +74,7 @@
 .claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
+.claude/skills/handoff/SKILL.md
 .claude/skills/hgrill/SKILL.md
 .claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
@@ -124,6 +126,7 @@
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md
+.codex/skills/handoff/SKILL.md
 .codex/skills/hgrill/SKILL.md
 .codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md

@@ -57,6 +57,9 @@ skills:
     FM_EXTRAS: ''
     DESC_TRIGGER: ''
 
+  handoff:
+    FM_EXTRAS: ''
+
   diagnosing-bugs:
     FM_EXTRAS: ''
 
