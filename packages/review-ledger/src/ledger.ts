@@ -88,6 +88,8 @@ import type {
   PreflightFixResult,
   PreflightPublishParams,
   PreflightPublishResult,
+  CheckBlockedRoundParams,
+  CheckBlockedRoundResult,
   ReconcileParams,
   ReconcileResult,
   RecoverResultParams,
@@ -524,6 +526,7 @@ export function sameRoundDispositions(
   args: { engine: SupportedEngine; round: number; repo?: string | undefined },
   matched: Array<[FindingV3Match, DispositionV3Match]>,
   allowedHeads: Record<string, number>,
+  slips?: string[],
 ): Array<[string, boolean, boolean, boolean]> {
   const evidence = new Map<string, [boolean, boolean, boolean]>();
 
@@ -562,21 +565,31 @@ export function sameRoundDispositions(
     }
 
     if (disposition.outcome === 'fixed' && dispositionHead === findingHead) {
-      fail('fixed finding was not posted before its disposition head');
-    }
-    const dispositionPosition = Object.prototype.hasOwnProperty.call(
-      allowedHeads,
-      dispositionHead,
-    )
-      ? allowedHeads[dispositionHead]!
-      : undefined;
-    if (
-      dispositionPosition === undefined ||
-      dispositionPosition < findingPosition ||
-      (disposition.outcome === 'fixed' &&
-        dispositionPosition === findingPosition)
-    ) {
-      fail('same-round finding disposition is outside the observed transition');
+      // `checkBlockedRound` collects this ordering slip instead of failing, so a
+      // published fix whose finding was posted late can be recovered.
+      if (slips === undefined) {
+        fail('fixed finding was not posted before its disposition head');
+      }
+      slips.push(
+        `${finding.fingerprint} occurrence ${finding.occurrence} was posted at its fix head`,
+      );
+    } else {
+      const dispositionPosition = Object.prototype.hasOwnProperty.call(
+        allowedHeads,
+        dispositionHead,
+      )
+        ? allowedHeads[dispositionHead]!
+        : undefined;
+      if (
+        dispositionPosition === undefined ||
+        dispositionPosition < findingPosition ||
+        (disposition.outcome === 'fixed' &&
+          dispositionPosition === findingPosition)
+      ) {
+        fail(
+          'same-round finding disposition is outside the observed transition',
+        );
+      }
     }
     if (finding.severity === 'blocking' && disposition.outcome !== 'fixed') {
       fail('blocking local-review findings must be fixed');
@@ -858,6 +871,66 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   const resultSha256 = sha256Bytes(raw);
 
   return { ...candidate, resultSha256 };
+}
+
+/**
+ * Decide whether a blocked round's published fix can be kept and reviewed again
+ * in the next round. It can only when the ledger is otherwise complete and the
+ * result failed solely on bookkeeping slips: a finding posted at its fix head,
+ * or a non-blocking finding fixed in convergence. Anything else, including a
+ * published change with no fixed same-round finding, is refused.
+ */
+export function checkBlockedRound(
+  params: CheckBlockedRoundParams,
+): CheckBlockedRoundResult {
+  if (params.before === params.head) {
+    fail('a blocked round that published nothing has no fix to recover');
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  verifyReviewBase(params.repo, params.pr, params.base, params.before);
+  verifyGitTransition(params.before, params.head, params.head);
+  const threads = reviewThreads(params.repo, params.pr);
+  const matched = verifyThreadDispositions(
+    threads,
+    loadHistoricalCommentIds(params.historicalCommentIdsFile),
+    { repo: params.repo, pr: params.pr },
+  );
+  const allowedHeads = transitionHeads(params);
+  const slips: string[] = [];
+  const dispositions = sameRoundDispositions(
+    params,
+    matched,
+    allowedHeads,
+    slips,
+  );
+  if (!dispositions.some(([, hasFix]) => hasFix)) {
+    fail(
+      'the blocked round published a change with no fixed same-round finding; it was not reviewed',
+    );
+  }
+  if (params.round >= convergenceStartRound(params.repo, params.pr)) {
+    for (const [fingerprint, , , hasNonblockingFix] of dispositions) {
+      if (hasNonblockingFix) {
+        slips.push(
+          `${fingerprint} is a non-blocking fix in a convergence round`,
+        );
+      }
+    }
+  }
+  if (slips.length === 0) {
+    fail(
+      'the blocked round has no label or ordering slip to recover; reconcile its ledger',
+    );
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  return {
+    engine: params.engine,
+    round: params.round,
+    before: params.before,
+    head: params.head,
+    slips,
+    recoverable: true,
+  };
 }
 
 /**

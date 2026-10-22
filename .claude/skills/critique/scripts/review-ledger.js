@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.12.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.13.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16501,7 +16501,7 @@ function verifyThreadDispositions(threads, historicalCommentIds, options) {
   verifyBlockingNotDeferred(options?.repo, matched);
   return matched;
 }
-function sameRoundDispositions(args, matched, allowedHeads) {
+function sameRoundDispositions(args, matched, allowedHeads, slips) {
   const evidence = /* @__PURE__ */ new Map();
   for (const [finding, disposition] of matched) {
     if (finding.engine !== args.engine || finding.round !== args.round) {
@@ -16532,14 +16532,22 @@ function sameRoundDispositions(args, matched, allowedHeads) {
       continue;
     }
     if (disposition.outcome === "fixed" && dispositionHead === findingHead) {
-      fail("fixed finding was not posted before its disposition head");
-    }
-    const dispositionPosition = Object.prototype.hasOwnProperty.call(
-      allowedHeads,
-      dispositionHead
-    ) ? allowedHeads[dispositionHead] : void 0;
-    if (dispositionPosition === void 0 || dispositionPosition < findingPosition || disposition.outcome === "fixed" && dispositionPosition === findingPosition) {
-      fail("same-round finding disposition is outside the observed transition");
+      if (slips === void 0) {
+        fail("fixed finding was not posted before its disposition head");
+      }
+      slips.push(
+        `${finding.fingerprint} occurrence ${finding.occurrence} was posted at its fix head`
+      );
+    } else {
+      const dispositionPosition = Object.prototype.hasOwnProperty.call(
+        allowedHeads,
+        dispositionHead
+      ) ? allowedHeads[dispositionHead] : void 0;
+      if (dispositionPosition === void 0 || dispositionPosition < findingPosition || disposition.outcome === "fixed" && dispositionPosition === findingPosition) {
+        fail(
+          "same-round finding disposition is outside the observed transition"
+        );
+      }
     }
     if (finding.severity === "blocking" && disposition.outcome !== "fixed") {
       fail("blocking local-review findings must be fixed");
@@ -16714,6 +16722,56 @@ function writeResult(params) {
   const raw = readResultBytes(params.resultFile);
   const resultSha256 = sha256Bytes(raw);
   return { ...candidate, resultSha256 };
+}
+function checkBlockedRound(params) {
+  if (params.before === params.head) {
+    fail("a blocked round that published nothing has no fix to recover");
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  verifyReviewBase(params.repo, params.pr, params.base, params.before);
+  verifyGitTransition(params.before, params.head, params.head);
+  const threads = reviewThreads(params.repo, params.pr);
+  const matched = verifyThreadDispositions(
+    threads,
+    loadHistoricalCommentIds(params.historicalCommentIdsFile),
+    { repo: params.repo, pr: params.pr }
+  );
+  const allowedHeads = transitionHeads(params);
+  const slips = [];
+  const dispositions = sameRoundDispositions(
+    params,
+    matched,
+    allowedHeads,
+    slips
+  );
+  if (!dispositions.some(([, hasFix]) => hasFix)) {
+    fail(
+      "the blocked round published a change with no fixed same-round finding; it was not reviewed"
+    );
+  }
+  if (params.round >= convergenceStartRound(params.repo, params.pr)) {
+    for (const [fingerprint, , , hasNonblockingFix] of dispositions) {
+      if (hasNonblockingFix) {
+        slips.push(
+          `${fingerprint} is a non-blocking fix in a convergence round`
+        );
+      }
+    }
+  }
+  if (slips.length === 0) {
+    fail(
+      "the blocked round has no label or ordering slip to recover; reconcile its ledger"
+    );
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  return {
+    engine: params.engine,
+    round: params.round,
+    before: params.before,
+    head: params.head,
+    slips,
+    recoverable: true
+  };
 }
 function recoverResult(params) {
   const actor = assertActor(params.actor);
@@ -20718,6 +20776,27 @@ function runCliCommand(argv) {
         expectedRecoverySha256: args.expectedRecoverySha256
       }) : writeResult(params);
       writeSortedJson(out);
+      break;
+    }
+    case "check-blocked-round": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before) {
+        fail(
+          "check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before"
+        );
+      }
+      writeSortedJson(
+        checkBlockedRound({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          base: args.base,
+          before: args.before,
+          allowedHeadsFile: args.allowedHeadsFile,
+          historicalCommentIdsFile: args.historicalCommentIdsFile
+        })
+      );
       break;
     }
     case "write-blocked-result": {

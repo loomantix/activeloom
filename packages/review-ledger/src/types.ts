@@ -122,6 +122,28 @@ export interface RecoverResultParams extends Omit<
   expectedRecoverySha256: string;
 }
 
+/** Parameters for the read-only `checkBlockedRound`. */
+export interface CheckBlockedRoundParams {
+  repo: string;
+  pr: number;
+  head: string;
+  engine: SupportedEngine;
+  round: number;
+  base: string;
+  before: string;
+  allowedHeadsFile?: string | undefined;
+  historicalCommentIdsFile?: string | undefined;
+}
+
+export interface CheckBlockedRoundResult {
+  engine: SupportedEngine;
+  round: number;
+  before: string;
+  head: string;
+  slips: string[];
+  recoverable: true;
+}
+
 /** Parameters for `writeBlockedResult`. */
 export interface WriteBlockedParams extends BaseResultParams {
   blockerFile?: string | undefined;
