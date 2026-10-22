@@ -391,9 +391,9 @@ It runs the `red-team` pass in a read-only pane, then routes every finding by se
 - **blocker** and **high** are fixed on the PR by a fresh editing session for the author engine, one commit per finding, reproduced first;
 - **medium** and **low** become follow-up issues, linked to an existing open issue when one matches, and a medium or low finding the red team marks as accepted is only listed;
 - a high finding the fixer cannot reproduce or fix, or one that predates the PR, becomes a follow-up issue and notifies you;
-- a security finding in a public repository that is not fixed stays out of issues and the PR comment, and is left for you to report through `SECURITY.md`.
+- a security finding in a public repository stays out of the PR comment's details; if unfixed, it stays out of issues and is left for you to report through `SECURITY.md`.
 
-It posts one `red-team:v1` comment on the PR listing each finding's outcome. If it pushed fixes, the review chain's attestations name an older head: it moves a ready PR back to draft and tells you to run `hreview <pr> --restart`, which only you can authorize. It refuses a PR whose review run is still active, never writes to the review ledger, and never merges or marks a PR ready.
+It posts one `red-team:v1` comment on the PR listing non-security findings' outcomes and aggregate counts for security findings in public repositories. If it pushed fixes, the review chain's attestations name an older head: it moves a ready PR back to draft and tells you to run `hreview <pr> --restart`, which only you can authorize. It refuses a PR whose review run is still active, never writes to the review ledger, and never merges or marks a PR ready.
 
 ## Restart approvals
 
