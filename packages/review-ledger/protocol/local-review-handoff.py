@@ -800,7 +800,7 @@ def _start_run(args: argparse.Namespace) -> None:
     )
 
 
-def _authorize_pass(args: argparse.Namespace) -> None:
+def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
     rows = _issue_comments(args.repo, args.pr)
     records = _run_records(rows)
     if not records:
@@ -867,28 +867,53 @@ def _authorize_pass(args: argparse.Namespace) -> None:
     if args.round > highest_round + 1:
         _fail("review passes may not skip a run round")
     _verify_reviewable_head(args.repo, args.pr, args.head)
-    print(
-        json.dumps(
-            {
-                "engine": args.engine,
-                "head": args.head,
-                "max_rounds": run["max_rounds"],
-                "round": args.round,
-                "run_round": run_round,
-                "run_id": run["run_id"],
-                # Lean's final round and Deep's rounds 3+ land the change
-                # rather than challenge it; the ledger enforces the same split.
-                "stance": (
-                    "convergence"
-                    if run_round >= (2 if run["tier"] == "lean" else 3)
-                    else "adversarial"
-                ),
-                "tier": run["tier"],
-                "verified": True,
-            },
-            sort_keys=True,
-        )
+    return {
+        "engine": args.engine,
+        "head": args.head,
+        "max_rounds": run["max_rounds"],
+        "round": args.round,
+        "run_round": run_round,
+        "run_id": run["run_id"],
+        # Lean's final round and Deep's rounds 3+ use the ledger's convergence split.
+        "stance": (
+            "convergence"
+            if run_round >= (2 if run["tier"] == "lean" else 3)
+            else "adversarial"
+        ),
+        "tier": run["tier"],
+        "verified": True,
+    }
+
+
+def _authorize_pass(args: argparse.Namespace) -> None:
+    print(json.dumps(_pass_authorization(args), sort_keys=True))
+
+
+def _authorize_fix(args: argparse.Namespace) -> None:
+    authorization = _pass_authorization(args)
+    result = subprocess.run(
+        [
+            "node", str(Path(__file__).with_name("review-ledger.js")),
+            "preflight-fix", "--repo", args.repo, "--pr", str(args.pr),
+            "--head", args.head, "--engine", args.engine,
+            "--round", str(args.round), "--fingerprint", args.fingerprint,
+            "--occurrence", str(args.occurrence),
+        ],
+        capture_output=True, text=True, check=False,
     )
+    if result.returncode:
+        _fail(f"fix authorization refused: {result.stderr.strip()}")
+    try:
+        finding = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise HandoffError("fix preflight returned invalid JSON") from error
+    if not isinstance(finding, dict) or finding.get("verified") is not True:
+        _fail("fix preflight did not verify the posted finding")
+    if finding.get("stance") != authorization["stance"]:
+        _fail("fix preflight stance disagrees with the authorized pass")
+    if _pass_authorization(args) != authorization:
+        _fail("pass authorization changed during fix preflight")
+    print(json.dumps({**finding, **authorization}, sort_keys=True))
 
 
 def _finish_run(args: argparse.Namespace) -> None:
@@ -1477,6 +1502,18 @@ def _parser() -> argparse.ArgumentParser:
     authorize.add_argument("--engine", required=True, choices=ENGINES)
     authorize.add_argument("--round", required=True, type=int)
     authorize.set_defaults(handler=_authorize_pass)
+
+    fix = commands.add_parser("authorize-fix", help="read-only: check a posted finding before editing")
+    fix.add_argument("--run-id", required=True)
+    fix.add_argument("--repo", required=True)
+    fix.add_argument("--pr", required=True, type=int)
+    fix.add_argument("--head", required=True, type=_sha)
+    fix.add_argument("--base", required=True, type=_sha)
+    fix.add_argument("--engine", required=True, choices=ENGINES)
+    fix.add_argument("--round", required=True, type=int)
+    fix.add_argument("--fingerprint", required=True)
+    fix.add_argument("--occurrence", required=True, type=int)
+    fix.set_defaults(handler=_authorize_fix)
 
     next_pass = commands.add_parser("next-pass")
     next_pass.add_argument("--repo", required=True)

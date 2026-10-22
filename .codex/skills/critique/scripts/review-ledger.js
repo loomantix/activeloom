@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.10.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.11.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16750,6 +16750,37 @@ function preflightAnchor(params) {
     verified: true
   };
 }
+function preflightFix(params) {
+  verifyHead(params.repo, params.pr, params.head);
+  const comments = getReviewComments(params.repo, params.pr);
+  const records = findingRows(comments, params.fingerprint);
+  const matches = records.filter(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === params.occurrence
+  );
+  if (matches.length !== 1) {
+    fail(
+      "preflight-fix requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence"
+    );
+  }
+  if (records.some(({ match }) => match.occurrence > params.occurrence)) {
+    fail("preflight-fix requires the latest finding occurrence");
+  }
+  if (comments.some((row) => {
+    const disposition = matchDisposition(String(row.body ?? ""));
+    return disposition?.engine === params.engine && disposition.round === params.round && disposition.fingerprint === params.fingerprint && disposition.occurrence === params.occurrence;
+  })) {
+    fail("preflight-fix requires an undisposed finding");
+  }
+  const severity = matches[0].match.severity;
+  const stance = params.round >= convergenceStartRound(params.repo, params.pr) ? "convergence" : "adversarial";
+  if (stance === "convergence" && severity !== "blocking") {
+    fail(
+      "convergence fixes require a posted blocking finding; defer non-blocking findings before editing"
+    );
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, severity, stance, verified: true };
+}
 function findingRows(comments, fingerprint) {
   const rows = [];
   for (const row of comments) {
@@ -20429,6 +20460,27 @@ function runCliCommand(argv) {
   }
   validateArgs(args);
   switch (args.command) {
+    case "preflight-fix": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0) {
+        fail(
+          "preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence"
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightFix({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            fingerprint: args.fingerprint,
+            occurrence: args.occurrence
+          })
+        ) + "\n"
+      );
+      break;
+    }
     case "preflight-anchor": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
         fail("preflight-anchor requires --repo, --pr, --head, and --path");

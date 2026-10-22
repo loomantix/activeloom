@@ -31,6 +31,7 @@ import {
   postFinding,
   postPrComment,
   preflightAnchor,
+  preflightFix,
   reconcile,
   reopenOccurrence,
   reply,
@@ -644,6 +645,35 @@ function runCliCommand(argv: string[]): number {
   validateArgs(args);
 
   switch (args.command) {
+    case 'preflight-fix': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.fingerprint ||
+        args.occurrence === undefined
+      ) {
+        fail(
+          'preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence',
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightFix({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            fingerprint: args.fingerprint,
+            occurrence: args.occurrence,
+          }),
+        ) + '\n',
+      );
+      break;
+    }
     case 'preflight-anchor': {
       if (!args.repo || args.pr === undefined || !args.head || !args.path) {
         fail('preflight-anchor requires --repo, --pr, --head, and --path');

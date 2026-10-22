@@ -490,6 +490,11 @@ only an invalid claim; never edit a marker or use dismissal to hide a real
 deferred blocker. An unavailable severity-amendment operation is not needed
 when the authorized code fix can resolve the finding instead.
 
+For a convergence rejection caused by a non-blocking fix, follow the ledger's
+[Authorize a fix before editing](references/local-review-ledger.md#authorize-a-fix-before-editing)
+recovery rules. Preserve the evidence; severity must follow demonstrated impact,
+and an existing `fixed` disposition cannot be rewritten into a clean pass.
+
 Ask for a decision only when the next action needs authority, information, or
 risk acceptance the user has not supplied. Keep the run active while recovery
 can progress; close it when it actually converges, exhausts its cap, or reaches
