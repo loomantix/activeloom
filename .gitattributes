@@ -28,6 +28,7 @@
 /.agents/skills/pr-critique/SKILL.md linguist-generated=true
 /.agents/skills/product-grill/SKILL.md linguist-generated=true
 /.agents/skills/promote/SKILL.md linguist-generated=true
+/.agents/skills/red-team/SKILL.md linguist-generated=true
 /.agents/skills/refactorpass/SKILL.md linguist-generated=true
 /.agents/skills/review-setup/SKILL.md linguist-generated=true
 /.agents/skills/reviewit/SKILL.md linguist-generated=true
@@ -61,6 +62,7 @@
 /.claude/skills/phone-install/SKILL.md linguist-generated=true
 /.claude/skills/product-grill/SKILL.md linguist-generated=true
 /.claude/skills/promote/SKILL.md linguist-generated=true
+/.claude/skills/red-team/SKILL.md linguist-generated=true
 /.claude/skills/refactorpass/SKILL.md linguist-generated=true
 /.claude/skills/review-setup/SKILL.md linguist-generated=true
 /.claude/skills/reviewit/SKILL.md linguist-generated=true
@@ -94,6 +96,7 @@
 /.codex/skills/pr-critique/SKILL.md linguist-generated=true
 /.codex/skills/product-grill/SKILL.md linguist-generated=true
 /.codex/skills/promote/SKILL.md linguist-generated=true
+/.codex/skills/red-team/SKILL.md linguist-generated=true
 /.codex/skills/refactorpass/SKILL.md linguist-generated=true
 /.codex/skills/review-setup/SKILL.md linguist-generated=true
 /.codex/skills/reviewit/SKILL.md linguist-generated=true

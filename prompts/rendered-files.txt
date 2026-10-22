@@ -40,6 +40,7 @@
 .agents/skills/promote/SKILL.md
 .agents/skills/promote/scripts/promote-recipe.py
 .agents/skills/promote/scripts/promote-recipe.schema.json
+.agents/skills/red-team/SKILL.md
 .agents/skills/refactorpass/SKILL.md
 .agents/skills/review-setup/SKILL.md
 .agents/skills/review-setup/scripts/review-profile.defaults.json
@@ -93,6 +94,7 @@
 .claude/skills/promote/SKILL.md
 .claude/skills/promote/scripts/promote-recipe.py
 .claude/skills/promote/scripts/promote-recipe.schema.json
+.claude/skills/red-team/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-setup/SKILL.md
 .claude/skills/review-setup/scripts/review-profile.defaults.json
@@ -146,6 +148,7 @@
 .codex/skills/promote/SKILL.md
 .codex/skills/promote/scripts/promote-recipe.py
 .codex/skills/promote/scripts/promote-recipe.schema.json
+.codex/skills/red-team/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/review-setup/SKILL.md
 .codex/skills/review-setup/scripts/review-profile.defaults.json
