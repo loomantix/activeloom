@@ -317,6 +317,15 @@ def json_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def validation_receipt_identity(value: Any) -> Any:
+    """Gate mapping order can change when a checkpoint is serialized."""
+    if isinstance(value, dict):
+        gates = value.get("gates")
+        if isinstance(gates, list) and all(isinstance(gate, str) for gate in gates):
+            return {**value, "gates": sorted(gates)}
+    return value
+
+
 def darwin_process_environment(pid: int) -> dict[bytes, bytes]:
     """Read KERN_PROCARGS2 without exposing arguments or environment in diagnostics."""
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -2460,7 +2469,9 @@ class Runner:
         if not receipt.is_file() or digest(receipt) != citation["validated_sha256"]:
             raise Blocked("cited validation gate evidence changed")
         cited = read(receipt)
-        if {**cited, "result": expected["result"]} != expected:
+        if validation_receipt_identity(
+            {**cited, "result": expected["result"]}
+        ) != validation_receipt_identity(expected):
             raise Blocked("cited validation gate does not cover this head and gates")
         return str(citation["pass"])
 
@@ -3109,7 +3120,9 @@ class Runner:
             if isinstance(saved_validation, dict)
             else None
         )
-        if saved_validation != expected_validation:
+        if validation_receipt_identity(saved_validation) != validation_receipt_identity(
+            expected_validation
+        ):
             raise Blocked("saved validation does not name this exact head and result")
         cited_pass = (
             self.verify_gate_citation(citation, expected_validation)

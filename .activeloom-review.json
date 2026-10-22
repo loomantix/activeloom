@@ -58,6 +58,16 @@
     "packages_review_ledger": {
       "paths": ["packages/review-ledger/**"],
       "commands": [
+        {
+          "argv": [
+            "pnpm",
+            "--dir",
+            "packages/review-ledger",
+            "install",
+            "--frozen-lockfile",
+            "--ignore-scripts"
+          ]
+        },
         { "argv": ["pnpm", "--dir", "packages/review-ledger", "test"] },
         { "argv": ["pnpm", "--dir", "packages/review-ledger", "build"] }
       ]
@@ -73,6 +83,16 @@
         "tests/comment-verifier.test.cjs"
       ],
       "commands": [
+        {
+          "argv": [
+            "pnpm",
+            "--dir",
+            "packages/review-ledger",
+            "install",
+            "--frozen-lockfile",
+            "--ignore-scripts"
+          ]
+        },
         { "argv": ["node", "tests/review-accessibility-asset.test.js"] },
         {
           "argv": [

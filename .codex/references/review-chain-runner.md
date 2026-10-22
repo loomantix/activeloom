@@ -255,6 +255,11 @@ rechecked against the cited receipt. A gate an engine ran inside its own pass
 is never cited. One consequence: a suite is no longer run several times on one
 commit, so a flaky test that only fails on a repeat run goes unnoticed.
 
+Receipt comparisons ignore gate-name ordering introduced by checkpoint mapping
+serialization. Gate membership (including duplicates), head, result, contract,
+changed paths and environment hashes still have to match. Saved receipts and
+their citation digests are preserved byte for byte.
+
 State, private logs and result files live under the Git common directory's
 `activeloom-review/<owner>-<repo>-<pr>/`. A per-PR lock prevents concurrent
 runners in linked worktrees. Keep this directory for recovery; do not delete
