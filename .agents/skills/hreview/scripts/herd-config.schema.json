@@ -194,6 +194,16 @@
         },
         "post_merge": { "$ref": "#/$defs/commands" }
       }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "store": {
+          "enum": ["pr", "issue"],
+          "description": "Where this repository's review metrics go. Herd sets LOOM_REVIEW_TELEMETRY_STORE to it on every pane it opens, for every engine. Absent: herd sets nothing."
+        }
+      }
     }
   }
 }

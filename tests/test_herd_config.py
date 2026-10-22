@@ -32,6 +32,7 @@ INVALID = {
     "promotion-branch-missing.json": "promotion.production_branch: required",
     "glance-not-boolean.json": "glance.auto: must be true or false",
     "bad-lane.json": "production_lanes[0].name: must be a lower-case slug",
+    "telemetry-store.json": "telemetry.store: must be one of pr, issue",
 }
 
 
@@ -138,6 +139,7 @@ def test_absent_sections_take_conservative_defaults() -> None:
     }
     assert effective["production_lanes"] == []
     assert effective["promotion"]["enabled"] is False
+    assert effective["telemetry"] == {"store": None}
 
 
 def test_present_ship_section_defaults_to_the_stricter_check() -> None:
