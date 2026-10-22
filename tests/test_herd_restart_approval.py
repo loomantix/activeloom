@@ -154,13 +154,82 @@ def test_skills_claim_but_never_write_an_approval(root: str) -> None:
 
     hreview = skill("hreview")
     ended = hreview.split("**Ended**", 1)[1].split("10. Roster", 1)[0]
-    assert "claim-restart --repo $repo --pr <n> --head <head>" in ended
-    assert ended.index("`--restart` typed by the user") < ended.index("claim-restart")
-    assert ended.index("claim-restart") < ended.index("including a restart a peer asked for")
+    assert "check-restart --repo $repo --pr <n> --head <head>" in ended
+    assert ended.index("`--restart` typed by the user") < ended.index("check-restart")
+    # The record is read, and a missing scope decision stops, before the approval is used.
+    assert ended.index("check-restart") < ended.index("do not claim it") < ended.index("`claim-restart`")
+    assert ended.index("`claim-restart`") < ended.index("including a restart a peer asked for")
+    assert "Any other exit from either command is a block" in ended
     assert "user restart approval <id>, recorded <created>" in ended
-    assert "Never write or approve a record" in ended
+    assert "Never run `approve-restart` or write a record" in ended
+    assert "approve-restart --repo <repo> --pr <n> --head <full head sha>" in ended
 
     horch = skill("horch")
-    assert "check-restart --repo $repo --pr <n> --head <head>" in horch
-    assert "it claims the approval itself" in horch
-    assert "Never run `approve-restart` or write its record yourself" in horch
+    chain = horch.split("**Review chain**", 1)[1].split("**Build**", 1)[0]
+    assert "check-restart --repo $repo --pr <n> --head <head>" in chain
+    assert "it claims the approval itself" in chain
+    assert chain.index("check-restart") < chain.index("**None** (exit 4")
+    assert "Any other exit from `check-restart` is a block" in chain
+    assert "<absolute path of $C> approve-restart" in chain
+    assert "Never run `approve-restart` or write its record yourself" in chain
+
+
+def test_a_head_sharing_the_filename_prefix_is_refused() -> None:
+    approve()
+    with pytest.raises(herd.ApprovalError, match="head does not match"):
+        herd.claim_restart(REPO, 42, HEAD[:12] + "d" * 28)
+
+
+def test_a_tampered_repo_field_is_refused() -> None:
+    path = Path(approve()["path"])
+    stored = json.loads(path.read_text())
+    stored["repo"] = "acme/other"
+    path.write_text(json.dumps(stored))
+    with pytest.raises(herd.ApprovalError, match="repo does not match"):
+        herd.claim_restart(REPO, 42, HEAD)
+
+
+def test_a_split_cannot_be_approved(config_home: Path) -> None:
+    with pytest.raises(herd.UsageError, match="split"):
+        approve(scope_decision="split")
+    assert not (config_home / "activeloom/herd-approvals").exists()
+
+
+class _Terminal(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_approve_from_a_terminal_stores_the_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", _Terminal("restart 42\n"))
+    args = ["--repo", REPO, "--pr", "42", "--head", HEAD]
+    code = herd.main(["approve-restart", *args, "--deep", "--scope-decision", "keep", "--ttl-hours", "2"])
+    assert code == 0
+    stored = herd.check_restart(REPO, 42, HEAD)
+    assert stored["deep"] is True and stored["scope_decision"] == "keep"
+    created, expires = (herd._parse_moment(Path("."), stored[key]) for key in ("created", "expires"))
+    assert expires - created == timedelta(hours=2)
+    assert herd.main(["claim-restart", *args]) == 0
+    assert herd.main(["claim-restart", *args]) == 4
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        {"expires": "2099-01-01T00:00:00"},
+        {"expires": "2099-01-01T00:00:00Z"},
+        {"created": "2099-01-01T00:00:00Z"},
+        {"id": None},
+        {"id": "../escape"},
+        {"scope_decision": "split"},
+        {"deep": "yes"},
+    ],
+)
+def test_a_malformed_record_exits_4(tamper: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
+    path = Path(approve()["path"])
+    stored = json.loads(path.read_text())
+    stored.update(tamper)
+    path.write_text(json.dumps(stored))
+    assert herd.main(["claim-restart", "--repo", REPO, "--pr", "42", "--head", HEAD]) == 4
+    assert "no valid restart approval" in capsys.readouterr().err
+    assert path.exists()

@@ -15,10 +15,12 @@ aliases for each engine CLI, and, when Claude Code runs in auto mode, the Claude
 settings files. It never writes either.
 
 A third, user-owned file family holds restart approvals: one record per
-`<repo>#<pr>` at an exact head, written only by `approve-restart`, which the
-user runs in their own terminal. A herder claims a record (single use) before
-it restarts an ended review run; an orchestrator may print the command but
-never runs it.
+`<repo>#<pr>` at an exact head, created by `approve-restart`, which the user
+runs in their own terminal. A herder claims a record (single use) before it
+restarts an ended review run; an orchestrator may print the command but never
+runs it. The terminal prompt guards against accidents; it is not a barrier
+against a process running as the same user, so the skills' rule that agents
+never approve or write a record is the control.
 
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval.
@@ -1168,10 +1170,11 @@ def state_paths(repo: str, skill: str, key: str | None) -> dict[str, str]:
 APPROVAL_VERSION = 1
 APPROVAL_MAX_TTL_HOURS = 72
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+APPROVAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def approvals_dir(repo: str) -> Path:
-    """User-owned, outside any checkout, beside the user's herd.json."""
+    """User-owned, outside any checkout, under $XDG_CONFIG_HOME/activeloom."""
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "activeloom" / "herd-approvals" / flat_repo(repo)
 
@@ -1203,6 +1206,8 @@ def approve_restart(
 ) -> dict[str, Any]:
     if not 1 <= ttl_hours <= APPROVAL_MAX_TTL_HOURS:
         raise UsageError(f"--ttl-hours must be between 1 and {APPROVAL_MAX_TTL_HOURS}")
+    if scope_decision == "split":
+        raise UsageError("a split must be done before a restart; approve the new PR's head instead")
     target = _approval_target(repo, pr, head)
     if confirm.strip() != f"restart {pr}":
         raise UsageError("confirmation did not match; nothing written")
@@ -1247,15 +1252,30 @@ def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
             raise ApprovalError(f"approval {field} does not match: recorded {record.get(field)!r}")
     if record.get("used") is not None:
         raise ApprovalError(f"approval {record.get('id')} was already used at {record['used']}")
-    if record.get("scope_decision") not in (None, "keep", "split") or not isinstance(record.get("deep"), bool):
+    if (
+        not isinstance(record.get("id"), str)
+        or not APPROVAL_ID_RE.match(record["id"])
+        or record.get("scope_decision") not in (None, "keep")
+        or not isinstance(record.get("deep"), bool)
+    ):
         raise ApprovalError(f"{path}: malformed approval record")
-    try:
-        expires = datetime.fromisoformat(str(record.get("expires")).replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ApprovalError(f"{path}: malformed expiry") from exc
-    if expires <= _now():
-        raise ApprovalError(f"approval {record.get('id')} expired at {record['expires']}")
+    created, expires = (_parse_moment(path, record.get(field)) for field in ("created", "expires"))
+    now = _now()
+    if created > now or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+        raise ApprovalError(f"{path}: approval times out of range")
+    if expires <= now:
+        raise ApprovalError(f"approval {record['id']} expired at {record['expires']}")
     return record
+
+
+def _parse_moment(path: Path, value: Any) -> datetime:
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApprovalError(f"{path}: malformed timestamp") from exc
+    if moment.tzinfo is None:
+        raise ApprovalError(f"{path}: timestamp has no timezone")
+    return moment
 
 
 def check_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
@@ -1364,7 +1384,7 @@ def main(argv: list[str] | None = None) -> int:
 
     approve = commands.add_parser(
         "approve-restart",
-        help="USER ONLY, in your own terminal: approve one restart of an ended review run",
+        help="for you to run in your own terminal: approve one restart of an ended review run",
     )
     check = commands.add_parser("check-restart", help="read-only: is there a valid restart approval")
     claim = commands.add_parser("claim-restart", help="verify and consume a restart approval (single use)")
@@ -1403,7 +1423,7 @@ def main(argv: list[str] | None = None) -> int:
                 _emit(claim_restart(args.repo, args.pr, args.head))
             else:
                 if not sys.stdin.isatty():
-                    raise UsageError("approve-restart needs your own terminal; an agent session cannot approve")
+                    raise UsageError("approve-restart reads your confirmation from an interactive terminal; nothing written")
                 print(
                     f"Approve one restart of the review run on {args.repo}#{args.pr} at {args.head[:12]}"
                     f" (expires in {args.ttl_hours}h). Type 'restart {args.pr}' to confirm: ",

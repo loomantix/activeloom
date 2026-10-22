@@ -212,7 +212,7 @@ Where it stops:
 - **Converged, CI red:** the PR stays draft; you get the failing job and the same job's latest result on the base branch. It does not fix CI.
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
-- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the run controller will ask for one (six or more feat/fix/perf commits, or a changed file GitHub shows without a patch). Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so. Instead of typing, you can record a [restart approval](#restart-approvals) from your own terminal; the herder claims it before restarting.
+- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the run controller will ask for one (six or more feat/fix/perf commits, or a changed file GitHub shows without a patch). Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so. Instead of typing, you can record a [restart approval](#restart-approvals) from your own terminal and then invoke `/hreview 42` again in that tab; the herder claims the approval before restarting.
 - **Blocked:** anything it cannot decide within the rules.
 
 It never merges, marks a PR ready only through the converged path or the auto-glance clean-result and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
@@ -385,9 +385,10 @@ python3 -I .claude/skills/hreview/scripts/herd-config.py approve-restart \
   --repo owner/name --pr 42 --head <full head sha> [--scope-decision keep|split] [--deep] [--ttl-hours 4]
 ```
 
-- Run it in your own terminal. It needs an interactive terminal and asks you to type `restart 42`; an agent session cannot complete it.
-- The record goes to `~/.config/activeloom/herd-approvals/<owner>__<name>/` (`herd-config.py paths` prints it as `approvals`), outside every checkout, readable and writable only by you. It holds the repository, PR, exact head, created and expiry times (default 4 hours, at most 72), and your `--deep` and `--scope-decision` choices.
-- The herder runs `claim-restart` just before `start-run --restart`: the repository, PR and exact head must match, the record must be unexpired and unused, and claiming marks it used, so it authorizes one restart. The run's authorization comment cites the approval's ID and time, never your words.
+- Run it in your own terminal. It reads an interactive terminal and asks you to type `restart 42`. That prompt guards against accidents, not against an agent: any process running as your user can write a record. What keeps agents out is the herd skills' rule that they never run `approve-restart` or write a record (see [Running unattended safely](#running-unattended-safely)).
+- `--scope-decision split` is refused: a split has to happen before a restart, so approve the new PR's head instead.
+- The record goes to `~/.config/activeloom/herd-approvals/<owner>__<name>/` (`herd-config.py paths` prints it as `approvals`), outside every checkout, created readable and writable only by you. It holds the repository, PR, exact head, created and expiry times (default 4 hours, at most 72), and your `--deep` and `--scope-decision` choices.
+- The herder first reads the record with `check-restart`. If the run controller will ask for a scope decision and the record has none, it stops without using the approval. Otherwise it runs `claim-restart` just before `start-run --restart`: the repository, PR and exact head must match, the record must be unexpired and unused, and claiming marks it used, so it authorizes one restart. The run's authorization comment cites the approval's ID and time, never your words.
 - The orchestrator may print the command; it never runs it or writes a record. `check-restart` is the read-only check it uses before starting a herder.
 - Under Claude Code auto mode, the classifier may still refuse the herder's `start-run --restart`. A settings entry for it belongs with the `claude-settings` check (loomantix/activeloom#457); until that check covers it, a refusal there is a block, and typing `--restart` in the herder's tab is the fallback.
 
@@ -400,6 +401,8 @@ Herd sessions read pull request diffs, issue bodies and comments. In a public re
 | None (the default)                                                                     | Nothing you do not approve; panes stop at every prompt                                                    |
 | Claude `--permission-mode auto`, Codex `--approve-for-me`                              | What the classifier or automatic reviewer lets through; Codex commands stay in its sandbox                |
 | Claude or Agy `--dangerously-skip-permissions`, Codex `-a never -s danger-full-access` | Anything your user account can do: run commands, read files, use your `gh` token, push, reach the network |
+
+A restart approval is a file in your config directory, so any setting that lets a planted instruction run commands or write files also lets it write a [restart approval](#restart-approvals). The worst it can do is start a new review run; it cannot merge.
 
 Before you turn on the full bypass:
 
@@ -455,7 +458,7 @@ Each engine launches with its model and effort from your review profile and its 
 
 **A review run ended and the orchestrator will not restart it.** By design. Either open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`, or record a [restart approval](#restart-approvals) and tell the orchestrator to continue. The orchestrator cannot pass your approval on for you.
 
-**`claim-restart` exits 4.** No approval matches the PR at its exact current head, unexpired and unused. A push after you approved moves the head; approve again at the new head.
+**`claim-restart` exits 4.** No approval matches the PR at its exact current head, unexpired and unused, or the record is malformed or has unsafe permissions; the stderr line names the cause. A push after you approved moves the head; approve again at the new head.
 
 **A lock is held.** `hgrill` and `hpromote` lock per issue and per day. A block leaves the lock on purpose. Once you have dealt with the block, release it with `herd-config.py unlock` using the same `--repo`, `--skill` and `--key`.
 
