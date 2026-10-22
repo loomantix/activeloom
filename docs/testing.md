@@ -35,6 +35,12 @@ pinned dependency once per checkout or worktree with
 prompt rendering, CLI tests, and review-ledger package validation keep their
 existing commands in CI and the review contract.
 
+The comment-verifier tests also require the pinned TypeScript compiler from
+`packages/review-ledger`. Prepare it with
+`pnpm --dir packages/review-ledger install --frozen-lockfile --ignore-scripts`.
+The repository review contract runs this install before the skill and ledger
+package checks that need it.
+
 Bare `python3 -m pytest`, including old `pytest tests/ -n 4` commands, defaults
 to the fast lane. The selector is independent of `-m` and `-k`: a marker or name
 filter does not opt into regression. Direct pytest invocations do not have the

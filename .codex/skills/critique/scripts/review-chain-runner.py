@@ -317,6 +317,15 @@ def json_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def validation_receipt_identity(value: Any) -> Any:
+    """Gate mapping order can change when a checkpoint is serialized."""
+    if isinstance(value, dict):
+        gates = value.get("gates")
+        if isinstance(gates, list) and all(isinstance(gate, str) for gate in gates):
+            return {**value, "gates": sorted(gates)}
+    return value
+
+
 def darwin_process_environment(pid: int) -> dict[bytes, bytes]:
     """Read KERN_PROCARGS2 without exposing arguments or environment in diagnostics."""
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -1352,7 +1361,9 @@ class Runner:
         except UnicodeDecodeError as error:
             raise Blocked("validation gate paths must be UTF-8") from error
 
-    def resolved_validation(self, head: str) -> dict[str, Any]:
+    def resolved_validation(
+        self, head: str, gate_order: list[str] | None = None
+    ) -> dict[str, Any]:
         validation = self.state["config"].get("validation")
         if not validation:
             return {
@@ -1371,7 +1382,8 @@ class Runner:
         paths = self.changed_paths(self.state["base"], head)
         selected: list[str] = []
         unmatched = not paths
-        for name, gate in contract["gates"].items():
+        # Checkpoints sort mapping keys; select in that order so a resume matches.
+        for name, gate in sorted(contract["gates"].items()):
             if name == fallback:
                 continue
             if gate["always"]:
@@ -1394,6 +1406,12 @@ class Runner:
                 break
         if unmatched:
             selected.append(fallback)
+        if gate_order is not None:
+            if not all(isinstance(name, str) for name in gate_order) or sorted(
+                gate_order
+            ) != sorted(selected):
+                raise Blocked("saved validation gates do not match selected gates")
+            selected = gate_order
         commands: list[dict[str, Any]] = []
         seen: dict[str, int] = {}
         for name in selected:
@@ -1425,6 +1443,25 @@ class Runner:
                 [command["environment"] for command in commands]
             ),
         }
+
+    def validation_receipt_matches(
+        self, saved: Any, expected: dict[str, Any]
+    ) -> bool:
+        if validation_receipt_identity(saved) == validation_receipt_identity(expected):
+            return True
+        if not isinstance(saved, dict) or not isinstance(saved.get("gates"), list):
+            return False
+        if saved.get("gates") == expected.get("gates"):
+            return False
+        if not self.state or not self.state.get("config", {}).get("validation"):
+            return False
+        try:
+            historical = self.resolved_validation(expected["head"], saved["gates"])
+        except Blocked:
+            return False
+        return validation_receipt_identity(saved) == validation_receipt_identity(
+            {**expected, "environment_sha256": historical["environment_sha256"]}
+        )
 
     def initialize(self) -> None:
         if Path.cwd().resolve() != self.repository_root():
@@ -2460,7 +2497,9 @@ class Runner:
         if not receipt.is_file() or digest(receipt) != citation["validated_sha256"]:
             raise Blocked("cited validation gate evidence changed")
         cited = read(receipt)
-        if {**cited, "result": expected["result"]} != expected:
+        if not self.validation_receipt_matches(
+            {**cited, "result": expected["result"]}, expected
+        ):
             raise Blocked("cited validation gate does not cover this head and gates")
         return str(citation["pass"])
 
@@ -3109,7 +3148,7 @@ class Runner:
             if isinstance(saved_validation, dict)
             else None
         )
-        if saved_validation != expected_validation:
+        if not self.validation_receipt_matches(saved_validation, expected_validation):
             raise Blocked("saved validation does not name this exact head and result")
         cited_pass = (
             self.verify_gate_citation(citation, expected_validation)

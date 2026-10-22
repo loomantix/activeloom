@@ -6445,3 +6445,77 @@ def test_v2_migration_preserves_attempts_and_pins(harness: Any, monkeypatch: pyt
     assert h.module.read(h.directory / f"state-v2-{HEAD}.json") == prior
     for key in ("attempts", "pending", "completed", "run_id", "review_settings", "installation_revision"):
         assert runner.state.get(key) == prior.get(key)
+
+
+@pytest.mark.parametrize("tamper", [None, "gates", "head", "result", "manifest_sha256", "environment_sha256"])
+def test_resume_preserves_receipt_across_gate_order_change(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tamper: str | None
+) -> None:
+    h = harness
+    contract = validation_contract(h.module)
+    contract["contract"]["gates"]["backend"]["environment"] = {}
+    contract["contract"]["gates"]["aaa_baseline"] = {
+        "paths": [],
+        "always": True,
+        "commands": [[sys.executable, "-c", "pass"]],
+        "environment": {"BASELINE": "1"},
+    }
+    h.args.check = None
+    monkeypatch.setattr(h.runner, "validation_contract", lambda self, base: contract)
+    monkeypatch.setattr(
+        h.runner, "changed_paths", lambda self, base, head: ["apps/backend/api.py"]
+    )
+    original_helper = h.runner.helper
+
+    def interrupted_helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if name == "ledger" and parts[0] == "attest":
+            raise h.module.Blocked("interrupted before attestation")
+        return dict(original_helper(self, name, *parts))
+
+    monkeypatch.setattr(h.runner, "helper", interrupted_helper)
+    with pytest.raises(h.module.Blocked, match="interrupted before attestation"):
+        h.runner(h.args, h.directory).run()
+    receipt = h.directory / "pass-1" / "validated.json"
+    saved = h.module.read(receipt)
+    assert saved["gates"] == ["aaa_baseline", "backend"]
+    # A receipt written before selection was sorted keeps declaration order.
+    saved["gates"] = ["backend", "aaa_baseline"]
+    saved["environment_sha256"] = h.module.json_digest(
+        [
+            {**contract["base_environment"], **contract["contract"]["gates"][name]["environment"]}
+            for name in saved["gates"]
+        ]
+    )
+    if tamper:
+        saved[tamper] = (
+            ["aaa_baseline", "backend", "backend"] if tamper == "gates" else "changed"
+        )
+    h.module.save(receipt, saved)
+    monkeypatch.setattr(h.runner, "helper", original_helper)
+    original_receipt = receipt.read_bytes()
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if tamper:
+        with pytest.raises(h.module.Blocked, match="saved validation"):
+            resumed.run()
+    else:
+        assert resumed.run() == "converged"
+        assert len(h.launches) == 4
+    assert receipt.read_bytes() == original_receipt
+
+
+def test_citation_keeps_original_gate_order_receipt(harness: Any) -> None:
+    h = harness
+    runner = h.runner(h.args, h.directory)
+    folder = h.directory / "pass-1"
+    folder.mkdir(parents=True)
+    saved = {"head": HEAD, "result": "original", "gates": ["z", "a"], "environment_sha256": "env"}
+    receipt = folder / "validated.json"
+    h.module.save(receipt, saved)
+    original = receipt.read_bytes()
+    citation = runner.gate_citation("pass-1", HEAD)
+    expected = {**saved, "result": "next-pass", "gates": ["a", "z"]}
+    assert runner.verify_gate_citation(citation, expected) == "pass-1"
+    assert receipt.read_bytes() == original
+    with pytest.raises(h.module.Blocked, match="does not cover"):
+        runner.verify_gate_citation(citation, {**expected, "environment_sha256": "changed"})
