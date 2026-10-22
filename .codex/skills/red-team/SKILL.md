@@ -66,7 +66,7 @@ Then stop and ask the user to decide: accept the recommendations as they stand, 
 
 **Follow-up issue.** Search the open issues for an existing one first and link it instead of filing a duplicate. Draft one issue per remaining finding: a title, the scenario, the evidence, the suggested fix, and a link to the PR and head SHA. Also draft one PR comment listing the follow-ups, so whoever merges sees them. Show every draft in a single preview and create them on one confirmation.
 
-Issue bodies are public wherever the tracker is. Keep credentials, private data, and reproduction detail that would let someone exploit a security finding out of them. A security finding in a public repository follows the repository's `SECURITY.md` disclosure path instead of a public issue.
+Issue bodies are public wherever the tracker is. Keep credentials, private data, and reproduction detail that would let someone exploit a security finding out of them. A security finding in a public repository follows the repository's `SECURITY.md` disclosure path instead of a public issue, and stays out of the PR comment too; that comment says at most that one finding was reported privately.
 
 **Accept.** No action; it appears in the summary with its stated condition.
 
