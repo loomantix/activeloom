@@ -4378,7 +4378,9 @@ def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkou
     assert "agent-loop/issue-41-" not in _run_git("branch", "--list", cwd=repo).stdout
 
 
-def _blocked_slip_hook(tmp_path: Path, *, resolved: bool = True) -> Path:
+def _blocked_slip_hook(
+    tmp_path: Path, *, resolved: bool = True, blocker: str = "write-result: fixed finding was not posted before its disposition head"
+) -> Path:
     """Round 1 publishes a posted fix, then posts a cleanup finding at the
     published head (the ordering slip) and writes a blocked result; later rounds
     are clean."""
@@ -4431,7 +4433,7 @@ def thread(fingerprint, severity, finding_head):
 threads = [thread("real-fix", "major", before), thread("cleanup", "nit", after)]
 Path(env["AGENT_STATE_DIR"], "review-threads.json").write_text(json.dumps(threads))
 blocker = Path(env["AGENT_LOOP_LOG_DIR"], "blocker.md")
-blocker.write_text("write-result: fixed finding was not posted before its disposition head\\n")
+blocker.write_text({blocker!r} + "\\n")
 subprocess.run(["node", ledger, "write-blocked-result", *identity, "--head", after,
     "--result-file", env["AGENT_LOOP_REVIEW_RESULT_FILE"], "--blocker-file", str(blocker)],
     check=True)
@@ -4476,5 +4478,27 @@ def test_v3_blocked_slip_with_an_incomplete_ledger_still_stops(
     assert result.returncode != 0
     assert "Codex review blocked in round 1" in result.stderr
     assert "Stop category: review-blocked" in result.stderr
+    assert "recovered: blocked-round" not in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_blocked_slip_does_not_hide_an_unrelated_blocker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "93"],
+        issues=[_issue(93)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=str(
+                _blocked_slip_hook(tmp_path, blocker="review lane did not finish")
+            ),
+            review_max_rounds=2,
+        ),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Codex review blocked in round 1: review lane did not finish" in result.stderr
     assert "recovered: blocked-round" not in result.stdout
     assert not (consumer[3] / "pr-ready").exists()

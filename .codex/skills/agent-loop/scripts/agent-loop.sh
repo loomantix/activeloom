@@ -2483,7 +2483,7 @@ run_review_pass() {
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local review_push_lock_file
     local historical_comment_ids_signature direct_review_engine
-    local result_recovery_signature=missing recovered_result_json blocked_round_json
+    local result_recovery_signature=missing current_recovery_signature recovered_result_json blocked_round_json
     local review_hook_status
     local boundary_status
 
@@ -2670,6 +2670,10 @@ run_review_pass() {
             esac
         fi
         if [ "$result_status" = blocked ] && \
+            [[ "$blocker" == *"fixed finding was not posted before its disposition head"* || \
+               "$blocker" == *"convergence review results cannot fix non-blocking findings"* ]] && \
+            current_recovery_signature="$(review_outcome_signature "$result_file.recovery.json")" && \
+            [ "$current_recovery_signature" = "$result_recovery_signature" ] && \
             blocked_round_json="$(recover_blocked_round "$slug" "$round" \
                 "$before_sha" "$after_sha" "$historical_comment_ids_file")"; then
             echo "   recovered: blocked-round ($engine, round $round); its published fix is reviewed again next round"
