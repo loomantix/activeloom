@@ -81,7 +81,8 @@ If `H`, `P` or `C` is missing, or an engine pane does not know `red-team`, stop:
    repository's <<AGENT_DOC>> names, then push normally. Do not force-push,
    comment on GitHub, mark the PR ready, merge, or change anything a listed
    finding does not need. A finding you cannot reproduce or cannot fix stays
-   unfixed: say why, with evidence.
+   unfixed: say why, with evidence, and commit nothing for it, not even its
+   reproduction test.
    Reply with one JSON object, under 600 words, between a line FIX-BEGIN and
    a line FIX-END: {"head": "<new head>", "results": [{"id": 1,
    "outcome": "fixed|not-reproduced|not-fixed", "commit": "<sha or empty>",
