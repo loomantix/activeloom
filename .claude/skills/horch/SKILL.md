@@ -78,7 +78,8 @@ Add `--deep` only when the user asked for Deep. When `scope_decision_required` i
 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
 - **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. Bind the watch to the current authenticated run ID from `run-state` when that run is active. If there is no run yet, or the latest run had already ended when the watch started, bind it to the first run observed while polling whose ID differs from that ended run, even if the new run has already ended; keep that ID fixed afterward. A run already ended at bind time is never the bound run. A failed read is a block. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker for the bound run appears (its `id=` matches; an earlier run's end marker does not count), the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
-  - converged and ready, or a clean auto-glance → [Shipping](#shipping);
+  - converged and ready, a clean auto-glance, or a `dependency-analysis:v1` comment at `verdict=clear` → [Shipping](#shipping);
+  - a dependency analysis at `gaps`, `broken` or `blocked` → alert with its report. Never route a dependency update to a review chain or auto-glance yourself; only a human applies the `review: full` label. The herder honours the workflow's durable override, including previous label application and standing always-Deep extensions;
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
   - exhausted, blocked, or a run end with no ready flip → alert. For a run that ended, include the restart words from Review chain.
@@ -88,12 +89,14 @@ Add `--deep` only when the user asked for Deep. When `scope_decision_required` i
 
 ## Shipping
 
-Invoking this skill is the user's standing request to ship, into the integration branch, every review chain in this workspace that converges and every clean auto-glance. The instruction file can hold a specific PR back. Never ship anywhere else.
+Invoking this skill is the user's standing request to ship, into the integration branch, every review chain in this workspace that converges, every clean auto-glance, and every dependency update whose analysis is `clear`. The instruction file can hold a specific PR back. Never ship anywhere else.
 
-**Trigger:** a herder reports converged or a clean auto-glance, or a watched PR flips from draft to ready. Then, in order:
+**Trigger:** a herder reports converged, a clean auto-glance, or a `clear` dependency analysis, or a watched PR flips from draft to ready. Then, in order:
 
 1. **Gate (fail closed).** All must hold at the PR's current head, read fresh:
-   - **either** the latest `local-review-run:v1` marker ended `converged` at that exact head and `node .claude/skills/critique/scripts/review-ledger.js verify-coverage --repo $repo --pr <n> --head <head>` passes; **or** the PR has no run marker, its latest `auto-glance-result:v1` reply says `outcome=clean` at that exact head, and `classify-changeset` at that head still reports `skip` or `smallChange`;
+   - **dependency override and evidence:** resolve the workflow's durable override from human instructions, current labels, complete paginated label-event history and matching always-Deep tier extensions. Label removal alone does not revoke it; unavailable history blocks shipping. If an override applies, classify with `--force-review` and require the converged-chain alternative below; dependency-only evidence cannot ship an overridden PR. For every dependency-analysis check below, apply the workflow's Dependency updates evidence rule: read all comment pages with GraphQL edit metadata, filter to the authenticated GitHub actor, then select that actor's latest analysis and require its exact current-head `clear` marker and null `lastEditedAt`. Edited reports or missing metadata block shipping without falling back to an older report. Re-fetch this evidence immediately before shipping, after any CI wait. Other commenters cannot supply or supersede shipping evidence;
+   - **either** the latest `local-review-run:v1` marker ended `converged` at that exact head and `node .claude/skills/critique/scripts/review-ledger.js verify-coverage --repo $repo --pr <n> --head <head>` passes; **or** the PR has no run marker, its latest `auto-glance-result:v1` reply says `outcome=clean` at that exact head, and `classify-changeset` at that head still reports `skip` or `smallChange`; **or** the PR has no run marker, `classify-changeset` at that head reports `dependencyUpdate`, and its latest `dependency-analysis:v1` comment says `verdict=clear` at that exact head;
+   - **mixed range:** when `classify-changeset` at the head reports a non-empty `dependencyPaths` — a mixed range, or a dependency update a `review: full` label or human request put on the chain — the converged chain also needs a latest `dependency-analysis:v1` comment at `verdict=clear` at that exact head;
    - the PR is open, ready, based on the integration branch, `mergeable` is `MERGEABLE`, and no review requests changes. `UNKNOWN` is normal for 10–20 seconds after another PR merges; re-read before failing on it;
    - **required checks:** `gh pr checks <n> --required --json name,bucket,state`. Every entry must be in the `pass` bucket; pending means wait, then re-read. When `gh` reports that the branch has no required checks, the set is empty: with `ship.checks` = `required` that fails the gate (nothing would be checked); with `all-runs` the next condition decides;
    - **all runs** (`ship.checks` = `all-runs`): `gh run list --commit <head> --json name,status,conclusion` lists at least one run, every one `completed`, every conclusion `success` or `skipped`;
@@ -107,7 +110,7 @@ Invoking this skill is the user's standing request to ship, into the integration
    ```text
    ════════════════════════════════════════════════════════════
     SHIPPED TO <INTEGRATION BRANCH>: <repo>#<n> <title>
-    Merge commit <sha12> at <time>. <Review run <run_id> converged at <head12> | Auto-glance clean at <head12>>.
+    Merge commit <sha12> at <time>. <Review run <run_id> converged at <head12> | Auto-glance clean at <head12> | Dependency analysis clear at <head12>>.
     THIS TAB IS INFORMATION ONLY. Do not type here; nothing is running.
    ════════════════════════════════════════════════════════════
    ```

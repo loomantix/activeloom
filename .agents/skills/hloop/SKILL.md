@@ -62,7 +62,8 @@ On `BUILD-PR: <pr> <sha>`:
 
 Read the herder's pane, then:
 
-- **converged or clean auto-glance** → step 5;
+- **converged or clean auto-glance**, or a dependency analysis at `verdict=clear` → step 5;
+- **dependency analysis at `gaps`, `broken` or `blocked`** → send the report to a fix session for `broken`; otherwise `horch`'s Problems. Do not start a review chain on the dependency update unless the workflow's durable dependency review override applies (including a previously applied label or a matching always-Deep extension);
 - **auto-glance in progress** → keep watching the same herder; `hreview` owns it;
 - **stopped at the glance gate** → `horch`'s human-glance alert or block handling; do not launch another auto-glance or override the gate;
 - **glance with findings** → send the findings to a fix session (the build's session if it is still open, otherwise a new one in the PR's tab), then glance again at the new head;
@@ -71,7 +72,7 @@ Read the herder's pane, then:
 ## 5. Ship
 
 1. **Tests at the head.** CI on PRs to the integration branch may skip test jobs, so run, in the PR's worktree at its head, the specs the PR added or changed, and the full suite when the PR changes shared logic or a dependency. The repository's `AGENTS.md` names the commands and any environment the database-backed tests need. Check the skipped count: tests that skip for a missing environment are not a pass. Give each database-backed lane its own fresh database with migrations applied before the run; a lane whose setup fails reports its tests as skipped next to a `FAIL` line, so read the skipped count of each target file, not the run's total. If the build session removed its worktree, use a detached one at the head under `worktree_root` and remove it afterwards. A failure is a block.
-2. **Ship** through `horch`'s Shipping (if the converged PR is still in draft, mark it ready with `gh pr ready <pr>` first), with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
+2. **Ship** through `horch`'s Shipping (if the converged PR is still in draft, mark it ready with `gh pr ready <pr>` first — but when `classify-changeset` at the head reports a non-empty `dependencyPaths`, only after the workflow's Dependency updates evidence rule finds a `clear` analysis at that head; a failed classification counts as mixed; otherwise leave it draft and go to `horch`'s Problems), with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
 3. **Deferred findings.** A herder's final report can list findings the reviewers deferred. For the ones that are confirmed and user-visible, file one follow-up issue per PR, quoting each comment's file and line, with acceptance criteria. Label it `dev: agent` but **not** `agent: refined`, so the next batch skips it until it is refined. Test gaps go in the same issue. First search open issues for the PR number and each finding's file: the herder may already have filed it.
 4. **Clean up.** Remove the build worktree and its local branch, skipping whatever the merge already removed. Leave the review tab as `horch` says.
 5. Start any queued or serialized issue, unless a hold is set.

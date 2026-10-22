@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.9.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.10.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -17313,6 +17313,421 @@ function verifyLedger(params) {
   return { actor, dispositions: matched.length, verified: true };
 }
 
+// src/dependency.ts
+var LOCKFILE_BASENAMES = /* @__PURE__ */ new Set([
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "bun.lockb",
+  "bun.lock",
+  "deno.lock",
+  "cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+  "pipfile.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "go.sum",
+  "go.work.sum",
+  "flake.lock",
+  "podfile.lock",
+  "pubspec.lock",
+  "package.resolved",
+  "packages.lock.json",
+  "gradle.lockfile",
+  ".terraform.lock.hcl"
+]);
+var MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "pnpm-workspace.yaml",
+  "deno.json",
+  "deno.jsonc",
+  "composer.json",
+  "pyproject.toml",
+  "pipfile",
+  "setup.cfg",
+  "cargo.toml",
+  "go.mod",
+  "go.work",
+  "gemfile",
+  "podfile",
+  "pubspec.yaml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "mix.exs"
+]);
+var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.(txt|in)$/;
+var OWN_VERSION_KEYS = /* @__PURE__ */ new Set(["version"]);
+var VERSION_PATTERN = /(?:[*xX]|\d+(?:(?:\.(?:\d+|[*xX]))+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:a|b|rc|alpha|beta|pre|post|dev)\d*)?)/;
+var VERSION_VALUE = new RegExp(
+  `^(?=[^\\d]*\\d)[\\^~<>=!*vV]*\\s*${VERSION_PATTERN.source}(\\s*(\\|\\||,|\\s)\\s*[\\^~<>=!]*\\s*v?${VERSION_PATTERN.source})*$`
+);
+var PROTOCOL_VALUE = /^(?:workspace:(?:[*^~]|[\^~<>=!vV]*\d[\dA-Za-z.*+-]*)|catalog:[\w.-]*|(?:npm|jsr):@?[\w./-]+@[\^~<>=!*vV\d][\dA-Za-z.*+-]*)$/;
+var AT_VERSION_VALUE = /^(?:@[\w.-]+\/)?\w[\w.-]*@v?\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(\+(?:sha\d*\.[0-9a-f]+|[0-9A-Za-z.-]+))?$/;
+function maskVersionValue(value) {
+  const alias = /^((?:npm|jsr):@?[\w./-]+@)/.exec(value);
+  if (alias) return `${alias[1]}<pin>`;
+  if (value.startsWith("workspace:")) return "workspace:<pin>";
+  if (value.startsWith("catalog:")) return value;
+  const named = /^(@?[\w./-]+@)v?\d/.exec(value);
+  if (named) return `${named[1]}<pin>`;
+  return "<pin>";
+}
+function maskQuotedVersion(raw) {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  return quoted ? `${quoted[1]}${maskVersionValue(quoted[2])}${quoted[1]}` : maskVersionValue(raw);
+}
+function maskImageReference(raw) {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  const reference = (quoted ? quoted[2] : raw).replace(
+    /@sha256:[0-9a-f]{64}$/,
+    ""
+  );
+  const tag = reference.lastIndexOf(":");
+  const repository = tag > reference.lastIndexOf("/") ? reference.slice(0, tag) : reference;
+  const quote = quoted?.[1] ?? "";
+  return `${quote}${repository}@<pin>${quote}`;
+}
+var STRUCTURE_ONLY = /^[[\]{}(),]*$/;
+function requiresQuotedManifestValue(name) {
+  return name.endsWith(".json") || name.endsWith(".jsonc") || name.endsWith(".toml") || name === "pipfile";
+}
+function isVersionValue(raw, requireQuoted = false) {
+  const trimmed = raw.trim().replace(/,$/, "").trim();
+  const isQuoted = trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("'") && trimmed.endsWith("'");
+  if (requireQuoted && !isQuoted) {
+    return false;
+  }
+  const value = isQuoted ? trimmed.slice(1, -1).trim() : trimmed;
+  return VERSION_VALUE.test(value) || PROTOCOL_VALUE.test(value) || AT_VERSION_VALUE.test(value);
+}
+function isKeyedVersionLine(name, line) {
+  const match = /^(?:-\s+)?(?:"(@?[\w][\w@./:-]*)"|'(@?[\w][\w@./:-]*)'|(@?[\w][\w@./-]*))\s*[:=]\s*(.+)$/.exec(
+    line
+  );
+  if (!match) {
+    return false;
+  }
+  const key = (match[1] ?? match[2] ?? match[3]).toLowerCase();
+  const value = match[4].trim().replace(/,$/, "").trim();
+  if (OWN_VERSION_KEYS.has(key)) {
+    return false;
+  }
+  if (name.endsWith(".toml") && /\.(git|path|branch|rev|tag|registry|package)$/.test(key)) {
+    return false;
+  }
+  if (value.startsWith("{")) {
+    if (!value.endsWith("}") || /\b(git|path|branch|rev|tag)\s*=/.test(value)) {
+      return false;
+    }
+    const inline = /\bversion\s*=\s*("[^"]*"|'[^']*')/.exec(value);
+    return inline !== null && isVersionValue(inline[1], true);
+  }
+  return isVersionValue(value, requiresQuotedManifestValue(name));
+}
+function isRequirementPinLine(line) {
+  return /^[A-Za-z0-9][\w.\-[\],]*\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+(\s*,\s*(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+)*(\s*;[^\\]*)?(\s*\\)?$/.test(
+    line
+  );
+}
+function isRequirementAuxiliaryLine(line) {
+  return line.startsWith("#") || /^--hash=\S+(\s*\\)?$/.test(line);
+}
+function isGoModPinLine(line) {
+  return /^(require\s+)?[\w.~/-]+\s+v\d[\w.+-]*(\s*\/\/\s*indirect)?$/.test(line) || /^(go|toolchain)\s+(go)?\d[\w.]*$/.test(line);
+}
+function isMavenLine(line) {
+  return /^<version>\s*v?\d[\w.+-]*\s*<\/version>$/.test(line);
+}
+function isGradleLine(line) {
+  return /^\w+\s*\(?\s*["'][\w.-]+:[\w.-]+:v?\d[\w.+-]*["']\s*\)?$/.test(line);
+}
+function isGemLine(line) {
+  return /^(gem|pod)\s+["'][\w.-]+["']\s*,\s*["'][~<>=!\s\d.]+["'](\s*,\s*["'][~<>=!\s\d.]+["'])*$/.test(
+    line
+  );
+}
+function isMixLine(line) {
+  return /^\{:\w+,\s*"[~<>=\s\d.]+"\}\s*,?$/.test(line);
+}
+function isManifestPinLine(name, line) {
+  if (name === "go.mod" || name === "go.work") {
+    return isGoModPinLine(line);
+  }
+  if (name === "pom.xml") {
+    return isMavenLine(line);
+  }
+  if (name === "build.gradle" || name === "build.gradle.kts") {
+    return isGradleLine(line);
+  }
+  if (name === "gemfile" || name === "podfile") {
+    return isGemLine(line);
+  }
+  if (name === "mix.exs") {
+    return isMixLine(line);
+  }
+  if (name === "setup.cfg" || name === "pyproject.toml" || name === "pipfile") {
+    const quoted = /^["']([^"']+)["']\s*,?$/.exec(line);
+    if (quoted && isRequirementPinLine(quoted[1].trim())) {
+      return true;
+    }
+    if (name === "setup.cfg" && isRequirementPinLine(line)) {
+      return true;
+    }
+  }
+  return isKeyedVersionLine(name, line);
+}
+function isManifestAuxiliaryLine(name, line) {
+  if (STRUCTURE_ONLY.test(line)) {
+    return true;
+  }
+  if (name === "go.mod" || name === "go.work") {
+    return line.startsWith("//");
+  }
+  return line.startsWith("#") && !name.endsWith(".json");
+}
+function isActionPinLine(line) {
+  return /^(-\s+)?uses:\s*["']?[\w.-]+\/[\w./-]+@(?:v?\d[\dA-Za-z.+-]*|[0-9a-f]{40}|[0-9a-f]{64})["']?(\s+#.*)?$/.test(
+    line
+  );
+}
+function isImageReference(value) {
+  return /^["']?[\w.-]+(:\d+(?=\/))?(\/[\w.-]+)*(?::[\w][\w.-]*(?:@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})["']?$/.test(
+    value
+  );
+}
+function isImageLine(line) {
+  const match = /^(-\s+)?image:\s*(\S+)(\s+#.*)?$/.exec(line);
+  return match !== null && isImageReference(match[2]);
+}
+function isImageTagLine(line) {
+  return /^(tag|digest):\s*["']?(v?\d[\w.+-]*|sha256:[0-9a-f]{64})["']?(\s+#.*)?$/.test(
+    line
+  );
+}
+function isDockerfileFromLine(line) {
+  const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
+    line
+  );
+  return match !== null && isImageReference(match[2]);
+}
+function isWorkflowPath(path, name) {
+  return path.startsWith(".github/workflows/") || path.startsWith(".github/actions/") || name === "action.yml" || name === "action.yaml";
+}
+function pinOnly(isPin) {
+  return { isPin, isAllowed: isPin };
+}
+function lineKind(path, name) {
+  if (LOCKFILE_BASENAMES.has(name)) {
+    return "lockfile";
+  }
+  if (MANIFEST_BASENAMES.has(name)) {
+    return {
+      isPin: (line) => isManifestPinLine(name, line),
+      isAllowed: (line) => isManifestPinLine(name, line) || isManifestAuxiliaryLine(name, line)
+    };
+  }
+  if (REQUIREMENTS_FILE.test(name)) {
+    return {
+      isPin: isRequirementPinLine,
+      isAllowed: (line) => isRequirementPinLine(line) || isRequirementAuxiliaryLine(line)
+    };
+  }
+  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+    return pinOnly(isDockerfileFromLine);
+  }
+  if (name.endsWith(".yml") || name.endsWith(".yaml")) {
+    if (isWorkflowPath(path, name)) {
+      return pinOnly((line) => isActionPinLine(line) || isImageLine(line));
+    }
+    if (/^values[\w.-]*\.ya?ml$/.test(name)) {
+      return pinOnly((line) => isImageLine(line) || isImageTagLine(line));
+    }
+    return pinOnly(isImageLine);
+  }
+  return null;
+}
+function dependencyNeedsContent(path) {
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const kind = lineKind(path, name);
+  return kind !== null && kind !== "lockfile";
+}
+function jsonSkeleton(name, content) {
+  try {
+    const value = JSON.parse(content);
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return null;
+    const document = value;
+    const sections = name === "package.json" ? [
+      "dependencies",
+      "devDependencies",
+      "peerDependencies",
+      "optionalDependencies",
+      "engines"
+    ] : name === "composer.json" ? ["require", "require-dev"] : ["imports"];
+    for (const section of sections) {
+      const entries = document[section];
+      if (!entries || typeof entries !== "object" || Array.isArray(entries))
+        continue;
+      for (const [key, pin] of Object.entries(entries)) {
+        if (typeof pin === "string" && isVersionValue(JSON.stringify(pin), true)) {
+          entries[key] = maskVersionValue(pin);
+        }
+      }
+    }
+    if (name === "package.json" && typeof document.packageManager === "string" && AT_VERSION_VALUE.test(document.packageManager)) {
+      document.packageManager = maskVersionValue(document.packageManager);
+    }
+    return JSON.stringify(document);
+  } catch {
+    return null;
+  }
+}
+function contentSkeleton(path, name, content) {
+  if (name.endsWith(".json")) return jsonSkeleton(name, content);
+  if (name.endsWith(".jsonc")) return null;
+  if (name.startsWith("build.gradle") || ["gemfile", "podfile", "mix.exs"].includes(name))
+    return null;
+  if ((/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) && (content.includes("<<") || /[\\`]\s*$/m.test(content)))
+    return null;
+  if ((name.endsWith(".toml") || name === "pipfile") && /'''|"""/.test(content))
+    return null;
+  let section = "";
+  let yamlSection = "";
+  let mavenArtifact = false;
+  const yaml = /\.ya?ml$/.test(name);
+  let scalarIndent;
+  let unsupportedQuotes = false;
+  const yamlParents = [];
+  const skeleton = content.split("\n").map((raw) => {
+    const line = raw.trim();
+    let yamlPath = [];
+    if (yaml) {
+      const indent = raw.length - raw.trimStart().length;
+      if (scalarIndent !== void 0) {
+        if (!line || indent > scalarIndent) return raw;
+        scalarIndent = void 0;
+      }
+      if (!line || line.startsWith("#")) return raw;
+      if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ""))) {
+        unsupportedQuotes = true;
+        return raw;
+      }
+      if (/(?:^|:\s+|-\s+)(?:[&!]\S*\s+)*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?$/.test(
+        raw
+      )) {
+        scalarIndent = indent;
+        return raw;
+      }
+      const entry = /^(\s*)(-\s+)?([\w.-]+):(?:\s|$)/.exec(raw);
+      const entryIndent = indent + (entry?.[2]?.length ?? 0);
+      while (yamlParents.length && yamlParents[yamlParents.length - 1].indent >= entryIndent)
+        yamlParents.pop();
+      if (entry) {
+        yamlPath = [...yamlParents.map((parent) => parent.key), entry[3]];
+        yamlParents.push({ key: entry[3], indent: entryIndent });
+      }
+    }
+    if (MANIFEST_BASENAMES.has(name)) {
+      if (name === "pom.xml") {
+        if (/^<(dependency|plugin|extension)>$/.test(line))
+          mavenArtifact = true;
+        else if (/^<\/(dependency|plugin|extension)>$/.test(line))
+          mavenArtifact = false;
+        if (!mavenArtifact) return raw;
+      }
+      if (name.endsWith(".toml") || name === "pipfile" || name === "setup.cfg") {
+        const header = /^\[([^\]]+)\]$/.exec(line);
+        if (line.startsWith("[")) section = header?.[1] ?? "";
+        const dependencySection = name === "cargo.toml" ? /^(?:(?:target\..+\.)?(?:dependencies|dev-dependencies|build-dependencies))$/.test(
+          section
+        ) : name === "pipfile" ? /^(packages|dev-packages)$/.test(section) : /^tool\.poetry\.(?:group\.[^.]+\.)?(?:dependencies|dev-dependencies)$/.test(
+          section
+        );
+        if (!dependencySection) return raw;
+      }
+      if (name.endsWith(".yaml")) {
+        const header = /^(\w+):\s*$/.exec(raw);
+        if (header) yamlSection = header[1];
+        else if (/^\S/.test(raw) && line && !line.startsWith("#"))
+          yamlSection = "";
+        if (!(name === "pnpm-workspace.yaml" ? /^(catalog|catalogs)$/ : /^(dependencies|dev_dependencies|dependency_overrides)$/).test(yamlSection))
+          return raw;
+      }
+      if (!isManifestPinLine(name, line)) return raw;
+      if (line.includes("{")) {
+        return raw.replace(
+          /(\bversion\s*=\s*)("[^"]*"|'[^']*')/,
+          '$1"<pin>"'
+        );
+      }
+      if (name === "go.mod" || name === "go.work")
+        return raw.replace(/(^|\s)(?:go)?v?\d[\w.+-]*(?=\s|$)/, "$1<pin>");
+      if (name === "pom.xml")
+        return raw.replace(/(<version>).*?(<\/version>)/, "$1<pin>$2");
+      return raw.replace(
+        /([:=]\s*)(.+?)(,?\s*)$/,
+        (_, prefix2, value, suffix) => `${prefix2}${maskQuotedVersion(value)}${suffix}`
+      );
+    }
+    if (REQUIREMENTS_FILE.test(name)) {
+      if (isRequirementPinLine(line))
+        return raw.replace(/(===|==|>=|<=|~=|!=|<|>)\s*[\w.*+!-]+/g, "<pin>");
+      if (/^--hash=/.test(line))
+        return raw.replace(/--hash=\S+/, "--hash=<pin>");
+      return raw;
+    }
+    if (isDockerfileFromLine(line)) {
+      return raw.replace(
+        /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+        (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+      );
+    }
+    const workflow = isWorkflowPath(path, name);
+    const keys = yamlPath.join("/");
+    if (workflow && /^(?:jobs\/[^/]+\/steps|runs\/steps)\/uses$/.test(keys) && isActionPinLine(line)) {
+      return raw.replace(/(@)([^\s"']+)/, "$1<pin>").replace(/\s+#\s*v?\d[\w.+-]*\s*$/, " #<comment>");
+    }
+    const imageContext = workflow ? /^(?:jobs\/[^/]+\/(?:container|services\/[^/]+)\/image|runs\/image)$/.test(
+      keys
+    ) : /^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$/.test(name) && /^services\/[^/]+\/image$/.test(keys);
+    if (imageContext && isImageLine(line))
+      return raw.replace(
+        /(image:\s*)(\S+)/,
+        (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+      );
+    return raw;
+  }).join("\n");
+  return unsupportedQuotes ? null : skeleton;
+}
+function isDependencyPinChange(file) {
+  if (file.metadataChanged) return false;
+  if (file.submodule === true) {
+    return true;
+  }
+  const path = file.path.replace(/\\/g, "/").replace(/^\.\//, "");
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const kind = lineKind(path, name);
+  if (kind === null) {
+    return false;
+  }
+  if (kind === "lockfile") {
+    return true;
+  }
+  if (file.beforeContent === void 0 || file.afterContent === void 0)
+    return false;
+  const lines = (file.changedLines ?? []).map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length === 0) {
+    return false;
+  }
+  if (!lines.every(kind.isAllowed) || !lines.some(kind.isPin)) return false;
+  const before = contentSkeleton(path, name, file.beforeContent);
+  const after = contentSkeleton(path, name, file.afterContent);
+  return before !== null && before === after && file.beforeContent !== file.afterContent;
+}
+
 // src/changeset.ts
 var CHANGESET_CLASSIFIER_VERSION = 1;
 var SMALL_CHANGE_LINE_LIMIT = 20;
@@ -17381,7 +17796,7 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   ".gitlab-ci.yml",
   ".platform-config.yml"
 ]);
-var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
+var REQUIREMENTS_FILE2 = /^requirements(-[^.]+)?\.txt$/;
 var SMALL_CHANGE_DEPENDENCY_BASENAMES = /* @__PURE__ */ new Set([
   "pnpm-workspace.yaml",
   "bun.lock",
@@ -17548,11 +17963,11 @@ function isFixture(path, name) {
   return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
 }
 function isConfig(path, name, extension) {
-  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE.test(name);
+  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE2.test(name);
 }
 function isDependencyFile(path) {
   const name = basename(normalizePath(path)).toLowerCase();
-  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
+  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE2.test(name);
 }
 function isSourceUnderTestPath(path, promptSurfaces) {
   const name = basename(path).toLowerCase();
@@ -17612,12 +18027,25 @@ function classifyFiles(files, options) {
   const classifications = [];
   let unsizedFiles = 0;
   let smallChangeLines = 0;
+  const dependencyPaths = [];
+  let otherSignificantFiles = 0;
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
+    const name = basename(classification.path).toLowerCase();
+    const underTestOrFixture = classification.class === "test" || isTest(classification.path, name) || isFixture(classification.path, name);
+    if (file.submodule === true && !underTestOrFixture) {
+      classification.reviewSignificant = true;
+    }
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
+    }
+    const dependencyPin = classification.reviewSignificant && !underTestOrFixture && isDependencyPinChange(file);
+    if (dependencyPin) {
+      dependencyPaths.push(classification.path);
+    } else {
+      otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
     if (!Number.isSafeInteger(file.added) || file.added < 0 || !Number.isSafeInteger(file.deleted) || file.deleted < 0) {
@@ -17632,7 +18060,7 @@ function classifyFiles(files, options) {
       fail(`changed file ${file.path} reports an invalid blank count`);
     }
     const counted = churn - blank;
-    if (isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
+    if (dependencyPin || isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
       unsizedFiles += 1;
     }
     if (classification.class === "app" || classification.class === "test" && isSourceUnderTestPath(classification.path, promptSurfaces)) {
@@ -17645,13 +18073,19 @@ function classifyFiles(files, options) {
       changeset.linesByLanguage[key] = (changeset.linesByLanguage[key] ?? 0) + counted;
     }
   }
+  const skip = changeset.reviewSignificantFiles === 0;
+  const dependencyOnly = !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0;
+  const forceReview = options?.forceReview === true;
   return {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0,
+    skip,
     smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
-    smallChangeLines
+    smallChangeLines,
+    dependencyUpdate: dependencyOnly && !forceReview,
+    dependencyReviewForced: dependencyOnly && forceReview,
+    dependencyPaths
   };
 }
 function unquotePath(raw) {
@@ -17772,6 +18206,13 @@ function parseDiffPatch(patch) {
     if (current === null) {
       continue;
     }
+    if (!inHunk && // A type change to or from a symlink prints as a delete and an add,
+    // each carrying mode 120000; it is a mode transition too.
+    /^(old mode |new mode |rename from |rename to |copy from |copy to |(?:new|deleted) file mode 120000$)/.test(
+      rawLine
+    )) {
+      current.metadataChanged = true;
+    }
     if (!inHunk && GITLINK_HEADER.test(rawLine)) {
       current.submodule = true;
       continue;
@@ -17820,6 +18261,9 @@ function parseDiffPatch(patch) {
     } else if (prefix2 === "-") {
       current.deleted += 1;
     }
+    if (prefix2 === "+" || prefix2 === "-") {
+      (current.changedLines ??= []).push(rawLine.slice(1));
+    }
     if ((prefix2 === "+" || prefix2 === "-") && rawLine.slice(1).trim() === "") {
       current.blank = (current.blank ?? 0) + 1;
     }
@@ -17855,7 +18299,17 @@ function classifyRange(params) {
     "--ignore-submodules=none",
     `${params.base}..${params.head}`
   ]);
-  return classifyFiles(parseDiffPatch(patch), params.options);
+  const files = parseDiffPatch(patch);
+  for (const file of files) {
+    if (!dependencyNeedsContent(file.path) || file.submodule || file.metadataChanged)
+      continue;
+    try {
+      file.beforeContent = runGit(["show", `${params.base}:${file.path}`]);
+      file.afterContent = runGit(["show", `${params.head}:${file.path}`]);
+    } catch {
+    }
+  }
+  return classifyFiles(files, params.options);
 }
 
 // src/telemetry.ts
@@ -19604,7 +20058,10 @@ function readJsonArray(pathValue, label) {
   return parsed;
 }
 function resolveChangesetReport(args) {
-  const options = args.promptSurfaces === void 0 ? void 0 : { promptSurfaces: args.promptSurfaces };
+  const options = {
+    ...args.promptSurfaces === void 0 ? {} : { promptSurfaces: args.promptSurfaces },
+    ...args.forceReview === true ? { forceReview: true } : {}
+  };
   if (args.diffFile) {
     assertRegularFile(
       args.diffFile,
@@ -19691,6 +20148,11 @@ function parseCliArgs(argv) {
     }
     if (arg === "--dry-run") {
       args.dryRun = true;
+      i++;
+      continue;
+    }
+    if (arg === "--force-review") {
+      args.forceReview = true;
       i++;
       continue;
     }
@@ -20307,6 +20769,9 @@ function runCliCommand(argv) {
         smallChange: report.smallChange,
         smallChangeLines: report.smallChangeLines,
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
+        dependencyUpdate: report.dependencyUpdate,
+        dependencyPaths: report.dependencyPaths,
+        dependencyReviewForced: report.dependencyReviewForced,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications
       });

@@ -1,3 +1,4 @@
+import { dependencyNeedsContent, isDependencyPinChange } from './dependency.js';
 import { runGit } from './github.js';
 import { fail } from './errors.js';
 import { requireSha } from './hash.js';
@@ -510,6 +511,14 @@ function emptyChangeset(): Changeset {
  * reports `smallChangeLines` reports `linesChanged.test` beside it. The
  * exception is configuration or a prompt surface under a test-named directory:
  * it keeps its `test` class and also counts toward the limit.
+ *
+ * `dependencyUpdate` is a third gate answer, exclusive of the other two: every
+ * review-significant file is a dependency pin change, so the range gets a
+ * dependency analysis instead of a review chain. A pin change is unsized for
+ * `smallChange` as well, so a workflow pin bump is never a small change.
+ * Recognition is a best-effort heuristic over changed lines, not a parse, so
+ * `forceReview` exists to put a dependency-only range back on the review
+ * route; `dependencyPaths` is kept, so the analysis still runs.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -519,12 +528,39 @@ export function classifyFiles(
   const classifications: FileClassification[] = [];
   let unsizedFiles = 0;
   let smallChangeLines = 0;
+  const dependencyPaths: string[] = [];
+  let otherSignificantFiles = 0;
   const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
+    const name = basename(classification.path).toLowerCase();
+    const underTestOrFixture =
+      classification.class === 'test' ||
+      isTest(classification.path, name) ||
+      isFixture(classification.path, name);
+    // A submodule gitlink mounted under `vendor/` or `docs/` is still a
+    // review-significant dependency pin unless it lives under a test/fixture path.
+    if (file.submodule === true && !underTestOrFixture) {
+      classification.reviewSignificant = true;
+    }
     classifications.push(classification);
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
+    }
+    // A manifest or lockfile under a test or fixture path is a fixture, not a
+    // dependency of the project, so only a review-significant non-test/non-fixture
+    // file can be a pin.
+    const dependencyPin =
+      classification.reviewSignificant &&
+      !underTestOrFixture &&
+      isDependencyPinChange(file);
+    if (dependencyPin) {
+      dependencyPaths.push(classification.path);
+    } else {
+      // The dependency analysis reads only the pins, so any other file beside
+      // one keeps the range off that route — including docs/config, which
+      // covers executable files such as `docs/conf.py` and `CMakeLists.txt`.
+      otherSignificantFiles += 1;
     }
     changeset.files[classification.class] += 1;
 
@@ -551,6 +587,7 @@ export function classifyFiles(
     // `classifierVersion` exists to record.
     const counted = churn - blank;
     if (
+      dependencyPin ||
       isDependencyFile(file.path) ||
       file.submodule === true ||
       (classification.reviewSignificant && churn === 0)
@@ -574,16 +611,23 @@ export function classifyFiles(
     }
   }
 
+  const skip = changeset.reviewSignificantFiles === 0;
+  const dependencyOnly =
+    !skip && dependencyPaths.length > 0 && otherSignificantFiles === 0;
+  const forceReview = options?.forceReview === true;
   return {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0,
+    skip,
     smallChange:
       changeset.reviewSignificantFiles > 0 &&
       unsizedFiles === 0 &&
       smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
     smallChangeLines,
+    dependencyUpdate: dependencyOnly && !forceReview,
+    dependencyReviewForced: dependencyOnly && forceReview,
+    dependencyPaths,
   };
 }
 
@@ -739,6 +783,16 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
     if (current === null) {
       continue;
     }
+    if (
+      !inHunk &&
+      // A type change to or from a symlink prints as a delete and an add,
+      // each carrying mode 120000; it is a mode transition too.
+      /^(old mode |new mode |rename from |rename to |copy from |copy to |(?:new|deleted) file mode 120000$)/.test(
+        rawLine,
+      )
+    ) {
+      current.metadataChanged = true;
+    }
     if (!inHunk && GITLINK_HEADER.test(rawLine)) {
       current.submodule = true;
       continue;
@@ -786,6 +840,9 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
       current.added += 1;
     } else if (prefix === '-') {
       current.deleted += 1;
+    }
+    if (prefix === '+' || prefix === '-') {
+      (current.changedLines ??= []).push(rawLine.slice(1));
     }
     if ((prefix === '+' || prefix === '-') && rawLine.slice(1).trim() === '') {
       current.blank = (current.blank ?? 0) + 1;
@@ -835,5 +892,21 @@ export function classifyRange(params: {
     '--ignore-submodules=none',
     `${params.base}..${params.head}`,
   ]);
-  return classifyFiles(parseDiffPatch(patch), params.options);
+  const files = parseDiffPatch(patch);
+  for (const file of files) {
+    if (
+      !dependencyNeedsContent(file.path) ||
+      file.submodule ||
+      file.metadataChanged
+    )
+      continue;
+    // Added/deleted files have no pair to compare and stay on the normal route.
+    try {
+      file.beforeContent = runGit(['show', `${params.base}:${file.path}`]);
+      file.afterContent = runGit(['show', `${params.head}:${file.path}`]);
+    } catch {
+      // Missing or unreadable content cannot prove a pin-only change.
+    }
+  }
+  return classifyFiles(files, params.options);
 }

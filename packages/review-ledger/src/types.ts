@@ -502,6 +502,13 @@ export type ChangesetClass = 'app' | 'test' | 'docsConfig' | 'generated';
 export interface ClassifyOptions {
   /** Path prefixes and exact paths treated as prompt surfaces. */
   promptSurfaces?: readonly string[] | undefined;
+  /**
+   * The review override: a human asked for review, or the PR carries the
+   * `review: full` label. `dependencyUpdate` is then false, so a dependency-only
+   * range takes the mixed-range route: the chain runs and the analysis still
+   * covers `dependencyPaths`.
+   */
+  forceReview?: boolean | undefined;
 }
 
 /** One changed file and its churn over the pinned review range. */
@@ -513,6 +520,17 @@ export interface ChangedFile {
   blank?: number | null | undefined;
   /** True for a submodule gitlink, whose churn is a commit id, not code. */
   submodule?: boolean | undefined;
+  /**
+   * Added and deleted line content without the diff prefix. Only the
+   * dependency-update rule reads it; absent means a manifest, workflow or image
+   * file cannot be recognised as a pin change.
+   */
+  changedLines?: string[] | undefined;
+  /** Pinned complete blobs; required to prove that only pin values changed. */
+  beforeContent?: string | undefined;
+  afterContent?: string | undefined;
+  /** A rename, copy, or file-mode transition needs the normal review route. */
+  metadataChanged?: boolean | undefined;
 }
 
 /** How one path classified, on both the value axis and the review axis. */
@@ -562,6 +580,25 @@ export interface ChangesetReport {
    * configuration and prompt surfaces filed under a test-named directory.
    */
   smallChangeLines: number;
+  /**
+   * True when every review-significant file is a dependency pin change: a
+   * lockfile, a manifest version line, an Actions pin, a container image tag
+   * or digest, or a submodule gitlink. The range gets a dependency analysis,
+   * not a review chain. Never true together with `skip` or `smallChange`, and
+   * never true under `forceReview`. Recognition is a best-effort heuristic.
+   */
+  dependencyUpdate: boolean;
+  /**
+   * True when `forceReview` turned what would have been a dependency update
+   * into the mixed-range route.
+   */
+  dependencyReviewForced: boolean;
+  /**
+   * Files that are dependency pin changes, whether or not the range is
+   * dependency-only. Non-empty with `dependencyUpdate` false is a mixed range:
+   * the code follows the normal tier and these files get the analysis.
+   */
+  dependencyPaths: string[];
 }
 
 /** What kind of pass spent the tokens. */

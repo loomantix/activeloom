@@ -145,6 +145,46 @@ describe('CLI command parser and execution', () => {
     }
   });
 
+  it('applies --force-review to a dependency-only range', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'classify-cli-'));
+    const diff = join(directory, 'range.diff');
+    writeFileSync(
+      diff,
+      [
+        'diff --git a/vendor/lib b/vendor/lib',
+        'index 1111111..2222222 160000',
+        '--- a/vendor/lib',
+        '+++ b/vendor/lib',
+        '@@ -1 +1 @@',
+        `-Subproject commit ${'1'.repeat(40)}`,
+        `+Subproject commit ${'2'.repeat(40)}`,
+        '',
+      ].join('\n'),
+    );
+    const stdout = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    try {
+      expect(runCli(['classify-changeset', '--diff-file', diff])).toBe(0);
+      expect(JSON.parse(String(stdout.mock.calls[0]![0]))).toMatchObject({
+        dependencyUpdate: true,
+        dependencyReviewForced: false,
+        dependencyPaths: ['vendor/lib'],
+      });
+      expect(
+        runCli(['classify-changeset', '--diff-file', diff, '--force-review']),
+      ).toBe(0);
+      expect(JSON.parse(String(stdout.mock.calls[1]![0]))).toMatchObject({
+        dependencyUpdate: false,
+        dependencyReviewForced: true,
+        dependencyPaths: ['vendor/lib'],
+      });
+    } finally {
+      stdout.mockRestore();
+      rmSync(directory, { recursive: true });
+    }
+  });
+
   it('outputs protocol version when requested', () => {
     const stdoutSpy = vi
       .spyOn(process.stdout, 'write')

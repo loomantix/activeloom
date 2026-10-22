@@ -11,6 +11,7 @@
 /.agents/skills/backlog-refinement/templates/refinement.local.md linguist-generated=true
 /.agents/skills/critique/SKILL.md linguist-generated=true
 /.agents/skills/deepcritique/SKILL.md linguist-generated=true
+/.agents/skills/dep-analysis/SKILL.md linguist-generated=true
 /.agents/skills/diagnosing-bugs/SKILL.md linguist-generated=true
 /.agents/skills/feature-dev/SKILL.md linguist-generated=true
 /.agents/skills/grill/SKILL.md linguist-generated=true
@@ -44,6 +45,7 @@
 /.claude/skills/codex-review/SKILL.md linguist-generated=true
 /.claude/skills/critique/SKILL.md linguist-generated=true
 /.claude/skills/deepcritique/SKILL.md linguist-generated=true
+/.claude/skills/dep-analysis/SKILL.md linguist-generated=true
 /.claude/skills/diagnosing-bugs/SKILL.md linguist-generated=true
 /.claude/skills/feature-dev/SKILL.md linguist-generated=true
 /.claude/skills/grill/SKILL.md linguist-generated=true
@@ -75,6 +77,7 @@
 /.codex/skills/backlog-refinement/templates/refinement.local.md linguist-generated=true
 /.codex/skills/critique/SKILL.md linguist-generated=true
 /.codex/skills/deepcritique/SKILL.md linguist-generated=true
+/.codex/skills/dep-analysis/SKILL.md linguist-generated=true
 /.codex/skills/diagnosing-bugs/SKILL.md linguist-generated=true
 /.codex/skills/feature-dev/SKILL.md linguist-generated=true
 /.codex/skills/grill/SKILL.md linguist-generated=true

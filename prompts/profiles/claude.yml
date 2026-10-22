@@ -86,6 +86,12 @@ skills:
   feature-dev:
     FM_EXTRAS: 'argument-hint: Optional feature description'
 
+  dep-analysis:
+    # Model-invoked: every review entry point and herd skill hands a
+    # dependency update to it by name.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ''
+
   handoff:
     FM_EXTRAS: "argument-hint: '<comment-id | issue-number | url> | write <issue-number>'"
 
