@@ -19,6 +19,7 @@ import {
   TELEMETRY_STATUSES,
   TELEMETRY_TOKEN_SOURCES,
   TELEMETRY_TRIGGERS,
+  TOKEN_RE,
 } from './constants.js';
 import { fail } from './errors.js';
 import { assertRegularFile, parseJsonOrFail } from './io.js';
@@ -211,7 +212,7 @@ function readPublishFindings(
       Array.isArray(row) ||
       Object.keys(row).sort().join(',') !== 'fingerprint,occurrence' ||
       typeof row.fingerprint !== 'string' ||
-      !/^[A-Za-z0-9._:/-]+$/.test(row.fingerprint) ||
+      !TOKEN_RE.test(row.fingerprint) ||
       !Number.isSafeInteger(row.occurrence) ||
       (row.occurrence as number) < 1
     ) {

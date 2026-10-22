@@ -20125,7 +20125,7 @@ function readJsonArray(pathValue, label) {
 function readPublishFindings(pathValue) {
   return readJsonArray(pathValue, "publish findings file").map((entry) => {
     const row = entry;
-    if (typeof row !== "object" || row === null || Array.isArray(row) || Object.keys(row).sort().join(",") !== "fingerprint,occurrence" || typeof row.fingerprint !== "string" || !/^[A-Za-z0-9._:/-]+$/.test(row.fingerprint) || !Number.isSafeInteger(row.occurrence) || row.occurrence < 1) {
+    if (typeof row !== "object" || row === null || Array.isArray(row) || Object.keys(row).sort().join(",") !== "fingerprint,occurrence" || typeof row.fingerprint !== "string" || !TOKEN_RE.test(row.fingerprint) || !Number.isSafeInteger(row.occurrence) || row.occurrence < 1) {
       fail(
         "publish findings must be objects with a fingerprint token and a positive occurrence"
       );
