@@ -20,6 +20,7 @@
 /.agents/skills/hloop/SKILL.md linguist-generated=true
 /.agents/skills/horch/SKILL.md linguist-generated=true
 /.agents/skills/hpromote/SKILL.md linguist-generated=true
+/.agents/skills/hred-team/SKILL.md linguist-generated=true
 /.agents/skills/hreview/SKILL.md linguist-generated=true
 /.agents/skills/internal-docs/SKILL.md linguist-generated=true
 /.agents/skills/issues/SKILL.md linguist-generated=true
@@ -55,6 +56,7 @@
 /.claude/skills/hloop/SKILL.md linguist-generated=true
 /.claude/skills/horch/SKILL.md linguist-generated=true
 /.claude/skills/hpromote/SKILL.md linguist-generated=true
+/.claude/skills/hred-team/SKILL.md linguist-generated=true
 /.claude/skills/hreview/SKILL.md linguist-generated=true
 /.claude/skills/internal-docs/SKILL.md linguist-generated=true
 /.claude/skills/issues/SKILL.md linguist-generated=true
@@ -88,6 +90,7 @@
 /.codex/skills/hloop/SKILL.md linguist-generated=true
 /.codex/skills/horch/SKILL.md linguist-generated=true
 /.codex/skills/hpromote/SKILL.md linguist-generated=true
+/.codex/skills/hred-team/SKILL.md linguist-generated=true
 /.codex/skills/hreview/SKILL.md linguist-generated=true
 /.codex/skills/internal-docs/SKILL.md linguist-generated=true
 /.codex/skills/issues/SKILL.md linguist-generated=true

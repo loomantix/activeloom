@@ -196,6 +196,11 @@ skills:
       disable-model-invocation: true
       argument-hint: '[--dry-run] | run [--dry-run] | merged'
     DESC_TRIGGER: ''
+  hred-team:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '<pr> [--author claude|codex|gemini] [--engine claude|codex|gemini]'
+    DESC_TRIGGER: ''
   promote:
     FM_EXTRAS: |-
       disable-model-invocation: true
