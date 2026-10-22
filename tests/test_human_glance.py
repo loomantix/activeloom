@@ -239,7 +239,7 @@ def test_gap_fix_pr_takes_the_review_route_and_is_handed_back(root: str) -> None
         "before running any package manager install or lifecycle script",
         "never hand-edit a lockfile",
         "must fail at the base and pass with the fix",
-        '`node $L classify-changeset --base "$base_sha" --head "$(git rev-parse HEAD)"`',
+        '`node $L classify-changeset --base "$fix_base_sha" --head "$(git rev-parse HEAD)"`',
         "`dependencyPaths` plus test-class files only",
         "`gh pr create --draft --base <base-branch>`",
         "This skill does not review, mark ready or merge the fix PR",
