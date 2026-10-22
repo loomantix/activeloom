@@ -86,11 +86,14 @@ import type {
   PreflightAnchorResult,
   PreflightFixParams,
   PreflightFixResult,
+  PreflightPublishParams,
+  PreflightPublishResult,
   ReconcileParams,
   ReconcileResult,
   RecoverResultParams,
   ReopenOccurrenceParams,
   ReopenOccurrenceResult,
+  SupportedSeverity,
   ReplyParams,
   ResolveParams,
   ResolveResult,
@@ -914,6 +917,66 @@ export function preflightAnchor(
 export function preflightFix(params: PreflightFixParams): PreflightFixResult {
   verifyHead(params.repo, params.pr, params.head);
   const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const severity = fixableFindingSeverity(comments, params, stance);
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, severity, stance, verified: true };
+}
+
+/**
+ * Check every finding a review push fixes before the wrapper publishes it, so a
+ * slip the result would reject is refused while the reviewer can still correct
+ * it instead of after the head has moved.
+ */
+export function preflightPublish(
+  params: PreflightPublishParams,
+): PreflightPublishResult {
+  if (params.findings.length === 0) {
+    fail(
+      'preflight-publish requires the finding identity of every fix in the push; post each finding before publishing its fix',
+    );
+  }
+  const keys = params.findings.map(
+    ({ fingerprint, occurrence }) => `${fingerprint}#${occurrence}`,
+  );
+  if (new Set(keys).size !== keys.length) {
+    fail('preflight-publish findings must not repeat');
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const findings = params.findings.map((finding) => ({
+    ...finding,
+    severity: fixableFindingSeverity(
+      comments,
+      { ...params, ...finding },
+      stance,
+    ),
+  }));
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, findings, stance, verified: true };
+}
+
+function roundStance(
+  repo: string,
+  pr: number,
+  round: number,
+): 'adversarial' | 'convergence' {
+  return round >= convergenceStartRound(repo, pr)
+    ? 'convergence'
+    : 'adversarial';
+}
+
+/**
+ * Severity of the one authenticated, latest, undisposed finding at this head,
+ * or a failure naming what the reviewer must correct before fixing it.
+ */
+function fixableFindingSeverity(
+  comments: GitHubReviewCommentNode[],
+  params: Omit<PreflightFixParams, 'repo' | 'pr'>,
+  stance: 'adversarial' | 'convergence',
+): SupportedSeverity {
+  const label = `${params.fingerprint} occurrence ${params.occurrence}`;
   const records = findingRows(comments, params.fingerprint);
   const matches = records.filter(
     ({ match }) =>
@@ -924,11 +987,11 @@ export function preflightFix(params: PreflightFixParams): PreflightFixResult {
   );
   if (matches.length !== 1) {
     fail(
-      'preflight-fix requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence',
+      `fixing ${label} requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence; post the finding before its fix is published`,
     );
   }
   if (records.some(({ match }) => match.occurrence > params.occurrence)) {
-    fail('preflight-fix requires the latest finding occurrence');
+    fail(`fixing ${label} requires the latest finding occurrence`);
   }
   if (
     comments.some((row) => {
@@ -941,20 +1004,15 @@ export function preflightFix(params: PreflightFixParams): PreflightFixResult {
       );
     })
   ) {
-    fail('preflight-fix requires an undisposed finding');
+    fail(`fixing ${label} requires an undisposed finding`);
   }
   const severity = matches[0]!.match.severity;
-  const stance =
-    params.round >= convergenceStartRound(params.repo, params.pr)
-      ? 'convergence'
-      : 'adversarial';
   if (stance === 'convergence' && severity !== 'blocking') {
     fail(
-      'convergence fixes require a posted blocking finding; defer non-blocking findings before editing',
+      `convergence fixes require a posted blocking finding; ${label} is ${severity}: defer it and leave its change out of the push`,
     );
   }
-  verifyHead(params.repo, params.pr, params.head);
-  return { ...params, severity, stance, verified: true };
+  return severity;
 }
 
 /** Parse each comment once and keep matching finding rows. */

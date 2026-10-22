@@ -32,6 +32,7 @@ import {
   postPrComment,
   preflightAnchor,
   preflightFix,
+  preflightPublish,
   reconcile,
   reopenOccurrence,
   reply,
@@ -196,6 +197,33 @@ function readJsonArray(pathValue: string, label: string): unknown[] {
     fail(`${label} must contain a JSON array`);
   }
   return parsed;
+}
+
+/** Read the `[{fingerprint, occurrence}]` identities a review push fixes. */
+function readPublishFindings(
+  pathValue: string,
+): Array<{ fingerprint: string; occurrence: number }> {
+  return readJsonArray(pathValue, 'publish findings file').map((entry) => {
+    const row = entry as Record<string, unknown> | null;
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      Array.isArray(row) ||
+      Object.keys(row).sort().join(',') !== 'fingerprint,occurrence' ||
+      typeof row.fingerprint !== 'string' ||
+      !/^[A-Za-z0-9._:/-]+$/.test(row.fingerprint) ||
+      !Number.isSafeInteger(row.occurrence) ||
+      (row.occurrence as number) < 1
+    ) {
+      fail(
+        'publish findings must be objects with a fingerprint token and a positive occurrence',
+      );
+    }
+    return {
+      fingerprint: row.fingerprint as string,
+      occurrence: row.occurrence as number,
+    };
+  });
 }
 
 /**
@@ -669,6 +697,33 @@ function runCliCommand(argv: string[]): number {
             round: args.round,
             fingerprint: args.fingerprint,
             occurrence: args.occurrence,
+          }),
+        ) + '\n',
+      );
+      break;
+    }
+    case 'preflight-publish': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.findingsFile
+      ) {
+        fail(
+          'preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file',
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightPublish({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            findings: readPublishFindings(args.findingsFile),
           }),
         ) + '\n',
       );

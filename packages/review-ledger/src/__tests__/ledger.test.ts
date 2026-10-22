@@ -4,6 +4,7 @@ import {
   postFinding,
   preflightAnchor,
   preflightFix,
+  preflightPublish,
   buildFindingBody,
   buildDispositionBody,
   sha256Text,
@@ -347,6 +348,116 @@ describe('ledger operations and workflow verification', () => {
         }).body,
       });
       expect(() => preflightFix(params)).toThrow(/undisposed finding/);
+    });
+  });
+
+  describe('preflight-publish', () => {
+    const params = {
+      repo: 'example/repo',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+    };
+    let nextId = 300;
+    function post(
+      fingerprint: string,
+      severity: 'blocking' | 'major' | 'minor' | 'nit',
+      round = 3,
+    ) {
+      mock.reviewComments.push({
+        id: nextId++,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          round,
+          fingerprint,
+          occurrence: 1,
+          severity,
+          lens: 'code-reviewer',
+          content: 'Reachable defect.',
+        }).body,
+      });
+    }
+    const fixes = (...fingerprints: string[]) =>
+      fingerprints.map((fingerprint) => ({ fingerprint, occurrence: 1 }));
+
+    it('permits posted blockers in convergence and reports each severity', () => {
+      post('window', 'blocking');
+      post('lease', 'blocking');
+      expect(
+        preflightPublish({ ...params, findings: fixes('window', 'lease') }),
+      ).toMatchObject({
+        stance: 'convergence',
+        verified: true,
+        findings: [
+          { fingerprint: 'window', severity: 'blocking' },
+          { fingerprint: 'lease', severity: 'blocking' },
+        ],
+      });
+    });
+
+    it('refuses a convergence push that fixes a non-blocking finding', () => {
+      post('window', 'blocking');
+      post('label', 'major');
+      const before = JSON.stringify(mock.reviewComments);
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window', 'label') }),
+      ).toThrow(/label occurrence 1 is major: defer it and leave its change out/);
+      expect(JSON.stringify(mock.reviewComments)).toBe(before);
+    });
+
+    it('permits a non-blocking fix in an adversarial round', () => {
+      post('cleanup', 'nit', 1);
+      expect(
+        preflightPublish({ ...params, round: 1, findings: fixes('cleanup') }),
+      ).toMatchObject({ stance: 'adversarial' });
+    });
+
+    it('refuses a fix whose finding was not posted before the push', () => {
+      post('window', 'major', 1);
+      expect(() =>
+        preflightPublish({
+          ...params,
+          round: 1,
+          findings: fixes('window', 'cleanup'),
+        }),
+      ).toThrow(/cleanup occurrence 1 .*post the finding before its fix/);
+    });
+
+    it('refuses a finding posted at another head or already disposed', () => {
+      post('window', 'blocking');
+      expect(() =>
+        preflightPublish({
+          ...params,
+          head: 'a'.repeat(40),
+          findings: fixes('window'),
+        }),
+      ).toThrow();
+      mock.reviewComments.push({
+        id: nextId++,
+        user: { login: mock.actor },
+        body: buildDispositionBody({
+          ...params,
+          fingerprint: 'window',
+          occurrence: 1,
+          outcome: 'deferred',
+          content: 'Follow-up.',
+        }).body,
+      });
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window') }),
+      ).toThrow(/undisposed finding/);
+    });
+
+    it('refuses an empty or repeated manifest', () => {
+      post('window', 'blocking');
+      expect(() => preflightPublish({ ...params, findings: [] })).toThrow(
+        /requires the finding identity of every fix/,
+      );
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window', 'window') }),
+      ).toThrow(/must not repeat/);
     });
   });
 
