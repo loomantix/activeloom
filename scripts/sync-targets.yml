@@ -278,6 +278,13 @@ harnesses:
         destination: .claude/skills/handoff/SKILL.md
         substitutions: []
 
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .claude/skills/dep-analysis/SKILL.md
+        destination: .claude/skills/dep-analysis/SKILL.md
+        substitutions: []
+
       # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
       # model-invoked: its whole value is firing on "this is broken" before the
       # session has already guessed at a cause.
@@ -754,6 +761,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .codex/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -993,6 +1002,13 @@ harnesses:
       # handoff — write or resume a session handoff kept as an issue comment.
       - source: .codex/skills/handoff/SKILL.md
         destination: .codex/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .codex/skills/dep-analysis/SKILL.md
+        destination: .codex/skills/dep-analysis/SKILL.md
         substitutions: []
 
       # diagnosing-bugs — debugging discipline gated on a tight, deterministic
@@ -1321,6 +1337,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .agents/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -1520,6 +1538,13 @@ harnesses:
       # handoff — write or resume a session handoff kept as an issue comment.
       - source: .agents/skills/handoff/SKILL.md
         destination: .agents/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .agents/skills/dep-analysis/SKILL.md
+        destination: .agents/skills/dep-analysis/SKILL.md
         substitutions: []
 
       - source: .agents/skills/diagnosing-bugs/SKILL.md
