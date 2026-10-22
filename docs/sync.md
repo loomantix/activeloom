@@ -94,7 +94,10 @@ git pull
 ./scripts/install-skills.sh --harness codex # one harness
 ./scripts/install-skills.sh --force         # replaces existing entries (backed up)
 ./scripts/install-skills.sh --dry-run
+./scripts/install-skills.sh --check         # after a pull: anything not installed or stale?
 ```
+
+A pull can add a skill that linked skills already call; `--check` names it, the skills that require it ([`scripts/skill-requires.txt`](../scripts/skill-requires.txt)), and the fix, and exits 1. The script also links each harness's support files (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …) beside the skills directory, never replacing an existing file.
 
 The script reads `root`, `home`, `skills`, and `cli` from each entry under `harnesses:` in `scripts/sync-targets.yml` and symlinks `<upstream>/<root>/skills/<name>` → `~/<skills>/<name>`:
 

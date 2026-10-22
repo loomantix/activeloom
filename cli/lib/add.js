@@ -35,6 +35,62 @@ function listSkills(upstreamDir, harnessRoot) {
 }
 
 /**
+ * Read the required skill dependencies an upstream tree declares in
+ * `scripts/skill-requires.txt` (`<skill>: <required ...> | <optional ...>`).
+ * An upstream without the file declares none.
+ *
+ * @param {string} upstreamDir
+ * @returns {Map<string, string[]>}
+ */
+function readRequires(upstreamDir) {
+  const file = path.join(upstreamDir, 'scripts', 'skill-requires.txt');
+  /** @type {Map<string, string[]>} */
+  const requires = new Map();
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return requires;
+    throw error;
+  }
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/#.*/, '').trim();
+    const colon = line.indexOf(':');
+    if (colon < 1) continue;
+    const required = line.slice(colon + 1).split('|')[0];
+    requires.set(
+      line.slice(0, colon).trim(),
+      required.split(/\s+/).filter(Boolean),
+    );
+  }
+  return requires;
+}
+
+/**
+ * The requested skills plus every skill they require, transitively, limited
+ * to skills this harness ships. Each added skill maps to the first skill
+ * found requiring it.
+ *
+ * @param {string[]} names
+ * @param {Map<string, string[]>} requires
+ * @param {string[]} available
+ * @returns {{order: string[], requiredBy: Map<string, string>}}
+ */
+function requiredClosure(names, requires, available) {
+  const order = [...new Set(names)].filter((name) => available.includes(name));
+  /** @type {Map<string, string>} */
+  const requiredBy = new Map();
+  for (let i = 0; i < order.length; i += 1) {
+    for (const dep of requires.get(order[i]) || []) {
+      if (!available.includes(dep) || order.includes(dep)) continue;
+      order.push(dep);
+      requiredBy.set(dep, order[i]);
+    }
+  }
+  return { order, requiredBy };
+}
+
+/**
  * Walk every file under `dir`, depth-first, ignoring symlinks.
  *
  * @param {string} dir
@@ -115,6 +171,8 @@ const SUPPORT_PATHS = Object.freeze([
  * Skills reach them as `../../<file>`, so they go beside the skills directory.
  */
 function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
+  /** @type {string[]} */
+  const stale = [];
   const sourceRoot = path.join(upstreamDir, harness.root);
   const destRoot = path.dirname(path.join(homeDir, harness.skills));
 
@@ -135,14 +193,29 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
       }
       return;
     }
-    if (fs.existsSync(dest) && !force) return;
+    if (fs.existsSync(dest) && !force) {
+      // Skills read these beside their directory; an old copy is a stale
+      // reference that nothing else will notice.
+      if (!fs.readFileSync(dest).equals(fs.readFileSync(src))) stale.push(dest);
+      return;
+    }
     if (dryRun) {
       ui.step(`would install support file ${dest}`);
       return;
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
-    fs.chmodSync(dest, stat.mode & 0o777);
+    const staging = fs.mkdtempSync(
+      path.join(path.dirname(dest), '.tmp-support-'),
+    );
+    try {
+      const replacement = path.join(staging, 'file');
+      fs.copyFileSync(src, replacement);
+      fs.chmodSync(replacement, stat.mode & 0o777);
+      // Rename replaces a clone-installed link without writing into its target.
+      fs.renameSync(replacement, dest);
+    } finally {
+      fs.rmSync(staging, { recursive: true, force: true });
+    }
   };
 
   for (const relative of SUPPORT_PATHS) {
@@ -150,6 +223,13 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
     if (!fs.existsSync(src)) continue;
     install(src, path.join(destRoot, relative));
   }
+  if (stale.length > 0) {
+    ui.warn(
+      `${harness.id || harness.root}: ${stale.length} support file(s) differ from upstream and were kept: ` +
+        `${stale.join(', ')}. Skills read these; re-run with --force to replace them.`,
+    );
+  }
+  return stale;
 }
 
 /**
@@ -181,6 +261,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
   let skipped = 0;
   // Track skills found across any selected harness.
   const found = new Set();
+  const requires = readRequires(upstreamDir);
 
   for (const id of chosen.ids) {
     const harness = HARNESSES.find((h) => h.id === id);
@@ -190,7 +271,10 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
       installSupportFiles(upstreamDir, harness, facts.homeDir, dryRun, force);
     }
 
-    for (const name of skills) {
+    const { order, requiredBy } = requiredClosure(skills, requires, available);
+    const unknown = skills.filter((name) => !available.includes(name));
+    for (const name of [...unknown, ...order]) {
+      const neededBy = requiredBy.get(name);
       if (!available.includes(name)) {
         ui.warn(
           `${id}: no skill named "${name}" (have: ${available.join(', ')})`,
@@ -206,6 +290,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
       assertNoPlaceholders(src, `${id}/${name}`);
 
       if (fs.existsSync(dest) && !force) {
+        if (neededBy) continue; // a dependency already in place
         ui.warn(
           `${id}: ${dest} already exists — re-run with --force to replace`,
         );
@@ -213,8 +298,9 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
         continue;
       }
 
+      const why = neededBy ? ` (required by ${neededBy})` : '';
       if (dryRun) {
-        ui.step(`would install ${ui.bold(name)} to ${dest}`);
+        ui.step(`would install ${ui.bold(name)} to ${dest}${why}`);
       } else {
         fs.mkdirSync(destRoot, { recursive: true });
         const staging = fs.mkdtempSync(path.join(destRoot, `.tmp-${name}-`));
@@ -251,7 +337,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
             }
             throw renameError;
           }
-          ui.step(`installed ${ui.bold(name)} to ${dest}`);
+          ui.step(`installed ${ui.bold(name)} to ${dest}${why}`);
         } finally {
           fs.rmSync(staging, { recursive: true, force: true });
           if (backup && promoted) {
@@ -298,4 +384,6 @@ module.exports = {
   copyTree,
   walkFiles,
   installSupportFiles,
+  readRequires,
+  requiredClosure,
 };
