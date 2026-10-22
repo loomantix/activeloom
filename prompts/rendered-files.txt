@@ -35,6 +35,7 @@
 .agents/skills/phone-install/SKILL.md
 .agents/skills/pr-critique/SKILL.md
 .agents/skills/product-grill/SKILL.md
+.agents/skills/red-team/SKILL.md
 .agents/skills/refactorpass/SKILL.md
 .agents/skills/review-setup/SKILL.md
 .agents/skills/review-setup/scripts/review-profile.defaults.json
@@ -83,6 +84,7 @@
 .claude/skills/onboard/SKILL.md
 .claude/skills/phone-install/SKILL.md
 .claude/skills/product-grill/SKILL.md
+.claude/skills/red-team/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-setup/SKILL.md
 .claude/skills/review-setup/scripts/review-profile.defaults.json
@@ -131,6 +133,7 @@
 .codex/skills/phone-install/SKILL.md
 .codex/skills/pr-critique/SKILL.md
 .codex/skills/product-grill/SKILL.md
+.codex/skills/red-team/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/review-setup/SKILL.md
 .codex/skills/review-setup/scripts/review-profile.defaults.json

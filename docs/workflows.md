@@ -149,6 +149,12 @@ Both need a review profile (`review-setup`) and a clean committed feature branch
 
 Each run ends `clean`, `changed`, or `blocked`, and reports the tier, rounds, and fix commits. Neither skill merges, force-pushes, or marks a PR ready while threads are still open.
 
+## `red-team` — find how a reviewed change fails before merge
+
+Run `red-team [PR]` after the review chain or `hreview` has converged and before you merge. Where the chain asks whether the diff is correct, `red-team` asks how the change fails once it is live: hostile inputs, retries and races, rollout and rollback, callers in other packages, and whether the chain's own fixes hold.
+
+It reports each finding with a severity, a confidence, and a recommendation — fix before merge, follow-up issue, or accept — then waits for you to decide. It fixes the findings you keep on the PR branch, and files the follow-ups as issues after showing you one preview. Pushing a fix moves the PR past the review chain's attestations; whether the chain runs again is your call. It writes nothing to the review ledger, and never merges or marks a PR ready.
+
 ## The automatic review chain
 
 Where `critique` is one engine reviewing in your session, the automatic review chain runs several independent reviewer engines (Claude, Codex, and Gemini) over one draft PR, one pass after another. A deterministic runner script controls it, not the conversation. Each pass reviews the current head, posts verified findings inline, pushes fixes, and resolves its threads. The runner verifies each pass, runs your validation gate, and posts an attestation before starting the next pass.

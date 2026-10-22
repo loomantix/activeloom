@@ -147,6 +147,13 @@ skills:
     FM_EXTRAS: ''
   simplify-comments:
     FM_EXTRAS: ''
+  red-team:
+    # A human decides when a change is ready for a pre-merge pass, so it is
+    # user-invoked here; DESC_TRIGGER is empty for the same reason as `grill`.
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: (optional) PR number
+    DESC_TRIGGER: ''
 
   # Herd orchestration skills spawn many sessions, so each is user-invoked here;
   # DESC_TRIGGER is empty for the same reason as `grill`.

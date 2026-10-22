@@ -649,6 +649,12 @@ harnesses:
         destination: .claude/skills/product-grill/SKILL.md
         substitutions: []
 
+      # /red-team — pre-merge pass for how a reviewed change fails once live;
+      # sorts findings into fix-now and follow-up for the user. User-invoked.
+      - source: .claude/skills/red-team/SKILL.md
+        destination: .claude/skills/red-team/SKILL.md
+        substitutions: []
+
   # Codex. Ships the cross-engine review roles under `references/roles/` that
   # the Claude tree expresses as `.claude/agents/` subagents instead.
   codex:
@@ -1227,6 +1233,11 @@ harnesses:
         destination: .codex/skills/product-grill/SKILL.md
         substitutions: []
 
+      # red-team — pre-merge pass for how a reviewed change fails once live.
+      - source: .codex/skills/red-team/SKILL.md
+        destination: .codex/skills/red-team/SKILL.md
+        substitutions: []
+
   # Gemini, whose harness reads `.agents` rather than a vendor-named root.
   gemini:
     root: .agents
@@ -1680,6 +1691,10 @@ harnesses:
 
       - source: .agents/skills/product-grill/SKILL.md
         destination: .agents/skills/product-grill/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/red-team/SKILL.md
+        destination: .agents/skills/red-team/SKILL.md
         substitutions: []
 
 # Harness-independent targets. Every consumer receives these regardless of

@@ -100,6 +100,11 @@ skills:
     FM_EXTRAS: ''
   simplify-comments:
     FM_EXTRAS: ''
+  red-team:
+    # Model-invoked here, so the description carries its own trigger. The
+    # leading space is load-bearing.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to red-team a PR or its changes before merging.'
 
   # Herd orchestration: model-invoked here, so each description carries its own
   # trigger. The leading space is load-bearing.
