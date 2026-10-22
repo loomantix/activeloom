@@ -552,8 +552,14 @@ one-shot, new-session launch contract; it does not authorize reviewers to hand
 work to existing desktop sessions. Process creation time survives `exec`, so a
 readable review identity still overrides age. The margin accommodates small
 clock skew; recovery assumes the host and GitHub clocks agree within that
-margin. A second exception covers launchd-owned Apple services at system service
-paths whose live kernel code-signing flags prove a valid, restricted platform
+margin. The same holds for a live ancestor below launchd: diagnosis holds the
+runner lock, so the runner has exited and launchd adopted its workers. Every
+ancestor of a worker's descendant below launchd therefore started after the
+run, and a hidden process under an older ancestor, such as a shell or helper
+in another terminal or multiplexer session, belongs to that session's lineage.
+A second exception covers launchd-owned Apple services at system service paths,
+including app extensions such as widgets inside `/System/Applications` bundles,
+whose live kernel code-signing flags prove a valid, restricted platform
 binary with no untrusted helpers and no debug allowance. A name or path alone
 does not qualify. A third exception covers the `/usr/bin/caffeinate` session
 helper Claude Code keeps running: with the same code-signing proof, and whose
@@ -569,7 +575,9 @@ in the process namespace the review ran in: inside a sandbox with its own PID
 namespace the probes cannot see a surviving worker, so an empty `workers` list
 from there proves nothing. A same-user process
 that hides its environment and cannot be excluded by the platform's evidence
-checks is named by PID, and diagnosis stops until it is reconciled.
+checks is named by PID with its executable name and the evidence that could not
+be read, and diagnosis stops until it is reconciled: stop the process, or the
+app or session that started it.
 Any other same-user process whose working directory is inside the worktree is
 reported as a potential worker, including a second shell, an editor, or the
 other side of a pipe such as `--diagnose | tail` started from the worktree;

@@ -372,8 +372,7 @@ def darwin_process_cwd(pid: int) -> Path:
     return Path(paths[0]).resolve()
 
 
-def darwin_protected_executable(pid: int) -> Path | None:
-    """Return a kernel-verified protected Apple platform binary's path, else None."""
+def darwin_process_executable(pid: int) -> Path:
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
     probe = libproc.proc_pidpath
     probe.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
@@ -381,7 +380,12 @@ def darwin_protected_executable(pid: int) -> Path | None:
     path = ctypes.create_string_buffer(4096)
     if probe(pid, path, ctypes.sizeof(path)) <= 0:
         raise OSError("process executable unavailable")
-    executable = Path(os.fsdecode(path.value)).resolve()
+    return Path(os.fsdecode(path.value)).resolve()
+
+
+def darwin_protected_executable(pid: int) -> Path | None:
+    """Return a kernel-verified protected Apple platform binary's path, else None."""
+    executable = darwin_process_executable(pid)
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
     status = libc.csops
     status.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
@@ -403,6 +407,10 @@ def darwin_protected_service(pid: int) -> bool:
         executable.is_relative_to("/usr/libexec") or (
             executable.is_relative_to("/System/Library")
             and ("XPCServices" in executable.parts or executable.is_relative_to("/System/Library/CoreServices"))
+        ) or (
+            # App extensions such as widgets live in sealed system app bundles.
+            executable.is_relative_to("/System/Applications")
+            and any(part.endswith(".appex") for part in executable.parts)
         )
     )
 
@@ -862,11 +870,13 @@ class Runner:
         for pid, (parent, uid, status) in processes.items():
             if uid != os.getuid() or pid in ancestors or status.startswith("Z"):
                 continue
+            reason = "working directory unreadable"
             try:
                 cwd = darwin_process_cwd(pid)
                 if cwd.is_relative_to(self.state["config"]["worktree"]):
                     found.append(pid)
                     continue
+                reason = "environment hidden"
                 try:
                     env = darwin_process_environment(pid)
                 except OSError:
@@ -879,6 +889,21 @@ class Runner:
                             continue
                         session = os.getsid(pid)
                         if session != pid and darwin_process_started_at(session) + 60 < started_at:
+                            continue
+                        # Diagnosis holds the runner lock, so the runner has
+                        # exited and its workers were reparented to launchd.
+                        # Every ancestor of a worker's descendant below launchd
+                        # therefore started after the run; a live older
+                        # ancestor proves another session's lineage.
+                        ancestor, walked = parent, {pid}
+                        while ancestor > 1 and ancestor not in walked and ancestor in processes:
+                            if darwin_process_started_at(ancestor) + 60 < started_at:
+                                break
+                            walked.add(ancestor)
+                            ancestor = processes[ancestor][0]
+                        else:
+                            ancestor = 0
+                        if ancestor > 1:
                             continue
                     # SIP hides Apple service environments. Only launchd-owned,
                     # kernel-verified protected services outside the worktree are
@@ -905,12 +930,19 @@ class Runner:
                     continue
                 except PermissionError:
                     pass
-                unreadable.append(str(pid))
+                try:
+                    name = darwin_process_executable(pid).name
+                except OSError:
+                    name = "unknown"
+                unreadable.append((pid, f"{pid} ({name}: {reason})"))
         if unreadable:
             raise Blocked(
                 "process evidence is unreadable for PID "
-                + ", ".join(sorted(unreadable))
-                + "; stop each process, then rerun --diagnose"
+                + ", ".join(label for _, label in sorted(unreadable))
+                + "; a hidden process is excluded only when it, its session leader"
+                " or a live ancestor predates the run, or it is a verified Apple"
+                " service; stop each listed process, or the app or session that"
+                " started it, then rerun --diagnose"
             )
         return sorted(found)
 
