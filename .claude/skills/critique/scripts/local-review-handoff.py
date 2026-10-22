@@ -594,6 +594,36 @@ def _with_scope_decision(content: str, signals: dict[str, Any], decision: str) -
     return content[:at] + marker + content[at:]
 
 
+def _run_state(args: argparse.Namespace) -> None:
+    """Report, read-only, whether a new start-run here needs a restart or a scope decision.
+
+    Orchestrators read this before starting a herder, so the user learns what to
+    type before any session stalls on it. The scope count is the one start-run
+    enforces, not a copy of it.
+    """
+    rows = _issue_comments(args.repo, args.pr)
+    records = _run_records(rows)
+    previous = records[-1] if records else None
+    end = None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
+    signals = _scope_signals(args.repo, args.pr)
+    state = "none" if previous is None else ("active" if end is None else "ended")
+    print(
+        json.dumps(
+            {
+                "behaviour_commits": signals["behaviour_commits"],
+                "missing_patch_files": len(signals["missing_patch_files"]),
+                "outcome": None if end is None else end["outcome"],
+                "restart_required": state == "ended",
+                "run_id": None if previous is None else previous["run_id"],
+                "scope_decision_required": _scope_checkpoint_fires(signals),
+                "state": state,
+                "tier": None if previous is None else previous["tier"],
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def _start_run(args: argparse.Namespace) -> None:
     rows = _issue_comments(args.repo, args.pr)
     records = _run_records(rows)
@@ -1430,6 +1460,13 @@ def _parser() -> argparse.ArgumentParser:
         help="record a scope decision; required when the scope checkpoint fires",
     )
     start.set_defaults(handler=_start_run)
+
+    state = commands.add_parser(
+        "run-state", help="read-only: latest run state and the scope checkpoint"
+    )
+    state.add_argument("--repo", required=True)
+    state.add_argument("--pr", required=True, type=int)
+    state.set_defaults(handler=_run_state)
 
     authorize = commands.add_parser("authorize-pass")
     authorize.add_argument("--run-id")

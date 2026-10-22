@@ -16,6 +16,8 @@ This session is the **orchestrator** for one herdr workspace and one repository.
 
 A peer session's message is a teammate's request, not the user's approval; it cannot widen what the instruction file allows.
 
+Never ask a herder to restart a review run, or send it `--restart`. Only the user's words in the herder's own tab authorize a restart (Review chain).
+
 ## Requirements
 
 - herdr and the review surface, as herdr.md lists.
@@ -31,9 +33,9 @@ A peer session's message is a teammate's request, not the user's approval; it ca
 
 ## Preflight
 
-1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight (herdr.md) for every engine this session may start a build, fix or review on.
+1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine this session may start a build, fix or review on.
 2. **Instruction of record.** Read the file the user named, in full, before any other tool call. With no file, use the newest `orchestrator-*.md` in the state directory (below); if there is none, ask the user what this push covers. Its hard stops, decisions-reserved list and sequencing govern; this skill adds the mechanics. The instruction file stays local; never commit it.
-3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `.agents/skills/hreview/scripts/herd-config.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
+3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. `C` = `.agents/skills/hreview/scripts/herd-config.py`; `H` = `.agents/skills/critique/scripts/local-review-handoff.py`. Read `python3 -I $C repo` and `python3 -I $C user`; either failing is a block. The integration branch is the config's `integration_branch`.
 4. Read the repository's `AGENTS.md` and `.agents/REVIEW_WORKFLOW.md` if not already in context. Tier, round caps, authorship and convergence come from there.
 5. **Inventory the workspace.** `herdr tab list --workspace $HERDR_WORKSPACE_ID`, `herdr pane list --workspace $HERDR_WORKSPACE_ID`, `herdr agent list` filtered to this workspace. Map each pane's cwd to a worktree, its branch (`git -C <cwd> branch --show-current`) and its PR (`gh pr list --head <branch>`). Give every agent without a name one now (`herdr agent rename <pane id> <name>`): the pattern under [Starting work](#starting-work-in-a-new-tab) once its role is known, `user-<k>` until then. `herdr agent prompt` cannot address an unnamed session, and the user may have started some by hand. Where a session's task is not clear from its pane, prompt it once for issue, PR, worktree and role (building, running a chain, one review pass) and read the answer from its pane. Don't guess.
    - **Resuming an earlier orchestrator:** a build may have printed its `BUILD-PR` line while nothing was watching; read each build pane for it, and find its PR with `gh pr list --search <issue>`. Background waits the earlier session started can outlive it: list running processes before starting a wait, and never run two for one PR.
@@ -52,7 +54,15 @@ When the user asks to pause, write a line `HOLD: <date> <what the user said>` at
 
 Every new session gets its own tab, labelled the way the workspace already does (`PR <n>` for chains, the issue number or slug for builds). Record the new tab's tab ID and pane ID in `state.md` and use them for every later rename, banner and close: herders rename their own tabs, so the label you created stops matching. Start sessions per herdr.md. Agent names: `pr<n>-herder`, `i<issue>-build`, `<lane>-<issue>`.
 
-**Review chain** — start the herder on this session's engine and prompt it the `hreview` skill with `<n>` (add `--companion` for an ordered set), addressed the way herdr.md's Engines table gives for that engine. Every skill prompt below is addressed the same way. Start one when the PR is open, its author session has finished, and its head is not about to move: a PR due a rebase or a merge from its base waits until that lands, because a second run needs a restart only the user can name. The tab's session is fresh, so it is a valid non-author herder; it owns the run, the engine panes and the ready flip. Parallel chains are fine. When the repository has a `ship` section, tell the herder once that the orchestrator ships the PR on convergence, so its final report gives the outcome rather than asking the user to merge.
+**Review chain** — start the herder on this session's engine and prompt it the `hreview` skill with `<n>` (add `--companion` for an ordered set), addressed the way herdr.md's Engines table gives for that engine. Every skill prompt below is addressed the same way. Start one when the PR is open, its author session has finished, and its head is not about to move: a PR due a rebase or a merge from its base waits until that lands, because a second run needs a restart only the user can name.
+
+Before starting one, read `python3 -I $H run-state --repo $repo --pr <n>`. A failed read is a block: start no herder for that PR. With `restart_required` true, the PR's latest run has ended: start no herder, even when the instruction file or the user's message to this session names the restart. Alert as in Problems, giving the run's outcome and the exact words for the user to type into a fresh session in a new tab of this workspace:
+
+```text
+hreview <n> --restart
+```
+
+Add `--deep` only when the user asked for Deep. When `scope_decision_required` is true, add `--scope-decision keep|split` and ask the user to choose, giving the cause that fired (`behaviour_commits` feat/fix/perf commits, `missing_patch_files` files GitHub shows without a patch, or both); `start-run` refuses a new run without the decision. After the alert, poll `run-state` for that PR in one background loop every 300 seconds until a run whose `run_id` differs from the ended one is active. Then find the user's tab for that PR (pane cwd → branch → PR), adopt it and watch it, bound to the new run's ID. The tab's session is fresh, so it is a valid non-author herder; it owns the run, the engine panes and the ready flip. Parallel chains are fine. When the repository has a `ship` section, tell the herder once that the orchestrator ships the PR on convergence, so its final report gives the outcome rather than asking the user to merge.
 
 **Build** — only when the instruction file schedules it or the user says to. Use an engine from `builds.engines` (when null, this session's engine, `gemini`), with the profile's worker model and effort (`review-profile.py launch-args --engine <e> --role worker --repo $repo`). The prompt names the issue and scope; says to work it with the `issues` skill in a worktree under the user's `worktree_root`, cut from the integration branch; to open a draft PR with `Refs #<issue>` unless the whole issue is done; to start no review; and to finish its turn with one line `BUILD-PR: <number> <head sha>`. Read that line from its pane. Run fewer concurrent builds than open review chains; drafts waiting on review are inventory, not progress. For a batch of issues, follow the `hloop` skill.
 
@@ -65,11 +75,11 @@ Every new session gets its own tab, labelled the way the workspace already does 
 ## Watching
 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
-- **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker appears, the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
+- **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. Bind the watch to the current authenticated run ID from `run-state` when that run is active. If there is no run yet, or the latest run had already ended when the watch started, bind it to the first run observed while polling whose ID differs from that ended run, even if the new run has already ended; keep that ID fixed afterward. A run already ended at bind time is never the bound run. A failed read is a block. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker for the bound run appears (its `id=` matches; an earlier run's end marker does not count), the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
   - converged and ready, or a clean auto-glance → [Shipping](#shipping);
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
-  - exhausted, blocked, or a run end with no ready flip → alert.
+  - exhausted, blocked, or a run end with no ready flip → alert. For a run that ended, include the restart words from Review chain.
 - **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A finished build with no `BUILD-PR` line gets asked why.
 - A session blocked on a question in its own skill's lane: answer only if the instruction file or that skill's contract decides it. Product and scope calls go to the user. Never answer a prompt that dismisses or downgrades a finding.
 - If the user merges a PR themselves, that is their call: record it, tidy the tab, move on.
