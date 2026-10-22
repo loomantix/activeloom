@@ -235,9 +235,11 @@ def test_gap_fix_pr_takes_the_review_route_and_is_handed_back(root: str) -> None
         "step 1 reported `\"dependencyUpdate\": true`",
         "`--no-fix`",
         "A missing signal, or a test that needs a change to product code",
-        "no open PR already updates these dependencies or claims the issue",
+        "no other open PR (besides `<pr>`) already updates these dependencies or claims the issue",
+        "before running any package manager install or lifecycle script",
         "never hand-edit a lockfile",
         "must fail at the base and pass with the fix",
+        '`node $L classify-changeset --base "$base_sha" --head "$(git rev-parse HEAD)"`',
         "`dependencyPaths` plus test-class files only",
         "`gh pr create --draft --base <base-branch>`",
         "This skill does not review, mark ready or merge the fix PR",
@@ -249,7 +251,8 @@ def test_gap_fix_pr_takes_the_review_route_and_is_handed_back(root: str) -> None
     assert "No merge." in rules
     assert "belong to its review chain and the orchestrator" in rules
     horch = " ".join(_skill(root, "horch").split())
-    assert "prints a `DEP-FIX-PR: <fix> <head> issue=<i> supersedes=<n>` line" in horch
+    assert "Once the herder is `done` or `idle`, a dependency analysis at `gaps` whose pane prints a `DEP-FIX-PR: <fix> <head> issue=<i> supersedes=<n>` line" in horch
+    assert "`isCrossRepository: false`" in horch
     assert "start a review chain for it as for any PR" in horch
     assert "Leave `<n>` unshipped" in horch
     hreview = " ".join(_skill(root, "hreview").split())

@@ -89,21 +89,21 @@ Done when the comment is posted and its marker names the PR's current head (re-r
 
 Runs only on verdict `gaps`. For any other verdict, go to step 7.
 
-**Issue.** Search the open issues and PRs for one that already tracks these gaps or already updates these dependencies, by package name and the analysed PR's number. Reuse it when found. Otherwise open one issue, under 400 words: the gap list from the report, a link to the report, and for each gap what closes it. Keep it public-safe: no evidence content, credentials or customer data, only synthetic examples.
+**Issue.** Search the open issues for one that already tracks these gaps, by package name and the analysed PR's number (when a PR exists). Reuse it when found. Otherwise open one issue, under 400 words: the gap list from the report, a link to the report (when a PR exists), and for each gap what closes it. Keep it public-safe: no evidence content, credentials or customer data, only synthetic examples.
 
-**Eligibility.** Open a fix PR only when every condition holds. Otherwise stop at the issue, and say in the report which condition failed.
+**Eligibility.** Open a fix PR only when every condition holds. Otherwise stop at the issue, comment once on the analysed PR (when one exists) naming the issue and which condition failed — never edit the step 5 report — and say in step 7's final summary which condition failed.
 
-- step 1 reported `"dependencyUpdate": true`, not a mixed range and not under the review override;
+- an open PR `<pr>` is under analysis, and step 1 reported `"dependencyUpdate": true`, not a mixed range and not under the review override;
 - the invocation did not pass `--no-fix` or say to leave the fix to a human;
 - every gap can be closed by test files alone, plus a newer release of the same dependencies where the gap is an upstream defect that release fixes. A missing signal, or a test that needs a change to product code, configuration or test tooling (an injection seam, a new environment, a CI step), is not eligible;
-- no open PR already updates these dependencies or claims the issue, which includes a session that has commented that it is working on the issue.
+- no other open PR (besides `<pr>`) already updates these dependencies or claims the issue, which includes a session that has commented that it is working on the issue.
 
 **Build the fix PR.** Work in a new worktree cut from `origin/<base-branch>`, the analysed PR's base, never in a primary checkout. Name the branch `deps/<dependency>-tests`.
 
-1. **Update.** Change the same dependencies as the analysed PR, through the repository's own package manager or update tool; never hand-edit a lockfile. Use the analysed PR's target versions, or, where a gap is an upstream defect, the oldest release that fixes it. Move a sibling direct dependency only when it must move for the fixed release to resolve, and name it in the PR body. Repeat step 2's provenance check on every version the fix adds. A provenance change, or missing first-party review evidence, stops at the issue.
+1. **Update.** Repeat step 2's provenance and first-party review evidence checks on every version or sibling direct dependency the fix will add before running any package manager install or lifecycle script. Change the same dependencies as the analysed PR, through the repository's own package manager or update tool (with lifecycle scripts disabled until provenance and first-party review evidence are verified on every added or changed lockfile entry); never hand-edit a lockfile. Use the analysed PR's target versions, or, where a gap is an upstream defect, the oldest release that fixes it. Move a sibling direct dependency only when it must move for the fixed release to resolve, and name it in the PR body. A provenance change, or missing first-party review evidence, stops at the issue.
 2. **Tests.** Add test files that drive each untested consumer path through the real dependency, at the seam this repository calls. Use the dependency's own extension points to stay offline: a capturing request handler, an in-memory transport, a temporary directory. Never mock out the code being tested. They must be deterministic and need no network, credentials or real data, and every input is synthetic. A test for an upstream defect must fail at the base and pass with the fix: run it at `origin/<base-branch>` and record the failure.
-3. **Gate.** Classify the fix range with `node $L classify-changeset`. Its review-significant files must be `dependencyPaths` plus test-class files only; anything else stops at the issue. Run the repository's gate commands as in step 3, with a frozen install first. A failure that the fix causes stops at the issue, with the failure recorded there.
-4. **Open.** Commit with a conventional message (`deps(<scope>): ...`) closing the issue, and add the attribution and sign-off trailers the repository's instructions require. Push, and run `gh pr create --draft --base <base-branch>`. The body, under 300 words, states the versions from and to, the tests added and what each one pins, the base-failure proof, the gate commands and their results, and `Supersedes #<pr>`.
+3. **Gate.** Commit the dependency update and test files locally with a conventional message (`deps(<scope>): ...`) closing the issue, and add the attribution and sign-off trailers the repository's instructions require. Classify the committed fix range with `node $L classify-changeset --base "$base_sha" --head "$(git rev-parse HEAD)"`. Its review-significant files must be `dependencyPaths` plus test-class files only; anything else stops at the issue. Run the repository's gate commands as in step 3, with a frozen install first. A failure that the fix causes stops at the issue, with the failure recorded there.
+4. **Open.** Push the committed fix branch, and run `gh pr create --draft --base <base-branch>`. The body, under 300 words, states the versions from and to, the tests added and what each one pins, the base-failure proof, the gate commands and their results, and `Supersedes #<pr>`.
 
 This skill does not review, mark ready or merge the fix PR. Its tests are code this repository contains, so the fix PR is a mixed range and takes the normal review route. After the chain converges, this analysis runs on its `dependencyPaths` at the converged head.
 
@@ -115,7 +115,7 @@ DEP-FIX-PR: <fix pr number> <fix head sha> issue=<issue number> supersedes=<anal
 
 When the session runs inside herdr (`HERDR_ENV=1`), also run `herdr notification show "<owner/name>#<fix pr>" --body "dependency fix PR ready for review (supersedes #<pr>)"`.
 
-Done when the issue exists and either the fix PR is open as a draft and the line is printed, or the report names the eligibility condition that failed.
+Done when the issue exists and either the fix PR is open as a draft and the line is printed, or step 7's summary names the eligibility condition that failed.
 
 ### 7. Ready
 
