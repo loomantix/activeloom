@@ -474,6 +474,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check pinned Agy surface protocol
+        run: python3 scripts/check-agy-surface.py
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

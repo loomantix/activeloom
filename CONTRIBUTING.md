@@ -105,6 +105,21 @@ Read [prompt rendering](docs/prompt-rendering.md) for generation, parity, and pr
 
 For public documentation changes, keep the root README, [agent entry guide](docs/agent-guide.md), [getting-started guide](docs/getting-started.md), and [CLI README](cli/README.md) consistent. Verify package availability before presenting an npm command as usable. Distinguish installer version, distribution ref, prompt-stack version, and installed consumer state.
 
+### Keep the Agy relay pin compatible
+
+After a ledger bump, use two commits: A builds and vendors the ledger into all
+three harness roots; B sets `agy_surface_sha` in both `.claude` and `.codex`
+critique launchers and `AGY_SURFACE_SHA` in `tests/test_agy_review_launcher.py`
+to A. Use a merge commit so A remains reachable. With squash merges, land the
+ledger change first, then move the pin in a separate PR before distribution.
+The `.agents` agent-loop launcher instead trusts `AGENT_LOOP_TRUSTED_BASE_REF`;
+it has no companion commit pin.
+
+Run `python3 scripts/check-agy-surface.py` with full Git history available.
+It compares the pinned `.agents` ledger with all three installed harness
+ledgers. CI, npm publication, and the distribution regression preflight run
+this check; `--ref <commit>` checks the exact proposed release commit.
+
 ## Skill-edit conventions
 
 - Edit upstream only. The skill files in this repo are the source of truth for every consumer; edits in a consumer repo will be overwritten on next sync.

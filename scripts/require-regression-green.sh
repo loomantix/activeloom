@@ -21,6 +21,9 @@ command -v gh >/dev/null || { echo "ERROR: gh is required." >&2; exit 2; }
 
 sha="$(git rev-parse --verify "$1^{commit}")" || exit 2
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+python3 "$script_dir/check-agy-surface.py" --repo "$(git rev-parse --show-toplevel)" --ref "$sha"
+
 run="$(gh run list --workflow regression.yml --commit "$sha" --status success \
   --limit 1 --json url --jq '.[0].url // empty')"
 

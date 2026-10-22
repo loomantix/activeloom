@@ -55,7 +55,15 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 # Pinned loomantix/activeloom commit whose .agents tree is the only
 # relay surface this launcher will expose to unattended Agy. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="03d3dda77333bc8d430e45dffd2d1f67cb9b4ce3"
+agy_surface_sha="53fd790a1e95b7ecfae2a5c2027249c6655d4d1a"
+
+# The companion surface must speak this engine's ledger protocol. Reading the
+# expectation from the vendored version file beside this script keeps the two
+# in step through a ledger bump instead of pinning the number twice.
+ledger_version_file="$script_dir/review-ledger.version"
+[ -f "$ledger_version_file" ] || { echo "vendored review-ledger.version is missing" >&2; exit 1; }
+ledger_version="$(tr -d '[:space:]' <"$ledger_version_file")"
+[ -n "$ledger_version" ] || { echo "vendored review-ledger.version is empty" >&2; exit 1; }
 
 launch_state preflight pr_boundary
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -164,7 +172,7 @@ run_agy_managed "$skills_file" 2m \
     --print '/skills'
 fi
 
-agy_surface_root="$(python3 - "$skills_file" "$agy_surface_sha" <<'PY'
+agy_surface_root="$(python3 - "$skills_file" "$agy_surface_sha" "$ledger_version" <<'PY'
 import json
 import os
 import pathlib
@@ -187,6 +195,7 @@ if payload.get("status") != "SUCCESS":
     raise SystemExit(f"agy skill preflight did not succeed: {payload.get('status', 'missing status')}")
 
 pinned_surface_sha = sys.argv[2]
+expected_ledger_version = sys.argv[3]
 
 def surface_restore_hint(reported: str) -> str:
     # A swept trusted-surface checkout is the usual cause of an unresolvable
@@ -258,6 +267,15 @@ except (OSError, UnicodeError, json.JSONDecodeError) as error:
     raise SystemExit(f"agy review-ledger package manifest is invalid: {error}")
 if package.get("type") != "module":
     raise SystemExit("agy review-ledger package manifest must declare type=module")
+
+surface_ledger_version = (
+    (surface / "skills/critique/scripts/review-ledger.version").read_text(encoding="utf-8").strip()
+)
+if surface_ledger_version != expected_ledger_version:
+    raise SystemExit(
+        "the relay surface speaks review-ledger "
+        f"{surface_ledger_version or 'an unreadable version'}, this engine vendors {expected_ledger_version}"
+    )
 
 deep_contract = path.read_text(encoding="utf-8")
 critique_contract = (surface / "skills/critique/SKILL.md").read_text(encoding="utf-8")

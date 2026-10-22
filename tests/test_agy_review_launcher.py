@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import stat
 import subprocess
 import time
@@ -23,7 +24,7 @@ SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"
 LEDGER_VERSION_FILE = ROOT / ".claude/skills/critique/scripts/review-ledger.version"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
-AGY_SURFACE_SHA = "03d3dda77333bc8d430e45dffd2d1f67cb9b4ce3"
+AGY_SURFACE_SHA = "53fd790a1e95b7ecfae2a5c2027249c6655d4d1a"
 LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 
 # Continuation flags start a fresh one-shot only by their absence, so the
@@ -574,7 +575,8 @@ def test_launcher_rejects_non_esm_ledger_package(tmp_path: Path) -> None:
     assert not argv_file.exists()
 
 
-def test_launcher_rejects_mismatched_ledger_protocol_version(tmp_path: Path) -> None:
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_rejects_mismatched_ledger_protocol_version(tmp_path: Path, harness: str) -> None:
     argv_file = tmp_path / "argv.json"
     fake_agy, _ = _fake_agy(tmp_path, ledger_version="0.0.1-not-this-one")
     environment = {
@@ -583,7 +585,12 @@ def test_launcher_rejects_mismatched_ledger_protocol_version(tmp_path: Path) -> 
         "AGY_REVIEW_CLI": str(fake_agy),
     }
 
-    result = _run(environment)
+    command = _command()
+    command[0] = str(ROOT / harness / "skills/critique/scripts/run-agy-review.sh")
+    result = subprocess.run(
+        [*command, "--preflight-only"], env=environment, cwd=ROOT,
+        capture_output=True, text=True,
+    )
 
     assert result.returncode == 1
     assert "speaks review-ledger 0.0.1-not-this-one" in result.stderr
@@ -711,6 +718,39 @@ def test_launcher_pin_matches_the_launcher_source(harness: str) -> None:
     # so assert it rather than mirroring the value by hand.
     launcher = ROOT / harness / "skills/critique/scripts/run-agy-review.sh"
     assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in launcher.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_preflight_accepts_real_pinned_surface(tmp_path: Path, harness: str) -> None:
+    real_git = shutil.which("git")
+    assert real_git
+    checkout = tmp_path / "real-surface"
+    subprocess.run([real_git, "clone", "--shared", "--no-checkout", str(ROOT), str(checkout)], check=True)
+    subprocess.run([real_git, "-C", str(checkout), "checkout", "--detach", AGY_SURFACE_SHA], check=True)
+    subprocess.run([real_git, "-C", str(checkout), "remote", "set-url", "origin",
+                    "https://github.com/loomantix/activeloom.git"], check=True)
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = _trusted_environment(tmp_path)
+    # Only PR identity is synthetic. Every surface Git call uses the real
+    # checkout, including remote, HEAD, and cleanliness validation.
+    fake_git = tmp_path / "bin/git"
+    source = fake_git.read_text().replace(
+        "args = sys.argv[1:]\n",
+        f"args = sys.argv[1:]\nif '-C' in args:\n    os.execv({real_git!r}, [{real_git!r}, *args])\n",
+        1,
+    )
+    fake_git.write_text(source)
+    argv_file = tmp_path / "argv.json"
+    environment.update(
+        AGY_REVIEW_CLI=str(fake_agy), AGY_ARGV_FILE=str(argv_file),
+        ACTIVELOOM_REVIEW_SURFACE=str(checkout / ".agents"),
+    )
+    command = _command()
+    command[0] = str(ROOT / harness / "skills/critique/scripts/run-agy-review.sh")
+    result = subprocess.run([*command, "--preflight-only"], env=environment,
+                            cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not argv_file.exists()
 
 
 @pytest.mark.parametrize("harness", [".claude", ".codex"])
