@@ -204,8 +204,18 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
       return;
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
-    fs.chmodSync(dest, stat.mode & 0o777);
+    const staging = fs.mkdtempSync(
+      path.join(path.dirname(dest), '.tmp-support-'),
+    );
+    try {
+      const replacement = path.join(staging, 'file');
+      fs.copyFileSync(src, replacement);
+      fs.chmodSync(replacement, stat.mode & 0o777);
+      // Rename replaces a clone-installed link without writing into its target.
+      fs.renameSync(replacement, dest);
+    } finally {
+      fs.rmSync(staging, { recursive: true, force: true });
+    }
   };
 
   for (const relative of SUPPORT_PATHS) {

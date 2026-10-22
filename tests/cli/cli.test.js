@@ -1365,3 +1365,45 @@ test('installSupportFiles reports a kept support file that differs from upstream
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+for (const dangling of [false, true]) {
+  test(`forced support refresh replaces a ${dangling ? 'dangling' : 'live'} clone link without writing through it`, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-support-'));
+    try {
+      const upstream = path.join(root, 'upstream');
+      const home = path.join(root, 'home');
+      const source = path.join(upstream, '.claude', 'references', 'herdr.md');
+      const dest = path.join(home, '.claude', 'references', 'herdr.md');
+      const target = path.join(root, 'clone-local.md');
+      fs.mkdirSync(path.dirname(source), { recursive: true });
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(source, 'distribution\n', { mode: 0o644 });
+      if (!dangling) {
+        fs.writeFileSync(target, 'local edits\n', { mode: 0o600 });
+      }
+      fs.symlinkSync(target, dest);
+      const harness = {
+        id: 'claude',
+        root: '.claude',
+        skills: '.claude/skills',
+      };
+
+      addLib.installSupportFiles(upstream, harness, home, true, true);
+      assert.strictEqual(fs.readlinkSync(dest), target);
+      addLib.installSupportFiles(upstream, harness, home, false, true);
+
+      assert.strictEqual(fs.lstatSync(dest).isSymbolicLink(), false);
+      assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'distribution\n');
+      assert.strictEqual(fs.statSync(dest).mode & 0o777, 0o644);
+      if (dangling) {
+        assert.strictEqual(fs.existsSync(target), false);
+      } else {
+        assert.strictEqual(fs.readFileSync(target, 'utf8'), 'local edits\n');
+        assert.strictEqual(fs.statSync(target).mode & 0o777, 0o600);
+      }
+      assert.deepStrictEqual(fs.readdirSync(path.dirname(dest)), ['herdr.md']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
