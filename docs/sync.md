@@ -18,7 +18,7 @@ A target with `create_if_missing: true` bootstraps the destination on first sync
 
 Each consumer repo drops in **one** `.github/workflows/sync-from-upstream.yml` (copied from [`sync-from-upstream.yml.template`](../.github/workflows/sync-from-upstream.yml.template), with `UPSTREAM_REPO`, `PR_BASE_BRANCH`, and the secret names filled in), however many harnesses it runs. Before sync-v2 the file was copied once per upstream and each copy passed its own `--config`; now the harness list lives in the consumer config instead. On its daily cron + `workflow_dispatch`, the workflow:
 
-1. Shallow-clones the upstream repo at the pinned `UPSTREAM_REF` tag (defaults to `sync-v2`).
+1. Clones the upstream repo at the pinned `UPSTREAM_REF` tag (defaults to `sync-v2`), with history for the Agy surface compatibility check.
 2. Runs [`scripts/sync-engine.py`](../scripts/sync-engine.py) against the consumer working tree.
 3. If the working tree changed, opens a PR titled `Sync from <upstream-repo>`.
 4. Closes any prior open sync PR — humans either merged it or rejected it; the workflow doesn't accumulate stale sync PRs. The closed PR's review comments persist on GitHub; only the head branch is deleted.
@@ -45,7 +45,12 @@ git tag -af sync-v2 -m "Retag sync-v2 to <reason>" <commit-sha>
 git push --force-with-lease origin sync-v2
 ```
 
-`require-regression-green.sh` fails unless the Regression workflow succeeded at exactly that commit. Routine CI runs only the fast lane and path-selected integration modules, so a green `main` is not evidence that the complete suite passed; if no run exists, start one with `gh workflow run regression.yml --ref main` and wait for it. See [Testing architecture](testing.md).
+`require-regression-green.sh` first checks that the proposed commit's pinned Agy surface matches all three harness ledger versions, then fails unless the Regression workflow succeeded at exactly that commit. Routine CI runs only the fast lane and path-selected integration modules, so a green `main` is not evidence that the complete suite passed; if no run exists, start one with `gh workflow run regression.yml --ref main` and wait for it. See [Testing architecture](testing.md).
+
+The bootstrap sync workflow templates also check the upstream pin before syncing.
+Existing consumers do not receive template edits automatically; they rely on the
+upstream CI, publication, and distribution preflight gates until their workflow
+is updated separately.
 
 The `--force-with-lease` is required and intentional — it asserts the tag's previous SHA so a concurrent retag from another maintainer fails loudly rather than silently clobbering. The annotated message documents the cumulative changes since the previous retag.
 

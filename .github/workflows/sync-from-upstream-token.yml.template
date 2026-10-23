@@ -102,9 +102,9 @@ jobs:
           # (which would silently ship branch content as a "sync from <tag>" —
           # exactly what the trust model promises won't happen).
           if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
-            git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+            git fetch origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
           elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
-            git fetch --depth=1 origin "${UPSTREAM_REF}"
+            git fetch origin "${UPSTREAM_REF}"
           else
             echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}. If the upstream is private, this workflow cannot read it — use the GitHub App variant (sync-from-upstream.yml.template)." >&2
             exit 1
@@ -118,6 +118,9 @@ jobs:
 
       - name: Install dependencies
         run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Check pinned Agy surface protocol
+        run: python3 /tmp/upstream/scripts/check-agy-surface.py --repo /tmp/upstream
 
       - name: Run sync engine
         run: |

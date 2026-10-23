@@ -29,6 +29,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Check pinned Agy surface protocol
+        run: python3 scripts/check-agy-surface.py
       - name: Restore the annotated release tag
         run: bash .github/scripts/restore-release-tag.sh
       - name: Verify tagged commit is on main
