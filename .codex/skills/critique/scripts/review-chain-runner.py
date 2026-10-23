@@ -1616,8 +1616,27 @@ class Runner:
             raise Blocked(
                 "migration requires a clean checkout at the explicitly verified controller commit"
             )
-        if self.boundary() != self.state["head"]:
-            raise Blocked("reconcile the pending review head before migration")
+        head = self.boundary()
+        if head != self.state["head"]:
+            attempts = [
+                a for a in self.state.get("attempts", [])
+                if pending and a["attempt_id"] == pending.get("attempt_id")
+            ]
+            if (
+                not pending or pending["phase"] != "returned"
+                or pending["before"] != self.state["head"]
+                or len(attempts) != 1 or attempts[0].get("phase") != "returned"
+                or attempts[0].get("exit_status") != 0
+            ):
+                raise Blocked("reconcile the pending review head before migration")
+            candidate = self.helper(
+                "ledger", "validate-result", "--head", head,
+                "--engine", pending["engine"], "--round", str(pending["round"]),
+                "--base", self.state["base"], "--before", pending["before"],
+                "--result-file", str(self.directory / pending["folder"] / "result.json"),
+            )
+            if candidate["status"] != "changed":
+                raise Blocked("migration requires a completed changed candidate at the live head")
         backup = self.directory / ("state-v1.json" if version == 1 else f"state-v2-{revision}.json")
         if not backup.exists():
             save(backup, self.state)
@@ -2305,7 +2324,7 @@ class Runner:
             raise Blocked(f"unknown retry evidence kind: {kind}")
         if (
             self.boundary() != pending["before"]
-            or self.state["head"] != pending["before"]
+            or self.state["head"] != pending.get("review_before", pending["before"])
         ):
             raise Blocked(f"{label} requires the unchanged review head")
         decision = self.decision(pending["before"])
@@ -2335,7 +2354,7 @@ class Runner:
         ):
             raise Blocked(f"{failure} evidence changed or a reviewer result exists")
         prefix = kind.replace("_", "-")
-        # A validation repair launches after a completed clean candidate that
+        # A validation repair launches after a completed candidate that
         # may have posted. From then on the failed gate's snapshot, not the
         # pre-pass one, is what a failed worker must have left unchanged.
         gate = None
@@ -2507,16 +2526,14 @@ class Runner:
         self, pending: dict[str, Any], head: str, result: dict[str, Any],
         index: int, argv: list[str], error: ProcessFailure,
     ) -> bool:
-        # Only an ordinary failed gate after a clean, unchanged-head review is
-        # retryable. Unknown exits, timeouts and material transitions keep their
-        # existing recovery boundary. A pass gets at most one repair attempt.
+        # The successful candidate is retained; only its exact head may enter
+        # the one repair slot. Signals and unknown exits never authorize it.
         if (
             pending.get("validation_origin")
             or pending.get("validation_repair_refused")
             or not {"before_threads_sha256", "before_comments_sha256"} <= set(pending)
-            or result["status"] != "clean"
-            or head != pending["before"]
-            or head != self.state["head"]
+            or result["status"] not in ("clean", "changed")
+            or pending["before"] != self.state["head"]
             or not 0 < error.exit_status < 124
         ):
             return False
@@ -2532,6 +2549,7 @@ class Runner:
         folder = self.directory / pending["folder"]
         log = f"check-{index}.log"
         receipt = {
+            "before": pending["before"],
             "head": head, "result_sha256": digest(folder / "result.json"),
             "log": log, "log_sha256": digest(folder / log),
             "argv": argv, "exit_status": error.exit_status,
@@ -2554,19 +2572,21 @@ class Runner:
             raise Blocked("validation recovery origin changed")
         attempt = attempts[0]
         receipt = attempt.get("validation_failure", {})
+        before = receipt.get("before", receipt.get("head"))
+        expected_head = receipt.get("head")
         if (
             attempt.get("phase") != "returned" or attempt.get("exit_status") != 0
             or (attempt.get("engine"), attempt.get("round"))
             != (pending["engine"], pending["round"])
-            or receipt.get("head") != pending["before"]
-            or self.boundary() != pending["before"]
-            or self.state["head"] != pending["before"]
+            or pending["before"] != (expected_head if pending.get("validation_origin") else before)
+            or self.boundary() != expected_head
+            or self.state["head"] != before
             or type(receipt.get("exit_status")) is not int
             or not 0 < receipt["exit_status"] < 124
             or not re.fullmatch(r"check-[0-9]+\.log", str(receipt.get("log")))
         ):
             raise Blocked("validation recovery requires the unchanged completed pass")
-        decision = self.decision(pending["before"])
+        decision = self.decision(expected_head)
         if (
             decision.get("passes") != self.state["completed"]
             or decision.get("status") != "next"
@@ -2578,10 +2598,17 @@ class Runner:
         if (
             digest(folder / "result.json") != receipt["result_sha256"]
             or digest(folder / receipt["log"]) != receipt["log_sha256"]
-            or read(folder / "result.json")["status"] != "clean"
             or digest(folder / "historical.json") != pending["historical_sha256"]
         ):
             raise Blocked("validation failure evidence changed")
+        candidate = self.helper(
+            "ledger", "validate-result", "--head", expected_head,
+            "--engine", pending["engine"], "--round", str(pending["round"]),
+            "--base", self.state["base"], "--before", before,
+            "--result-file", str(folder / "result.json"),
+        )
+        if candidate["status"] not in ("clean", "changed"):
+            raise Blocked("validation recovery requires a completed candidate")
         for name, capture in (("threads", self.threads), ("comments", self.comments)):
             if digest(folder / f"before-{name}.json") != pending[f"before_{name}_sha256"]:
                 raise Blocked("pre-pass review evidence changed")
@@ -2620,6 +2647,8 @@ class Runner:
         pending.update(
             folder=str(retry.relative_to(self.directory)), phase="prepared",
             validation_origin=origin,
+            review_before=pending["before"],
+            before=attempt["validation_failure"]["head"],
         )
         pending.pop("validation_recovery")
         self.persist()
@@ -2756,7 +2785,7 @@ class Runner:
             )
         self.verify_control()
         head = self.boundary()
-        if head != pending["before"] or head != self.state["head"]:
+        if head != pending["before"] or self.state["head"] != pending.get("review_before", head):
             raise Blocked("head changed; preflight recovery requires reconciliation")
         decision = self.decision(head)
         if (
@@ -3091,8 +3120,50 @@ class Runner:
             result = self.helper("ledger", "validate-result", *fields)
         if result["status"] == "blocked":
             self.emit_fallback_telemetry(pending, "blocked")
+            if pending.get("validation_origin"):
+                # Automatic recovery would consume only the repair's transition
+                # and silently drop the original candidate's fixes.
+                raise Blocked("blocked validation repair requires explicit recovery")
             self.recover_blocked_pass(pending, head, result)
             return
+        if origin := pending.get("validation_origin"):
+            original = next(a for a in self.state["attempts"] if a["attempt_id"] == origin)
+            review_before = pending.get("review_before", pending["before"])
+            receipt = original["validation_failure"]
+            original_path = self.directory / original["folder"] / "result.json"
+            if (
+                digest(original_path) != receipt["result_sha256"]
+                or receipt.get("before", receipt["head"]) != review_before
+                or receipt["head"] != pending["before"]
+                or self.state["head"] != review_before
+            ):
+                raise Blocked("original validation candidate changed after repair")
+            prior = self.helper(
+                "ledger", "validate-result", "--head", pending["before"],
+                "--engine", pending["engine"], "--round", str(pending["round"]),
+                "--base", self.state["base"], "--before", review_before,
+                "--result-file", str(original_path),
+            )
+            combined = read(result_path)
+            classifications = [prior["classification"], result["classification"]]
+            combined.update(
+                beforeSha=review_before,
+                status="changed" if "changed" in (prior["status"], result["status"]) else "clean",
+                classification=("material" if "material" in classifications else
+                                "minor" if "minor" in classifications else None),
+                findingFingerprints=list(dict.fromkeys(
+                    prior["findingFingerprints"] + result["findingFingerprints"]
+                )),
+            )
+            result_path = folder / "combined-result.json"
+            if result_path.exists():
+                if read(result_path) != combined:
+                    raise Blocked("combined validation result changed")
+            else:
+                save(result_path, combined)
+            fields[fields.index("--before") + 1] = review_before
+            fields[fields.index("--result-file") + 1] = str(result_path)
+            result = self.helper("ledger", "validate-result", *fields)
         self.dco(head)
         validation = self.resolved_validation(head)
         expected_validation = {
@@ -3156,6 +3227,7 @@ class Runner:
             else None
         )
         self.threads(folder / "threads.json")
+        review_before = pending.get("review_before", pending["before"])
         intermediate = (
             command(
                 [
@@ -3163,13 +3235,13 @@ class Runner:
                     "rev-list",
                     "--reverse",
                     "--ancestry-path",
-                    f"{pending['before']}..{head}",
+                    f"{review_before}..{head}",
                 ]
             ).splitlines()
-            if head != pending["before"]
+            if head != review_before
             else []
         )
-        save(folder / "heads.json", [pending["before"], *intermediate])
+        save(folder / "heads.json", [review_before, *intermediate])
         summary = folder / "summary.txt"
         validation_label = (
             "Legacy caller-supplied validation commands"
