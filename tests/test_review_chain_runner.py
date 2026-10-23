@@ -5546,6 +5546,7 @@ def test_darwin_hidden_environment_checks_process_and_session_creation(
 PROTECTED_SERVICES = (
     '/usr/libexec/service',
     '/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
+    '/System/Volumes/Preboot/Cryptexes/OS/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper',
 )
 
 
@@ -5556,6 +5557,10 @@ PROTECTED_SERVICES = (
     '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal',
     '/Applications/Tool.app/Contents/PlugIns/Widget.appex/Contents/MacOS/Widget',
     '/tmp/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
+    '/tmp/System/Volumes/Preboot/Cryptexes/OS/usr/libexec/service',
+    '/System/Volumes/Preboot/Cryptexes/OS-extra/usr/libexec/service',
+    '/System/Volumes/Preboot/Cryptexes/OS/usr/bin/python3',
+    '/System/Volumes/Preboot/Cryptexes/OS/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal',
 ])
 def test_darwin_service_exemption_requires_kernel_flags_and_system_path(
     monkeypatch: pytest.MonkeyPatch, flags: int, path: str,
