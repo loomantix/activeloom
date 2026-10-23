@@ -1489,10 +1489,13 @@ def validation_repair_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.parametrize("engine", ["codex", "claude", "gemini"])
 @pytest.mark.parametrize("repair_changes", [True, False])
-@pytest.mark.parametrize("classification", ["material", "minor"])
+@pytest.mark.parametrize(
+    ("original_classification", "repair_classification"),
+    [("material", "material"), ("minor", "minor"), ("minor", "material"), ("material", "minor")],
+)
 def test_changed_candidate_validation_repairs_preserve_original_transition(
     validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch, engine: str,
-    repair_changes: bool, classification: str,
+    repair_changes: bool, original_classification: str, repair_classification: str,
 ) -> None:
     v = validation_repair_harness
     h = v.harness
@@ -1508,7 +1511,8 @@ def test_changed_candidate_validation_repairs_preserve_original_transition(
             result = h.module.read(path)
             h.controls.head = ("c" if len(h.launches) == 1 else "e") * 40
             result.update(
-                status="changed", afterSha=h.controls.head, classification=classification,
+                status="changed", afterSha=h.controls.head,
+                classification=original_classification if len(h.launches) == 1 else repair_classification,
                 findingFingerprints=["original-finding" if len(h.launches) == 1 else "repair-finding"],
             )
             h.module.save(path, result)
@@ -1526,7 +1530,10 @@ def test_changed_candidate_validation_repairs_preserve_original_transition(
     assert combined["beforeSha"] == HEAD
     assert combined["afterSha"] == repair["afterSha"] == ("e" if repair_changes else "c") * 40
     assert combined["status"] == "changed"
-    assert combined["classification"] == classification
+    assert combined["classification"] == (
+        "material" if "material" in (original_classification, repair_classification if repair_changes else None)
+        else "minor"
+    )
     assert combined["findingFingerprints"] == ["original-finding"] + (
         ["repair-finding"] if repair_changes else []
     )

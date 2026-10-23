@@ -2785,7 +2785,7 @@ class Runner:
             )
         self.verify_control()
         head = self.boundary()
-        if head != pending["before"] or head != self.state["head"]:
+        if head != pending["before"] or self.state["head"] != pending.get("review_before", head):
             raise Blocked("head changed; preflight recovery requires reconciliation")
         decision = self.decision(head)
         if (
@@ -3128,25 +3128,26 @@ class Runner:
             return
         if origin := pending.get("validation_origin"):
             original = next(a for a in self.state["attempts"] if a["attempt_id"] == origin)
+            review_before = pending.get("review_before", pending["before"])
             receipt = original["validation_failure"]
             original_path = self.directory / original["folder"] / "result.json"
             if (
                 digest(original_path) != receipt["result_sha256"]
-                or receipt.get("before", receipt["head"]) != pending["review_before"]
+                or receipt.get("before", receipt["head"]) != review_before
                 or receipt["head"] != pending["before"]
-                or self.state["head"] != pending["review_before"]
+                or self.state["head"] != review_before
             ):
                 raise Blocked("original validation candidate changed after repair")
             prior = self.helper(
                 "ledger", "validate-result", "--head", pending["before"],
                 "--engine", pending["engine"], "--round", str(pending["round"]),
-                "--base", self.state["base"], "--before", pending["review_before"],
+                "--base", self.state["base"], "--before", review_before,
                 "--result-file", str(original_path),
             )
             combined = read(result_path)
             classifications = [prior["classification"], result["classification"]]
             combined.update(
-                beforeSha=pending["review_before"],
+                beforeSha=review_before,
                 status="changed" if "changed" in (prior["status"], result["status"]) else "clean",
                 classification=("material" if "material" in classifications else
                                 "minor" if "minor" in classifications else None),
@@ -3160,7 +3161,7 @@ class Runner:
                     raise Blocked("combined validation result changed")
             else:
                 save(result_path, combined)
-            fields[fields.index("--before") + 1] = pending["review_before"]
+            fields[fields.index("--before") + 1] = review_before
             fields[fields.index("--result-file") + 1] = str(result_path)
             result = self.helper("ledger", "validate-result", *fields)
         self.dco(head)
