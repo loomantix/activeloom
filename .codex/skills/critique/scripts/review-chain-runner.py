@@ -412,6 +412,10 @@ def darwin_protected_executable(pid: int) -> Path | None:
 def darwin_protected_service(pid: int) -> bool:
     """Identify SIP-protected Apple services, never user-installed reviewers."""
     executable = darwin_protected_executable(pid)
+    cryptex_root = Path("/System/Volumes/Preboot/Cryptexes/OS")
+    if executable is not None and executable.is_relative_to(cryptex_root):
+        # proc_pidpath resolves sealed OS framework links into their Cryptex mount.
+        executable = Path("/") / executable.relative_to(cryptex_root)
     return executable is not None and (
         executable.is_relative_to("/usr/libexec") or (
             executable.is_relative_to("/System/Library")
