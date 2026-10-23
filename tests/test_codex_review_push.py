@@ -162,7 +162,9 @@ def _remote_head(repo: Path) -> str:
 
 
 def _journal(env: dict[str, str]) -> dict[str, object]:
-    return json.loads(Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8"))
+    value = json.loads(Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
 
 
 def _ledger_calls(env: dict[str, str]) -> list[dict[str, object]]:
