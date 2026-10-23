@@ -404,7 +404,7 @@ bundle through its normal verified distribution path, never patch it locally.
 
 ### Automatic validation repair
 
-When a reviewer returns a clean canonical result at the unchanged head and a
+When a reviewer returns a completed clean or changed canonical result and a
 required controller validation command then exits ordinarily with status 1–123,
 the runner automatically offers that same reviewer **one repair attempt for the
 owed pass**. This applies to Codex, Claude and Gemini. The reviewer receives the
@@ -412,6 +412,11 @@ failed gate log as diagnostic evidence, must post verified findings before fixes
 and may repair necessary fixtures within the authorized task. It may not weaken
 gates or expand unrelated scope. The controller reruns every required gate on
 the resulting head before attestation; the earlier candidate is never attested.
+Repair starts at the candidate's exact head. The controller preserves both
+canonical results and writes a separate combined result spanning the original
+start through the repaired head, retaining every finding fingerprint and the
+stronger change classification. Attestation covers that full transition, so a
+clean repair cannot hide the original material fixes.
 
 The original result, failed log, command, exit status and ledger snapshots remain
 in the original pass directory. The retry lives in `validation-retry`. The run
@@ -424,9 +429,7 @@ older pinned controllers retain their original recovery behavior.
 
 An interrupted staging transaction resumes that same slot. Changed heads or
 ledger evidence, modified saved evidence, failed cleanup, unknown exits,
-timeouts and signals block automatic repair. A candidate that already changed
-the head also requires ordinary explicit recovery: this narrow path does not
-rewrite its unfinalized transition. When the repair is refused before its retry
+timeouts and signals block automatic repair. When the repair is refused before its retry
 is staged, the slot is forfeited and the pass returns to the ordinary gate
 rerun: `--resume` reruns the failed gates and attests the original candidate
 only if they pass. A pending pass saved without pre-pass ledger digests gets no
@@ -508,6 +511,10 @@ pending worker has a known returned phase. The migration saves
 `state-v2-<sha>.json` and retains all attempts, completed passes, model settings,
 installation pins and prior controls. It never turns an unknown exit into a
 returned one. Version 1 checkpoints retain their existing migration behavior.
+When a returned worker pushed changes that have not yet been attested, migration
+also verifies its successful observed exit and canonical changed result against
+the exact live head. This retains the original checkpoint head and pending
+transition; it does not accept an externally changed head or spend another round.
 
 For a version 1 Gemini attempt with a supported preflight rejection,
 an operator can additionally supply `--recover-preflight

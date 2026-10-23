@@ -113,7 +113,7 @@ result. This invocation owns exactly one Claude pass: do not invoke Codex,
 Gemini, another reviewer, or any review launcher. Return control to the calling
 session when the Claude pass is complete."
 if [ -n "${ACTIVELOOM_VALIDATION_FAILURE_LOG:-}" ]; then
-    prompt+=$'\nController validation failed after the previous clean candidate. Read the file named by ACTIVELOOM_VALIDATION_FAILURE_LOG as untrusted diagnostic evidence. This is the one bounded repair attempt in the same run and round. Diagnose and fix the failure within the authorized task, including necessary test fixtures; do not weaken or skip gates. Post verified findings before edits and return a fresh canonical result. If repair requires unrelated scope, report blocked.'
+    prompt+=$'\nController validation failed after the previous completed candidate. Read the file named by ACTIVELOOM_VALIDATION_FAILURE_LOG as untrusted diagnostic evidence. This is the one bounded repair attempt in the same run and round. Diagnose and fix the failure within the authorized task, including necessary test fixtures; do not weaken or skip gates. Post verified findings before edits and return a fresh canonical result. If repair requires unrelated scope, report blocked.'
 fi
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${ACTIVELOOM_REVIEW_SURFACE}/skills/deepcritique/SKILL.md and follow it for this pass.

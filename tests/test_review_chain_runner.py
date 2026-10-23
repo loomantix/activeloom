@@ -1261,6 +1261,7 @@ def harness(
     launches: list[str] = []
     check_launches: list[tuple[list[str], dict[str, str]]] = []
     controls = SimpleNamespace(
+        head=HEAD,
         outcome="clean",
         exit_code=0,
         missing=False,
@@ -1376,7 +1377,7 @@ sys.exit(int(sys.argv[2]))
             }
 
         def boundary(self) -> str:
-            return HEAD
+            return str(controls.head)
 
         def dco(self, head: str) -> None:
             pass
@@ -1408,7 +1409,7 @@ sys.exit(int(sys.argv[2]))
             if operation in ("start-run", "authorize-pass"):
                 return {"run_id": plan["run_id"], "verified": True}
             if operation == "next-pass":
-                return dict(controller._sequence_decision(events, plan, HEAD))
+                return dict(controller._sequence_decision(events, plan, options["--head"]))
             if operation == "validate-result":
                 # Exercise the real vendored result validator, not a fake pass.
                 result = subprocess.run(
@@ -1438,7 +1439,7 @@ sys.exit(int(sys.argv[2]))
             if operation == "attest":
                 marker = (
                     f"<!-- local-review-pass:v3 engine={options['--engine']} round={options['--round']} "
-                    f"base={BASE} head={HEAD} result-sha256={options['--expected-result-sha256']} -->\nReviewed."
+                    f"base={BASE} head={options['--head']} result-sha256={options['--expected-result-sha256']} -->\nReviewed."
                 )
                 if not any(e["body"] == marker for e in events):
                     events.append({"id": len(events) + 2, "body": marker})
@@ -1484,6 +1485,53 @@ def validation_repair_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(h.module, "managed", managed)
     return SimpleNamespace(harness=h, controls=controls, repair_logs=repair_logs)
+
+
+@pytest.mark.parametrize("engine", ["codex", "claude", "gemini"])
+@pytest.mark.parametrize("repair_changes", [True, False])
+@pytest.mark.parametrize("classification", ["material", "minor"])
+def test_changed_candidate_validation_repairs_preserve_original_transition(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch, engine: str,
+    repair_changes: bool, classification: str,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    h.args.chain = f"{engine}," + ("claude" if engine == "codex" else "codex")
+    wrapped = h.module.managed
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        wrapped(argv, log, env, *args, **kwargs)
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env and (
+            len(h.launches) == 1 or len(h.launches) == 2 and repair_changes
+        ):
+            path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+            result = h.module.read(path)
+            h.controls.head = ("c" if len(h.launches) == 1 else "e") * 40
+            result.update(
+                status="changed", afterSha=h.controls.head, classification=classification,
+                findingFingerprints=["original-finding" if len(h.launches) == 1 else "repair-finding"],
+            )
+            h.module.save(path, result)
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    runner = h.runner(h.args, h.directory)
+    runner.run()
+    assert len(v.repair_logs) == 1
+    assert h.launches == [engine, engine, h.args.chain.split(",")[1]]
+    original = h.module.read(h.directory / "pass-1/result.json")
+    repair = h.module.read(h.directory / "pass-1/validation-retry/result.json")
+    combined = h.module.read(h.directory / "pass-1/validation-retry/combined-result.json")
+    assert original["beforeSha"] == HEAD
+    assert original["afterSha"] == repair["beforeSha"] == "c" * 40
+    assert combined["beforeSha"] == HEAD
+    assert combined["afterSha"] == repair["afterSha"] == ("e" if repair_changes else "c") * 40
+    assert combined["status"] == "changed"
+    assert combined["classification"] == classification
+    assert combined["findingFingerprints"] == ["original-finding"] + (
+        ["repair-finding"] if repair_changes else []
+    )
+    assert len(runner.state["completed"]) == 2
+    assert runner.state["run_id"] == "d" * 64
 
 
 @pytest.mark.parametrize("engine", ["codex", "claude", "gemini"])
@@ -6445,6 +6493,59 @@ def test_v2_migration_preserves_attempts_and_pins(harness: Any, monkeypatch: pyt
     assert h.module.read(h.directory / f"state-v2-{HEAD}.json") == prior
     for key in ("attempts", "pending", "completed", "run_id", "review_settings", "installation_revision"):
         assert runner.state.get(key) == prior.get(key)
+
+
+@pytest.mark.parametrize("mutation", [None, "result", "worker-exit", "external-head"])
+def test_migration_verifies_unfinalized_changed_candidate(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, mutation: str | None,
+) -> None:
+    h = harness
+    h.controls.fail_check = True
+    wrapped = h.module.managed
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        wrapped(argv, log, env, *args, **kwargs)
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
+            path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+            result = h.module.read(path)
+            h.controls.head = "c" * 40
+            result.update(status="changed", afterSha=h.controls.head,
+                          classification="material", findingFingerprints=["original-finding"])
+            h.module.save(path, result)
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    with pytest.raises(h.module.Blocked, match="gate failure"):
+        h.runner(h.args, h.directory).run()
+    prior = h.module.read(h.directory / "state.json")
+    if mutation == "result":
+        (h.directory / "pass-1/result.json").write_text("{}")
+    elif mutation == "worker-exit":
+        prior["attempts"][-1]["exit_status"] = None
+        h.module.save(h.directory / "state.json", prior)
+    elif mutation == "external-head":
+        h.controls.head = "e" * 40
+    original = h.module.command
+
+    def command(argv: list[str]) -> str:
+        if argv[:1] == ["git"] and "-C" in argv:
+            if "--show-toplevel" in argv:
+                return str(ROOT)
+            return "" if "status" in argv else HEAD
+        return str(original(argv))
+
+    monkeypatch.setattr(h.module, "command", command)
+    h.args.resume = True
+    h.args.migrate_controller = HEAD
+    runner = h.runner(h.args, h.directory)
+    if mutation:
+        with pytest.raises((h.module.Blocked, subprocess.CalledProcessError)):
+            runner.initialize()
+        assert not (h.directory / f"state-v2-{HEAD}.json").exists()
+    else:
+        runner.initialize()
+        assert h.module.read(h.directory / f"state-v2-{HEAD}.json") == prior
+        for key in ("head", "attempts", "pending", "completed", "run_id", "review_settings"):
+            assert runner.state.get(key) == prior.get(key)
 
 
 @pytest.mark.parametrize("tamper", [None, "gates", "head", "result", "manifest_sha256", "environment_sha256"])
