@@ -24,7 +24,7 @@ SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"
 LEDGER_VERSION_FILE = ROOT / ".claude/skills/critique/scripts/review-ledger.version"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
-AGY_SURFACE_SHA = "53fd790a1e95b7ecfae2a5c2027249c6655d4d1a"
+AGY_SURFACE_SHA = "c542dc88f8194584295f6e87aa592a182e2ebb23"
 LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 
 # Continuation flags start a fresh one-shot only by their absence, so the
