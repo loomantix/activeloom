@@ -338,7 +338,9 @@ role references needed for the selected lenses.
    follow-up that should be scheduled within roughly two weeks.
 10. Run targeted validation and commit. When
     `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, accumulate every same-pass fix in
-    local commits and invoke the helper exactly once after the final fix;
+    local commits, write the publish-fixes manifest the ledger's "Fix, reply,
+    and resolve" describes, and invoke the helper exactly once after the final
+    fix;
     otherwise push normally with no force.
 11. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Reconcile failures through the workflow's bounded recovery. On an

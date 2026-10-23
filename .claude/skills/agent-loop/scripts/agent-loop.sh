@@ -24,6 +24,7 @@ NC='\033[0m'
 # Review context is owned by this wrapper. Do not leak state from an outer
 # agent-loop/deepcritique invocation into setup, worker, or worker validation.
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_LEDGER \
     AGENT_LOOP_REVIEW_ACTOR \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
@@ -2260,6 +2261,21 @@ finalize_blocked_review_result() {
     node "$REVIEW_LEDGER" validate-result "${identity[@]}"
 }
 
+# A blocked round whose fix is already published, and whose result failed only
+# on a bookkeeping slip (a finding posted at its fix head, or a non-blocking fix
+# in convergence), keeps that head and reviews it again in the next round. The
+# ledger decides; any other blocked result still stops the run.
+recover_blocked_round() {
+    local slug="$1" round="$2" before_sha="$3" after_sha="$4"
+    local historical_comment_ids_file="$5"
+    [ "$before_sha" != "$after_sha" ] || return 1
+    node "$REVIEW_LEDGER" check-blocked-round \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
+        --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+        --before "$before_sha" --head "$after_sha" \
+        --historical-comment-ids-file "$historical_comment_ids_file"
+}
+
 emit_pass_result() {
     local slug="$1" round="$2" classification="$3" outcome_file="$4"
     local status="" before="" after=""
@@ -2282,7 +2298,7 @@ run_review_pass() {
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local historical_comment_ids_signature
-    local result_recovery_signature=missing recovered_result_json
+    local result_recovery_signature=missing current_recovery_signature recovered_result_json blocked_round_json
     local boundary_status
     local review_pass_launcher_seconds
     local hook_log hook_attempt pre_pass_ledger_shape_file="" pre_pass_bodies_file=""
@@ -2504,6 +2520,35 @@ run_review_pass() {
                     fi
                     ;;
             esac
+        fi
+        if [ "$result_status" = blocked ] && \
+            [[ "$blocker" == *"fixed finding was not posted before its disposition head"* || \
+               "$blocker" == *"convergence review results cannot fix non-blocking findings"* ]] && \
+            current_recovery_signature="$(review_outcome_signature "$result_file.recovery.json")" && \
+            [ "$current_recovery_signature" = "$result_recovery_signature" ] && \
+            blocked_round_json="$(recover_blocked_round "$slug" "$round" \
+                "$before_sha" "$after_sha" "$historical_comment_ids_file")"; then
+            echo "   recovered: blocked-round ($engine, round $round); its published fix is reviewed again next round"
+            jq -r '.slips[] | "     slip: " + .' <<<"$blocked_round_json"
+            emit_event recovered --argjson issue "${SELECTED_ID:-null}" --argjson round "$round" \
+                --arg engine "$slug" --arg kind blocked-round
+            boundary_status=0
+            attest_review_head "after $engine blocked-round recovery in round $round" \
+                "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+            if [ "$boundary_status" -eq 2 ]; then
+                return 2
+            elif [ "$boundary_status" -ne 0 ]; then
+                recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round." heads-misaligned
+                return 1
+            fi
+            export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
+            run_validation "$slug-review-round-$round" true || {
+                if [ "$LAST_STOP_CATEGORY" != budget-exhausted ]; then
+                    recovery_message "Validation after $validation_description failed in review round $round." validation-red
+                fi
+                return 1
+            }
+            return 3
         fi
         if [ "$result_status" = blocked ]; then
             recovery_message "$engine review blocked in round $round: $blocker" review-blocked
@@ -2762,6 +2807,14 @@ run_review_convergence() {
                     return 1
                 }
                 continue
+            elif [ "$pass_status" -eq 3 ]; then
+                round=$((round + 1))
+                update_run_state reviewing "$round" "$round_base_sha" \
+                    "$(git rev-parse HEAD)" "" "" codex || {
+                    recovery_message "Could not checkpoint the next review round." checkpoint-failed
+                    return 1
+                }
+                continue
             elif [ "$pass_status" -ne 0 ]; then
                 return 1
             fi
@@ -2787,6 +2840,14 @@ run_review_convergence() {
             update_run_state reviewing "$round" \
                 "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
                 "" "" codex || {
+                recovery_message "Could not checkpoint the next review round." checkpoint-failed
+                return 1
+            }
+            continue
+        elif [ "$pass_status" -eq 3 ]; then
+            round=$((round + 1))
+            update_run_state reviewing "$round" "$round_base_sha" \
+                "$(git rev-parse HEAD)" "" "" codex || {
                 recovery_message "Could not checkpoint the next review round." checkpoint-failed
                 return 1
             }
@@ -3514,6 +3575,7 @@ resume_review_run() {
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     [ "$state_phase" != draft-open ] || stop_resumed_human_glance "$state_head" || return 1
     case "$state_phase" in
         worker-running|worker-complete|integrating|integrated|publishing|pushed)
@@ -4379,6 +4441,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     update_run_state worker-complete 1 "$start_sha" "$(git rev-parse HEAD)" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed." validation-red; exit 1; }

@@ -26,6 +26,7 @@ hgrill: backlog-refinement grill hreview product-grill review-setup | horch
 hloop: critique horch hreview issues review-setup | auto-glance backlog-refinement hgrill
 horch: critique dep-analysis hloop hreview issues review-setup | auto-glance hgrill hpromote ship-staging
 hpromote: hreview promote | horch
+hred-team: critique hreview red-team review-setup |
 hreview: auto-glance critique dep-analysis review-setup | deepcritique horch promote refactorpass
 issues: | diagnosing-bugs grill
 onboard: | agent-loop review-setup

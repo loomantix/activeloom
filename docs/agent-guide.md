@@ -61,9 +61,10 @@ Names below identify skills; use the invocation supported by the current harness
 | Orchestrate a herdr workspace                | `horch`                                    | Needs a per-push instruction file; ships only to the integration branch, through `ship-staging`                                     |
 | Run a batch of agent issues on herdr         | `hloop`                                    | Runs under `horch`'s rules; skips issues with an open design; ships only through `horch`'s gate                                     |
 | Promote integration to production            | `promote`                                  | Runs the repository's `.activeloom-promote.json` recipe; stops at the human approval and merge                                      |
+| Red-team a reviewed PR on herdr              | `hred-team`                                | Fixes blocker and high findings on the PR and files the rest as issues; never restarts the review chain or merges                   |
 | Promote integration to production on herdr   | `hpromote`                                 | Needs a `promotion` section; stops at the human approval and merge                                                                  |
 
-The herd skills (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`) share their mechanics in each root's `references/herdr.md` and read `.activeloom-herd.json` from the integration branch; see [Herd orchestration](herd-orchestration.md).
+The herd skills (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`, `hred-team`) share their mechanics in each root's `references/herdr.md` and read `.activeloom-herd.json` from the integration branch; see [Herd orchestration](herd-orchestration.md).
 
 For repository-owned internal documentation, use `internal-docs` and the
 consumer command/setup contract described in [Internal docs](internal-docs.md).

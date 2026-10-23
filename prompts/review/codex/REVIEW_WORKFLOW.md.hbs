@@ -357,6 +357,8 @@ inline before it is edited, and each thread still gets its own disposition reply
 naming the fix SHA. Only the number of pushes changes: the second helper call in
 a pass exits with "review-push permits only one publication per reviewer pass"
 and aborts the pass mid-fix.
+A `preflight-publish` refusal of the publish-fixes manifest publishes nothing
+and does not spend that publication: correct the named findings and call again.
 
 The author engine's own adversarial pass never counts toward coverage. It
 re-reads the change while still holding the rationale that produced it, which is

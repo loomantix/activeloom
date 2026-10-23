@@ -37,4 +37,4 @@ Skills, agent definitions, and the instruction strings a skill tells Claude to p
 - [.claude/REVIEW_WORKFLOW.md](.claude/REVIEW_WORKFLOW.md) — canonical AI review chain.
 - [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) — prompt-authoring deltas for the current default model.
 - [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) — how to structure a skill document: invocation, information hierarchy, completion criteria, pruning.
-- [docs/herd-orchestration.md](docs/herd-orchestration.md) — herd skills on herdr (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`): configuration and what each will and won't do. Their sources are `prompts/skills/` and `prompts/references/herdr.md`.
+- [docs/herd-orchestration.md](docs/herd-orchestration.md) — herd skills on herdr (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`, `hred-team`): configuration and what each will and won't do. Their sources are `prompts/skills/` and `prompts/references/herdr.md`.

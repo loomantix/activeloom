@@ -476,7 +476,19 @@ identity arguments and its pre-pass comment snapshot, re-validates the result,
 and continues with the ordinary validation and attestation steps. Recovery may
 promote a saved `minor` to `material`; it launches no reviewer and spends no
 round. A blocked result without a sidecar, a sidecar that changed after the
-hook returned, or a failed recovery stops as `review-blocked`.
+hook returned, or a failed recovery stops as `review-blocked`, unless the
+blocked-round recovery below applies.
+
+A blocked result whose fix the push helper already published is recovered when
+the only reason it failed is a bookkeeping slip: a finding posted at the head
+that published its fix, or a non-blocking finding fixed in a convergence round.
+The wrapper runs `review-ledger.js check-blocked-round` for the pass. The ledger
+must be otherwise complete, every thread resolved and disposed, with at least
+one fixed same-round finding. The wrapper then keeps the published head,
+validates it, and starts the next round at Codex. That round reviews the head
+again and spends the round budget; the slipped round is never attested. A
+published change with no fixed same-round finding, an incomplete ledger, or any
+other refusal still stops.
 
 Resuming a run interrupted in the Claude leg of any round, with that round's
 Codex result on disk and the head unchanged, re-verifies the Codex evidence and
@@ -568,7 +580,8 @@ Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `human-glance`, `interrupted`, or `internal-error`. A stop that follows a hook carries that
 hook's phase and the path of its log (`hookLog`), never the output itself.
 A `recovered` event has `kind` `stranded-review-commits` with the rescue `ref`,
-or `result-finalization` with the `round` and `engine` of the finalized pass.
+`result-finalization` with the `round` and `engine` of the finalized pass,
+or `blocked-round` with the `round` and `engine` of the recovered pass.
 `resumable` is true when `resumeCommand` names a command; it does not mean
 resuming is safe, which the stop category decides. Events carry identifiers, categories, counts, and paths: never issue titles or
 bodies, hook or model output, or findings. A resumed run

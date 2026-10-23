@@ -161,7 +161,19 @@ identity arguments and its pre-pass comment snapshot, re-validates the result,
 and continues with the ordinary validation and attestation steps. Recovery may
 promote a saved `minor` to `material`; it launches no reviewer and spends no
 round. A blocked result without a sidecar, a sidecar that changed after the
-hook returned, or a failed recovery stops the run as blocked.
+hook returned, or a failed recovery stops the run as blocked, unless the
+blocked-round recovery below applies.
+
+A blocked result whose fix the push helper already published is recovered when
+the only reason it failed is a bookkeeping slip: a finding posted at the head
+that published its fix, or a non-blocking finding fixed in a convergence round.
+The wrapper runs `review-ledger.js check-blocked-round` for the pass. The ledger
+must be otherwise complete, every thread resolved and disposed, with at least
+one fixed same-round finding. The wrapper then keeps the published head,
+validates it, and starts the next round at Gemini. That round reviews the head
+again and spends the round budget; the slipped round is never attested. A
+published change with no fixed same-round finding, an incomplete ledger, or any
+other refusal still stops.
 
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
