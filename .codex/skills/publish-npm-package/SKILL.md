@@ -1,6 +1,6 @@
 ---
 name: publish-npm-package
-description: Prepare, bootstrap, publish, and verify npm package releases with GitHub Actions Trusted Publishing or a tightly gated first manual publication. Use when Codex needs to create or harden an npm release workflow, configure npm package trust and GitHub environments, publish a new or existing package, create release tags, compare built and registry artifacts, or verify registry signatures and SLSA provenance.
+description: Prepare, bootstrap, publish, and verify npm package releases with GitHub Actions Trusted Publishing or a tightly gated first manual publication. Use when you need to create or harden an npm release workflow, configure npm package trust and GitHub environments, publish a new or existing package, create release tags, compare built and registry artifacts, or verify registry signatures and SLSA provenance.
 ---
 
 # Publish an npm package
