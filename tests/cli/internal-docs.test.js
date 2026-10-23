@@ -28,8 +28,8 @@ test('internal-docs installs through the actual add interface for all three harn
     for (const harness of HARNESSES) {
       const installed = path.join(
         homeDir,
-        harness.home,
-        'skills/internal-docs/SKILL.md',
+        harness.skills,
+        'internal-docs/SKILL.md',
       );
       assert.equal(
         fs.readFileSync(installed, 'utf8'),
@@ -41,7 +41,7 @@ test('internal-docs installs through the actual add interface for all three harn
     }
     const installed = path.join(
       homeDir,
-      '.agents/skills/internal-docs/SKILL.md',
+      '.gemini/antigravity-cli/skills/internal-docs/SKILL.md',
     );
     fs.writeFileSync(installed, 'Old install');
     assert.equal(await add(options), 0);

@@ -1,6 +1,6 @@
 # 0014 — Dependency review tier and hosted review boundaries
 
-- Status: accepted
+- Status: accepted; the dependency decisions are superseded by [0018](0018-dependency-updates-get-an-analysis-not-a-review.md)
 - Date: 2026-09-25
 
 ## Context
@@ -26,6 +26,11 @@ dispatches:
    belongs at the setup layer (`review-setup` and `review-profile.py`).
 
 ## Decision
+
+The first two bullets below are superseded by
+[0018](0018-dependency-updates-get-an-analysis-not-a-review.md): a dependency
+update now gets a dependency analysis and no review chain. The hosted-review
+bullets stand.
 
 - **Dependency bumps do not select Deep.** Upgrading an external dependency in
   manifests or lockfiles (`package.json`, `pnpm-lock.yaml`, `Cargo.lock`, etc.)

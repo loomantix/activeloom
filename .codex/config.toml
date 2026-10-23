@@ -1,0 +1,9 @@
+# Project settings for Codex sessions in this repository only. Not synced to
+# consumers and not linked by install-skills.sh.
+#
+# This repository's reviews publish metrics to its locked
+# `activeloom:review-metrics` issue rather than PR comments. A rendered
+# `review-telemetry.json` beside the bundle would select the store for every
+# user-level install too, because those link these skill directories.
+[shell_environment_policy]
+set = { LOOM_REVIEW_TELEMETRY_STORE = "issue" }

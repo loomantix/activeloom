@@ -17,6 +17,36 @@ from typing import Any
 import pytest
 
 
+# A v3 reviewer posts each finding before publishing its fix and names it in the
+# publish-fixes manifest; review-push refuses the push otherwise. Hooks that
+# commit a fix call this first: `fixture-post-fix <engine> <fingerprint> <severity>`.
+POST_FIX = r"""#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys
+engine, fingerprint, severity = sys.argv[1:4]
+content = 'Fixture finding.'
+marker = (
+    f"<!-- local-review:v3 engine={engine} round={os.environ['AGENT_LOOP_REVIEW_ROUND']} "
+    f"head={os.environ['AGENT_LOOP_PR_HEAD_SHA']} fingerprint={fingerprint} occurrence=1 "
+    f"severity={severity} lens=correctness "
+    f"content-sha256={hashlib.sha256(content.encode()).hexdigest()} -->"
+)
+threads_file = pathlib.Path(os.environ['AGENT_STATE_DIR']) / 'review-threads.json'
+threads = json.loads(threads_file.read_text()) if threads_file.exists() else []
+threads.append({
+    'id': f'THREAD-PREPUBLISH-{fingerprint}', 'isResolved': False,
+    'repository': {'nameWithOwner': 'fixture/consumer'}, 'pullRequest': {'number': 1},
+    'comments': {'nodes': [{'databaseId': 7000 + len(threads), 'body': marker + '\n' + content,
+        'author': {'login': 'tester'}}], 'pageInfo': {'hasNextPage': False}},
+})
+threads_file.write_text(json.dumps(threads))
+content_dir = pathlib.Path(os.environ['AGENT_LOOP_LOG_DIR']) / 'ledger-content'
+content_dir.mkdir(parents=True, exist_ok=True)
+(content_dir / 'publish-fixes.json').write_text(
+    json.dumps([{'fingerprint': fingerprint, 'occurrence': 1}])
+)
+"""
+
+
 pytestmark = pytest.mark.regression
 
 
@@ -159,6 +189,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo
     )
 
+    _write_executable(bin_dir / "fixture-post-fix", POST_FIX)
     gh = bin_dir / "gh"
     _write_executable(
         gh,
@@ -482,7 +513,14 @@ elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments') is no
     number = endpoint_pr_number(r'/issues/(\d+)/comments')
     print(json.dumps(unscoped(scoped_rows(comments_file, number))))
 elif args[:1] == ['api'] and endpoint_pr_number(r'/pulls/(\d+)/comments') is not None:
-    print('[]')
+    threads_file = state / 'review-threads.json'
+    nodes = json.loads(threads_file.read_text()) if threads_file.exists() else []
+    rows = [
+        {'id': comment['databaseId'], 'body': comment['body'],
+         'user': {'login': comment.get('author', {}).get('login', 'tester')}}
+        for node in nodes for comment in node['comments']['nodes']
+    ]
+    print(json.dumps([rows] if '--slurp' in args else rows))
 elif args[:1] == ['api'] and endpoint_pr_number(r'/pulls/(\d+)/reviews') is not None:
     reviews_file = state / 'reviews.json'
     number = endpoint_pr_number(r'/pulls/(\d+)/reviews')
@@ -707,6 +745,7 @@ if round_number != "1":
 Path("catalog.ts").write_text("// Corrected note.\\nexport const entries = [];\\n", encoding="utf-8")
 subprocess.run(["git", "add", "catalog.ts"], check=True)
 subprocess.run(["git", "commit", "-m", "fix: correct catalog note"], check=True)
+subprocess.run(["fixture-post-fix", "claude", "catalog-note", "minor"], check=True)
 subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
 after = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True

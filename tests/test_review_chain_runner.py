@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import shlex
 import signal
 import shutil
@@ -5242,10 +5243,12 @@ def test_darwin_recovery_probe_does_not_ignore_unreadable_live_processes(
         if process_state == 'denied':
             raise PermissionError()
     monkeypatch.setattr(module.os, 'kill', probe)
+    monkeypatch.setattr(module, 'darwin_process_executable', lambda _: Path('/opt/tool/reviewer'))
+    reason = 'environment hidden' if failure == 'environment' else 'working directory unreadable'
     if process_state == 'exited':
         assert runner.darwin_recovery_workers() == []
     else:
-        with pytest.raises(module.Blocked, match='^process evidence is unreadable for PID 20; stop'):
+        with pytest.raises(module.Blocked, match=rf'^process evidence is unreadable for PID 20 \(reviewer: {reason}\); a hidden'):
             runner.darwin_recovery_workers()
 
 
@@ -5460,9 +5463,20 @@ def test_darwin_hidden_environment_checks_process_and_session_creation(
             runner.darwin_recovery_workers()
 
 
+PROTECTED_SERVICES = (
+    '/usr/libexec/service',
+    '/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
+)
+
+
 @pytest.mark.fast
 @pytest.mark.parametrize('flags', [0x06000801, 0x06000800, 0x02000801, 0x16000801, 0])
-@pytest.mark.parametrize('path', ['/usr/libexec/service', '/usr/bin/python3', '/tmp/usr/libexec/service'])
+@pytest.mark.parametrize('path', [
+    *PROTECTED_SERVICES, '/usr/bin/python3', '/tmp/usr/libexec/service',
+    '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal',
+    '/Applications/Tool.app/Contents/PlugIns/Widget.appex/Contents/MacOS/Widget',
+    '/tmp/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
+])
 def test_darwin_service_exemption_requires_kernel_flags_and_system_path(
     monkeypatch: pytest.MonkeyPatch, flags: int, path: str,
 ) -> None:
@@ -5478,7 +5492,78 @@ def test_darwin_service_exemption_requires_kernel_flags_and_system_path(
             return 0
     library = SimpleNamespace(proc_pidpath=Probe('path'), csops=Probe('status'))
     monkeypatch.setattr(module.ctypes, 'CDLL', lambda _: library)
-    assert module.darwin_protected_service(20) == (flags == 0x06000801 and path == '/usr/libexec/service')
+    monkeypatch.setattr(module.Path, 'resolve', lambda self, strict=False: self)
+    assert module.darwin_protected_service(20) == (flags == 0x06000801 and path in PROTECTED_SERVICES)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize('lineage', ['old_parent', 'old_grandparent', 'new_to_launchd', 'missing', 'unknown', 'cycle'])
+@pytest.mark.parametrize('in_worktree', [False, True])
+def test_darwin_hidden_environment_accepts_a_pre_run_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lineage: str, in_worktree: bool,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    runner.recovery_run_started_at = 200.0
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module.os, 'getsid', lambda pid: pid)
+    monkeypatch.setattr(module.os, 'kill', lambda *_: None)
+    # A shell (20) under a helper (21) under a multiplexer (22) from another session.
+    rows = {
+        'old_parent': '21 1 501 S\n22 1 501 S', 'old_grandparent': '21 22 501 S\n22 1 501 S',
+        'new_to_launchd': '21 22 501 S\n22 1 501 S', 'missing': '21 99 501 S\n22 1 501 S',
+        'unknown': '21 22 501 S\n22 1 501 S', 'cycle': '21 22 501 S\n22 21 501 S',
+    }[lineage]
+    monkeypatch.setattr(module, 'command', lambda _: f'1 0 0 S\n10 1 501 S\n20 21 501 S\n{rows}')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda pid: tmp_path / (
+        'worktree' if in_worktree and pid == 20 else 'outside'
+    ))
+    def environment(pid: int) -> dict[bytes, bytes]:
+        if pid == 20:
+            raise OSError('hidden environment')
+        return {b'PATH': b'/usr/bin'}
+    def creation(pid: int) -> float:
+        if lineage == 'unknown' and pid == 22:
+            raise OSError('hidden creation time')
+        old = {'old_parent': 21, 'old_grandparent': 22}.get(lineage)
+        return 10.0 if pid == old else 140.0  # At the margin is not old.
+    monkeypatch.setattr(module, 'darwin_process_environment', environment)
+    monkeypatch.setattr(module, 'darwin_process_started_at', creation)
+    monkeypatch.setattr(module, 'darwin_process_executable', lambda _: Path('/bin/zsh'))
+    monkeypatch.setattr(module, 'darwin_protected_service', lambda _: False)
+    monkeypatch.setattr(module, 'darwin_session_helper', lambda _: False)
+    if in_worktree:
+        assert runner.darwin_recovery_workers() == [20]
+    elif lineage in ('old_parent', 'old_grandparent'):
+        assert runner.darwin_recovery_workers() == []
+    else:
+        with pytest.raises(module.Blocked, match=r'unreadable for PID 20 \(zsh: environment hidden\);'):
+            runner.darwin_recovery_workers()
+
+
+@pytest.mark.fast
+def test_darwin_pre_run_ancestor_does_not_override_readable_review_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    runner.recovery_run_started_at = 200.0
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n10 1 501 S\n21 1 501 S\n20 21 501 S')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / 'outside')
+    monkeypatch.setattr(module, 'darwin_process_started_at', lambda _: 10.0)
+    monkeypatch.setattr(module, 'darwin_process_environment', lambda pid: (
+        {b'ACTIVELOOM_RUN_ID': b'r' * 64} if pid == 20 else {b'PATH': b'/usr/bin'}
+    ))
+    assert runner.darwin_recovery_workers() == [20]
 
 
 @pytest.mark.fast
@@ -5588,6 +5673,9 @@ def test_darwin_new_hidden_worker_in_its_own_session_still_blocks(
         while parent > 0 and parent not in selected:
             selected.add(parent)
             parent = int(processes[parent].split()[1])
+        # The runner lock proves the runner exited, which reparents its workers.
+        pid, _, rest = processes[child.pid].split(None, 2)
+        processes[child.pid] = f'{pid} 1 {rest}'
         monkeypatch.setattr(module, 'command', lambda _: '\n'.join(processes[pid] for pid in selected))
         assert os.getsid(child.pid) == child.pid
         def hidden_environment(pid: int) -> dict[bytes, bytes]:
@@ -5783,15 +5871,24 @@ def test_recovery_process_probe_finds_live_child(
     if identity == 'run':
         env['ACTIVELOOM_RUN_ID'] = h.recovery_runner.state['run_id']
     cwd = Path(h.recovery_runner.state['config']['worktree']) if identity == 'cwd' else h.directory
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], env=env, cwd=cwd)
+    child = subprocess.Popen(
+        [sys.executable, '-c', 'import time; print("ready", flush=True); time.sleep(60)'],
+        env=env, cwd=cwd, stdout=subprocess.PIPE, text=True,
+    )
     original_iterdir = Path.iterdir
     monkeypatch.setattr(Path, 'iterdir', lambda p: iter([Path('/proc') / str(child.pid)]) if p == Path('/proc') else original_iterdir(p))
     try:
+        # Popen can return while exec is still installing /proc's environment.
+        assert child.stdout is not None
+        assert select.select([child.stdout], [], [], 5)[0], "child did not become ready"
+        assert child.stdout.readline() == 'ready\n'
         # A reviewer process can predate the run; exec retains its start time.
         assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner)
     finally:
         child.terminate()
         child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 @pytest.mark.parametrize('denied', [False, True])
@@ -6242,3 +6339,183 @@ def test_control_copy_pins_the_rendered_metrics_destination(
     pinned.write_text('{"LOOM_REVIEW_TELEMETRY_STORE": "pr"}\n')
     with pytest.raises(harness.module.Blocked, match="pinned controller"):
         runner.verify_control()
+
+
+def test_recovered_pass_consumes_budget_without_convergence(harness: Any) -> None:
+    spec = importlib.util.spec_from_file_location("recovery_controller", SCRIPTS / "local-review-handoff.py")
+    assert spec and spec.loader
+    controller = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(controller)
+    run = dict(comment_id=1, run_id="d" * 64, base=BASE, sequence=["codex", "claude"], max_rounds=2, plan_mode="cycle")
+    rows: list[dict[str, Any]] = [{"id": 2, "body": f"<!-- local-review-pass:v3 engine=codex round=1 base={BASE} head={HEAD} result-sha256={'e' * 64} -->\nClean."}]
+    body = controller._recovery_body(run["run_id"], "claude", 1, BASE, HEAD, HEAD, "f" * 64, "Failed pass consumed; review again.")
+    rows.append({"id": 3, "body": body})
+    decision = controller._sequence_decision(rows, run, HEAD)
+    assert (decision["status"], decision["engine"], decision["round"]) == ("next", "codex", 2)
+    assert decision["passes"][-1]["classification"] == "blocked"
+    rows.append({"id": 4, "body": f"<!-- local-review-pass:v3 engine=codex round=2 base={BASE} head={HEAD} result-sha256={'a' * 64} -->\nClean again."})
+    assert controller._sequence_decision(rows, run, HEAD)["status"] == "next"
+    rows.append({"id": 5, "body": f"<!-- local-review-pass:v3 engine=claude round=2 base={BASE} head={HEAD} result-sha256={'b' * 64} -->\nFresh review."})
+    assert controller._sequence_decision(rows, run, HEAD)["status"] == "converged"
+    rows[1]["body"] += "tampered"
+    with pytest.raises(controller.HandoffError, match="recovery"):
+        controller._sequence_decision(rows, run, HEAD)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_runner_recovers_inherited_slip_then_requires_fresh_reviews(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, interrupted: bool,
+) -> None:
+    h = harness
+    original = h.runner.helper
+    original_managed = h.module.managed
+    recovered = False
+    commands: list[tuple[str, dict[str, str]]] = []
+    spec = importlib.util.spec_from_file_location("blocked_controller", SCRIPTS / "local-review-handoff.py")
+    assert spec and spec.loader
+    controller = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(controller)
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        if env.get("AGENT_LOOP_REVIEW_ENGINE") == "claude" and not recovered:
+            h.controls.outcome = "blocked"
+        else:
+            h.controls.outcome = "clean"
+        original_managed(argv, log, env, *args, **kwargs)
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        nonlocal recovered, interrupted
+        options = dict(zip(parts[1::2], parts[2::2], strict=True))
+        if parts[0] == "check-blocked-round":
+            commands.append((parts[0], options))
+            return dict(recoverable=True, slips=["synthetic inherited ordering slip"])
+        if parts[0] == "recover-pass":
+            commands.append((parts[0], options))
+            body = controller._recovery_body(
+                self.state["run_id"], options["--engine"], int(options["--round"]),
+                BASE, HEAD, HEAD, "e" * 64, "A failed pass, not an attestation.\n",
+            )
+            if not any(e["body"] == body for e in h.events):
+                h.events.append(dict(id=len(h.events) + 2, body=body))
+            recovered = True
+            if interrupted:
+                interrupted = False
+                raise h.module.Blocked("interrupted after posting recovery")
+            return dict(verified=True)
+        return dict(original(self, name, *parts))
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    monkeypatch.setattr(h.runner, "helper", helper)
+    runner = h.runner(h.args, h.directory)
+    if interrupted:
+        with pytest.raises(h.module.Blocked, match="after posting recovery"):
+            runner.run()
+        h.args.resume = True
+        runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert h.launches == ["codex", "claude", "codex", "claude"]
+    assert [p["classification"] for p in runner.state["completed"]] == ["clean", "blocked", "clean", "clean"]
+    assert h.module.read(h.directory / "pass-2/result.json")["status"] == "blocked"
+    assert (h.directory / "pass-2/blocked-recovery.json").is_file()
+    assert commands[0][1]["--before"] == BASE
+    assert commands[1][1]["--before"] == HEAD
+    assert len([e for e in h.events if "local-review-recovery:" in e["body"]]) == 1
+
+
+def test_v2_migration_preserves_attempts_and_pins(harness: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = harness
+    h.controls.outcome = "blocked"
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    prior = h.module.read(h.directory / "state.json")
+    original = h.module.command
+
+    def command(argv: list[str]) -> str:
+        if argv[:1] == ["git"] and "-C" in argv:
+            if "--show-toplevel" in argv:
+                return str(ROOT)
+            return "" if "status" in argv else HEAD
+        return str(original(argv))
+
+    monkeypatch.setattr(h.module, "command", command)
+    h.args.resume = True
+    h.args.migrate_controller = HEAD
+    runner = h.runner(h.args, h.directory)
+    runner.initialize()
+    assert h.module.read(h.directory / f"state-v2-{HEAD}.json") == prior
+    for key in ("attempts", "pending", "completed", "run_id", "review_settings", "installation_revision"):
+        assert runner.state.get(key) == prior.get(key)
+
+
+@pytest.mark.parametrize("tamper", [None, "gates", "head", "result", "manifest_sha256", "environment_sha256"])
+def test_resume_preserves_receipt_across_gate_order_change(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tamper: str | None
+) -> None:
+    h = harness
+    contract = validation_contract(h.module)
+    contract["contract"]["gates"]["backend"]["environment"] = {}
+    contract["contract"]["gates"]["aaa_baseline"] = {
+        "paths": [],
+        "always": True,
+        "commands": [[sys.executable, "-c", "pass"]],
+        "environment": {"BASELINE": "1"},
+    }
+    h.args.check = None
+    monkeypatch.setattr(h.runner, "validation_contract", lambda self, base: contract)
+    monkeypatch.setattr(
+        h.runner, "changed_paths", lambda self, base, head: ["apps/backend/api.py"]
+    )
+    original_helper = h.runner.helper
+
+    def interrupted_helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if name == "ledger" and parts[0] == "attest":
+            raise h.module.Blocked("interrupted before attestation")
+        return dict(original_helper(self, name, *parts))
+
+    monkeypatch.setattr(h.runner, "helper", interrupted_helper)
+    with pytest.raises(h.module.Blocked, match="interrupted before attestation"):
+        h.runner(h.args, h.directory).run()
+    receipt = h.directory / "pass-1" / "validated.json"
+    saved = h.module.read(receipt)
+    assert saved["gates"] == ["aaa_baseline", "backend"]
+    # A receipt written before selection was sorted keeps declaration order.
+    saved["gates"] = ["backend", "aaa_baseline"]
+    saved["environment_sha256"] = h.module.json_digest(
+        [
+            {**contract["base_environment"], **contract["contract"]["gates"][name]["environment"]}
+            for name in saved["gates"]
+        ]
+    )
+    if tamper:
+        saved[tamper] = (
+            ["aaa_baseline", "backend", "backend"] if tamper == "gates" else "changed"
+        )
+    h.module.save(receipt, saved)
+    monkeypatch.setattr(h.runner, "helper", original_helper)
+    original_receipt = receipt.read_bytes()
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if tamper:
+        with pytest.raises(h.module.Blocked, match="saved validation"):
+            resumed.run()
+    else:
+        assert resumed.run() == "converged"
+        assert len(h.launches) == 4
+    assert receipt.read_bytes() == original_receipt
+
+
+def test_citation_keeps_original_gate_order_receipt(harness: Any) -> None:
+    h = harness
+    runner = h.runner(h.args, h.directory)
+    folder = h.directory / "pass-1"
+    folder.mkdir(parents=True)
+    saved = {"head": HEAD, "result": "original", "gates": ["z", "a"], "environment_sha256": "env"}
+    receipt = folder / "validated.json"
+    h.module.save(receipt, saved)
+    original = receipt.read_bytes()
+    citation = runner.gate_citation("pass-1", HEAD)
+    expected = {**saved, "result": "next-pass", "gates": ["a", "z"]}
+    assert runner.verify_gate_citation(citation, expected) == "pass-1"
+    assert receipt.read_bytes() == original
+    with pytest.raises(h.module.Blocked, match="does not cover"):
+        runner.verify_gate_citation(citation, {**expected, "environment_sha256": "changed"})

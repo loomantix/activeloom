@@ -40,11 +40,24 @@ values:
     Adversarial code review lives in `critique`, `deepcritique`, and
     `pr-critique`
 
+  # Herd orchestration: no push-notification tool on this harness, so the herdr
+  # notification is the whole alert. See `claude.yml`.
+  HERD_PUSH: ''
+
 skills:
   issues:
     FM_EXTRAS: ''
 
   feature-dev:
+    FM_EXTRAS: ''
+
+  dep-analysis:
+    # Model-invoked: every review entry point and herd skill hands a
+    # dependency update to it by name.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ''
+
+  handoff:
     FM_EXTRAS: ''
 
   diagnosing-bugs:
@@ -96,6 +109,38 @@ skills:
     FM_EXTRAS: ''
   simplify-comments:
     FM_EXTRAS: ''
+  red-team:
+    # Model-invoked here, so the description carries its own trigger. The
+    # leading space is load-bearing.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to red-team a PR or its changes before merging.'
+
+  # Herd orchestration: model-invoked here, so each description carries its own
+  # trigger. The leading space is load-bearing.
+  hreview:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hreview or a live review chain on herdr for one or more PRs.'
+  auto-glance:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run auto-glance on a PR, or when hreview dispatches an opted-in PR at the human-glance gate.'
+  hgrill:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hgrill or an automated grill chain on herdr for named issues or the next issues in the grill queue.'
+  horch:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run horch or to orchestrate a herdr workspace.'
+  hloop:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hloop or a batch of agent issues on herdr.'
+  hpromote:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hpromote or a promotion on herdr.'
+  hred-team:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to run hred-team or a red team on herdr for a PR.'
+  promote:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to promote, open a promotion PR, or dry-run a promotion from the repository recipe.'
 
 # --- prompt stack ------------------------------------------------------------
 # See `claude.yml` for what this block is and why it lives in the profile.

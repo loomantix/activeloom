@@ -255,6 +255,11 @@ rechecked against the cited receipt. A gate an engine ran inside its own pass
 is never cited. One consequence: a suite is no longer run several times on one
 commit, so a flaky test that only fails on a repeat run goes unnoticed.
 
+Receipt comparisons ignore gate-name ordering introduced by checkpoint mapping
+serialization. Gate membership (including duplicates), head, result, contract,
+changed paths and environment hashes still have to match. Saved receipts and
+their citation digests are preserved byte for byte.
+
 State, private logs and result files live under the Git common directory's
 `activeloom-review/<owner>-<repo>-<pr>/`. A per-PR lock prevents concurrent
 runners in linked worktrees. Keep this directory for recovery; do not delete
@@ -437,6 +442,28 @@ failure reason. A crash between the boundary write and process creation remains
 unknown; it is not evidence that a retry is safe. Local logs name the failing
 checkout and changed paths, and blocked output prints the exact resume command.
 
+### Recover a blocked ordering or label slip
+
+After a successful observed worker return, a blocked canonical result can consume
+its scheduled pass without becoming an attestation. The runner requires the
+ledger's `check-blocked-round` to verify that every thread is settled and the only
+failures are the supported ordering or convergence-label slips. For an unchanged
+pass blocked by historical findings with the same engine and round, it checks
+the published transition from the pinned PR base to the current head; it does
+not claim the unchanged pass published those fixes.
+
+The runner validates the current head, preserves the original blocked result,
+and posts an actor-owned, digest-bound `local-review-recovery:v1` event naming
+the run and result digest. This event consumes the engine's scheduled round and
+cannot satisfy coverage or convergence. Subsequent engines follow the existing
+plan; the failed engine must review again within the original cap. At the cap,
+the result is exhausted, not converged. An interruption after the event was
+posted replays that event without spending another pass.
+
+Unknown worker exits, missing results, unsettled findings and unsupported ledger
+failures remain blocked. Recovery never edits earlier comments, promotes the
+blocked result, resets the budget, or starts another authenticated run.
+
 After repairing a proven preflight-only failure, add `--recover-preflight` to
 that command. Proof requires a recorded unsuccessful launcher exit and completed
 process-group cleanup; a preflight marker alone cannot authorize a retry.
@@ -469,12 +496,18 @@ process exit; do not edit the checkpoint to mark it returned.
 
 ### Migrate an existing checkpoint
 
-Version 1 checkpoints require an explicit adoption step. Validate the new
+Checkpoints require an explicit adoption step when their pinned controller changes. Validate the new
 controller in a clean checkout at a full commit SHA, then invoke that checkout's
 runner with the original arguments plus `--resume --migrate-controller <sha>`.
 The migration validates old control hashes, saves `state-v1.json`, retains the
 old control directory, and records the new hashes and source revision. It does
 not restart or renumber the run. Future resumes use the newly printed command.
+
+Version 2 checkpoints can use the same command when no worker is pending or the
+pending worker has a known returned phase. The migration saves
+`state-v2-<sha>.json` and retains all attempts, completed passes, model settings,
+installation pins and prior controls. It never turns an unknown exit into a
+returned one. Version 1 checkpoints retain their existing migration behavior.
 
 For a version 1 Gemini attempt with a supported preflight rejection,
 an operator can additionally supply `--recover-preflight
@@ -552,8 +585,14 @@ one-shot, new-session launch contract; it does not authorize reviewers to hand
 work to existing desktop sessions. Process creation time survives `exec`, so a
 readable review identity still overrides age. The margin accommodates small
 clock skew; recovery assumes the host and GitHub clocks agree within that
-margin. A second exception covers launchd-owned Apple services at system service
-paths whose live kernel code-signing flags prove a valid, restricted platform
+margin. The same holds for a live ancestor below launchd: diagnosis holds the
+runner lock, so the runner has exited and launchd adopted its workers. Every
+ancestor of a worker's descendant below launchd therefore started after the
+run, and a hidden process under an older ancestor, such as a shell or helper
+in another terminal or multiplexer session, belongs to that session's lineage.
+A second exception covers launchd-owned Apple services at system service paths,
+including app extensions such as widgets inside `/System/Applications` bundles,
+whose live kernel code-signing flags prove a valid, restricted platform
 binary with no untrusted helpers and no debug allowance. A name or path alone
 does not qualify. A third exception covers the `/usr/bin/caffeinate` session
 helper Claude Code keeps running: with the same code-signing proof, and whose
@@ -569,7 +608,9 @@ in the process namespace the review ran in: inside a sandbox with its own PID
 namespace the probes cannot see a surviving worker, so an empty `workers` list
 from there proves nothing. A same-user process
 that hides its environment and cannot be excluded by the platform's evidence
-checks is named by PID, and diagnosis stops until it is reconciled.
+checks is named by PID with its executable name and the evidence that could not
+be read, and diagnosis stops until it is reconciled: stop the process, or the
+app or session that started it.
 Any other same-user process whose working directory is inside the worktree is
 reported as a potential worker, including a second shell, an editor, or the
 other side of a pipe such as `--diagnose | tail` started from the worktree;

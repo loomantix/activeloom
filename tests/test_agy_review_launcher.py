@@ -23,7 +23,7 @@ SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"
 LEDGER_VERSION_FILE = ROOT / ".claude/skills/critique/scripts/review-ledger.version"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
-AGY_SURFACE_SHA = "c4c7a1d3956b94f05b320f57b3218a596ea40c54"
+AGY_SURFACE_SHA = "03d3dda77333bc8d430e45dffd2d1f67cb9b4ce3"
 LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 
 # Continuation flags start a fresh one-shot only by their absence, so the
@@ -630,11 +630,12 @@ def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
     assert not argv_file.exists()
 
 
-def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("surface_head", ["c" * 40, "c4c7a1d3956b94f05b320f57b3218a596ea40c54"])
+def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path, surface_head: str) -> None:
     argv_file = tmp_path / "argv.json"
     fake_agy, _ = _fake_agy(tmp_path)
     environment = {
-        **_trusted_environment(tmp_path, surface_head="c" * 40),
+        **_trusted_environment(tmp_path, surface_head=surface_head),
         "AGY_ARGV_FILE": str(argv_file),
         "AGY_REVIEW_CLI": str(fake_agy),
     }
@@ -704,10 +705,12 @@ def test_launcher_rejects_file_hidden_by_global_excludes(tmp_path: Path) -> None
     assert not argv_file.exists()
 
 
-def test_launcher_pin_matches_the_launcher_source() -> None:
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_pin_matches_the_launcher_source(harness: str) -> None:
     # The launcher comment promises this constant moves in lockstep with the pin,
     # so assert it rather than mirroring the value by hand.
-    assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in LAUNCHER.read_text(encoding="utf-8")
+    launcher = ROOT / harness / "skills/critique/scripts/run-agy-review.sh"
+    assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in launcher.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("harness", [".claude", ".codex"])
@@ -857,13 +860,28 @@ def test_launcher_requires_a_trustworthy_structured_result(
     assert result.stdout == ""
 
 
-def test_launcher_failure_directs_the_caller_to_the_ledger(tmp_path: Path) -> None:
+@pytest.mark.parametrize("launcher", AGY_REVIEW_LAUNCHERS[:2])
+def test_launcher_failure_directs_the_caller_to_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str
+) -> None:
+    scripts = tmp_path / "launcher"
+    scripts.mkdir()
+    copied_launcher = scripts / "run-agy-review.sh"
+    copied_launcher.write_bytes((ROOT / launcher).read_bytes())
+    copied_launcher.chmod(0o755)
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((LAUNCHER.parent / name).read_bytes())
+    (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
+    (scripts / "local-review-handoff.py").write_text(
+        '"""Run admission is outside this envelope-diagnostic test."""\n', encoding="utf-8"
+    )
+    monkeypatch.setitem(globals(), "LAUNCHER", copied_launcher)
     # A narrated success or an already-posted comment is not a passing result;
     # the operator has to read the ledger and re-run rather than relax the gate.
     fake_agy, _ = _fake_agy(
         tmp_path,
         review_payload=json.dumps(
-            {"status": "ERROR", "response": "round complete", "error": "tool call failed"}
+            {"status": "ERROR", "response": "round complete", "error": "synthetic tool timeout"}
         ),
     )
     environment = {
@@ -875,7 +893,11 @@ def test_launcher_failure_directs_the_caller_to_the_ledger(tmp_path: Path) -> No
     result = _run(environment)
 
     assert result.returncode == 1
-    assert "read the PR ledger directly" in result.stderr
+    if launcher.startswith(".claude/"):
+        assert "read the PR ledger directly" in result.stderr
+    assert "synthetic tool timeout" in result.stderr
+    assert "round complete" not in result.stderr
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize(

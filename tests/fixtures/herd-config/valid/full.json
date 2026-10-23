@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "integration_branch": "staging",
+  "worktree": { "bootstrap": [["pnpm", "install", "--frozen-lockfile"]] },
+  "gate_fix": {
+    "product_globs": ["apps/**", "packages/*/src/**"],
+    "tooling_globs": ["scripts/**", ".github/scripts/**"],
+    "test_globs": ["**/*.test.ts", "**/test/**", "**/fixtures/**"],
+    "off_limits_globs": [
+      ".github/workflows/**",
+      "infra/**",
+      "**/package.json",
+      "pnpm-lock.yaml"
+    ],
+    "extra_checks": [["pnpm", "db:check"]]
+  },
+  "glance": { "auto": true },
+  "ship": {
+    "on_ship": "label",
+    "label": "status: on-staging",
+    "checks": "all-runs",
+    "post_ship_checks": [["pnpm", "smoke"]]
+  },
+  "builds": { "engines": ["claude", "codex", "gemini"] },
+  "grill": {
+    "engines": ["claude", "codex"],
+    "hold_label": "agent-bail: grill-review",
+    "verify_first_label": "reopened: verify-first",
+    "persona": "Product lead for a small team."
+  },
+  "production_lanes": [
+    {
+      "name": "docs-video",
+      "engine": "codex",
+      "skill": "record-walkthrough",
+      "brief": "docs/video-plan.md"
+    }
+  ],
+  "promotion": {
+    "skill": "promote",
+    "production_branch": "main",
+    "risk_engine": "gemini",
+    "preflight": [["pnpm", "typecheck"]],
+    "deploy_workflows": ["Deploy"],
+    "post_merge": [["pnpm", "verify:prod"]]
+  },
+  "telemetry": { "store": "issue" }
+}

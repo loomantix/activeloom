@@ -19,7 +19,7 @@ a raw reviewer CLI or silently fall back to a conversational auto loop.
 Reviewer model, effort, and engine order come from the user's review profile, a
 file outside every repository that the `review-setup` skill creates and edits.
 Before starting a run, read it with
-`python3 -I .codex/skills/critique/scripts/review-profile.py show --repo <owner/repo>`.
+`python3 -I .agents/skills/review-setup/scripts/review-profile.py show --repo <owner/repo>`.
 When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
 plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
@@ -177,9 +177,9 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger. Manifest or
-   lockfile-only dependency bumps do not select this trigger; see "What does not
-   set the tier".
+   bounded-repair exception below before selecting this trigger. A dependency
+   pin change never selects this trigger, except under the dependency review
+   override; see "What does not set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.
@@ -242,17 +242,17 @@ rather than a licence for another round. Say which, and stop.
 
 Rounds are numbered inside an authenticated `local-review-run:v1` marker, not
 across the PR's whole history. The script that owns those markers is the run
-controller, and this repository ships exactly one, shared by every engine
-surface:
+controller, and this repository has exactly one implementation of it, rendered
+into every harness root. Invoke this root's copy:
 
 ```
-.codex/skills/critique/scripts/local-review-handoff.py
+.agents/skills/critique/scripts/local-review-handoff.py
 ```
 
-It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
-by that path from any surface. Its commands are `start-run`, `next-pass`,
-`authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
+Every root's copy is the same bytes, so an engine reviewing from another root
+runs the same controller against the same markers. Its commands are `start-run`, `next-pass`,
+`authorize-pass`, `finish-run`, `post-handoff`, `show-handoff`, and the read-only `run-state`
+(latest run state, restart and scope-decision requirements). It implements neither `status` nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts

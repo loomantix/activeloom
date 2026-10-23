@@ -19,7 +19,7 @@ a raw reviewer CLI or silently fall back to a conversational auto loop.
 Reviewer model, effort, and engine order come from the user's review profile, a
 file outside every repository that the `review-setup` skill creates and edits.
 Before starting a run, read it with
-`python3 -I .codex/skills/critique/scripts/review-profile.py show --repo <owner/repo>`.
+`python3 -I .codex/skills/review-setup/scripts/review-profile.py show --repo <owner/repo>`.
 When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
 plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
@@ -357,6 +357,8 @@ inline before it is edited, and each thread still gets its own disposition reply
 naming the fix SHA. Only the number of pushes changes: the second helper call in
 a pass exits with "review-push permits only one publication per reviewer pass"
 and aborts the pass mid-fix.
+A `preflight-publish` refusal of the publish-fixes manifest publishes nothing
+and does not spend that publication: correct the named findings and call again.
 
 The author engine's own adversarial pass never counts toward coverage. It
 re-reads the change while still holding the rationale that produced it, which is
@@ -490,6 +492,11 @@ only an invalid claim; never edit a marker or use dismissal to hide a real
 deferred blocker. An unavailable severity-amendment operation is not needed
 when the authorized code fix can resolve the finding instead.
 
+For a convergence rejection caused by a non-blocking fix, follow the ledger's
+[Authorize a fix before editing](references/local-review-ledger.md#authorize-a-fix-before-editing)
+recovery rules. Preserve the evidence; severity must follow demonstrated impact,
+and an existing `fixed` disposition cannot be rewritten into a clean pass.
+
 Ask for a decision only when the next action needs authority, information, or
 risk acceptance the user has not supplied. Keep the run active while recovery
 can progress; close it when it actually converges, exhausts its cap, or reaches
@@ -583,9 +590,9 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger. Manifest or
-   lockfile-only dependency bumps do not select this trigger; see "What does not
-   set the tier".
+   bounded-repair exception below before selecting this trigger. A dependency
+   pin change never selects this trigger, except under the dependency review
+   override; see "What does not set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.

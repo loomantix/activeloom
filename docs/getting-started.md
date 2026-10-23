@@ -54,7 +54,7 @@ No consumer repository or GitHub credential is needed to copy public skills. Run
 activeloom add critique
 ```
 
-That copies `critique` and supporting harness files into the selected personal configuration roots. Use `--harness claude`, `--harness codex`, or `--harness gemini` explicitly; otherwise the installer uses machine detection. Start a new agent session and check which skill it loads before running it. A review chain can require additional skills and peer reviewer clients.
+That copies `critique`, the skills it requires (`dep-analysis`, `deepcritique`, `refactorpass`, `review-setup`), and supporting harness files into the selected personal configuration roots. Each added dependency is printed with the skill that requires it; the list is [`scripts/skill-requires.txt`](../scripts/skill-requires.txt). Use `--harness claude`, `--harness codex`, or `--harness gemini` explicitly; otherwise the installer uses machine detection. Start a new agent session and check which skill it loads before running it. A review chain can also require peer reviewer clients.
 
 ```bash
 activeloom add                 # list every skill available
@@ -63,7 +63,7 @@ activeloom add critique --harness codex
 activeloom add critique --dry-run   # show what would happen, write nothing
 ```
 
-Re-run with `--force` to replace something already installed.
+Re-run with `--force` to replace something already installed, required dependencies included. `add` copies, so an installed skill does not change until you re-run it: upgrade the skills you use together, with `--force`. Support files you already have are kept, and `add` warns when one differs from upstream; a skill reading an old reference can fail partway through, so replace them with `--force` after reading the preview.
 
 This tier installs into your home directory rather than a consumer repository. Review its preview because supporting references and agent definitions are installed alongside the selected skills. Existing destinations are preserved unless you request replacement.
 
@@ -107,6 +107,32 @@ It refuses to guess these on purpose. They are substituted into `.github/copilot
 To fill them, run the **`onboard`** skill in your agent. It reads the repository, drafts each value with the evidence it came from, and presents them for you to confirm — it does not write until you say so. Then re-run `init` so the values reach the rendered files.
 
 `activeloom init --dry-run` previews changes without writing consumer files. On a new consumer, the full tree render is skipped until `.activeloom-config.yml` exists; the output identifies that limitation.
+
+### Choose auto-glance
+
+During `onboard` or `review-setup`, answer: **Enable auto-glance? Yes (recommended for herdr workflows with an independent local reviewer), No (keep human glance), or defer.** Eligible changes classified `skip` (docs/config only) or `smallChange` get one local non-author reviewer through `/auto-glance` instead of waiting on a human. A clean read and green CI can mark the PR ready; auto-glance never merges. Always-Deep surfaces still require the full chain.
+
+The setup skill asks before creating or updating the consumer-owned `.activeloom-herd.json`, preserves other settings, and confirms the integration branch. For example, choosing Yes for a repository integrating on `main` produces:
+
+```json
+{
+  "schema_version": 1,
+  "integration_branch": "main",
+  "glance": { "auto": true }
+}
+```
+
+Choosing No records `false`. Deferring leaves the file unchanged; an absent `glance.auto` defaults to `false`. Neither installer `--yes` nor an unanswered prompt enables it.
+
+Validate with the installed harness's helper:
+
+```bash
+python3 -I .claude/skills/hreview/scripts/herd-config.py validate .activeloom-herd.json
+```
+
+Use `.codex` or `.agents` for those repository harnesses, or locate the helper beside your personal skills. Personal installs also use `review-setup` for this choice, but it is **per repository**, not a personal profile setting. Install `review-setup`, `hreview`, and `auto-glance` if missing; auto-glance needs herdr and a non-author engine in the Lean review order.
+
+Submit the configuration through the repository's normal PR process. Validation checks the working file; activation waits for merge. `herd-config.py repo` reads the remote default branch first and then the named integration branch. If they differ, both must carry configuration naming the same integration branch. See [Herd configuration](herd-orchestration.md) for the full policy.
 
 **When to move up:** when re-running `init` by hand starts getting forgotten.
 
@@ -290,16 +316,66 @@ Add these **after** the first sync lands, so the links resolve.
 
 ## Installing from a clone
 
-`scripts/install-skills.sh` is a Claude-specific contributor helper: it **symlinks** skills out of a clone of this repository, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
+`scripts/install-skills.sh` is the contributor helper. It **symlinks** each harness's skills out of a clone of this repository into that harness's user-level skills directory, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
 
-`activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them.
+`activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them. Both install into the same directories:
+
+| Harness (`--harness`)      | Tree in this repository | User skills directory              |
+| -------------------------- | ----------------------- | ---------------------------------- |
+| Claude Code (`claude`)     | `.claude/skills`        | `~/.claude/skills`                 |
+| Codex (`codex`)            | `.codex/skills`         | `~/.agents/skills`                 |
+| Antigravity CLI (`gemini`) | `.agents/skills`        | `~/.gemini/antigravity-cli/skills` |
+
+The table comes from the `harnesses:` block of [`scripts/sync-targets.yml`](../scripts/sync-targets.yml). Each directory is the one the harness's own documentation gives for personal skills.
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
 cd activeloom
-./scripts/install-skills.sh --dry-run
+./scripts/install-skills.sh --dry-run   # every harness found on this machine
 ./scripts/install-skills.sh
 ```
+
+With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`, and falls back to Claude Code. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. It also links the support files skills read beside their skills directory (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …), one file at a time, never replacing a file you already have.
+
+A `git pull` updates every linked skill at once, but a skill added upstream is not linked until the script runs again, while the linked skills that call it already expect it. After each pull, check:
+
+```bash
+./scripts/install-skills.sh --check
+```
+
+It writes nothing, and lists every skill not installed (naming the installed skills that require it), every copy that differs from this clone, and every missing support file, each with the command that fixes it. It exits 1 when there is anything to fix. A normal run ends with the same report.
+
+After installing skills, choose each engine's model and effort with the `review-setup` skill or `activeloom review-config`; see [Review profile](#review-profile).
+
+### Claude Code
+
+```bash
+./scripts/install-skills.sh --harness claude
+```
+
+Override the destination with `--dest claude=DIR` or `CLAUDE_SKILLS_DIR`.
+
+### Codex
+
+```bash
+./scripts/install-skills.sh --harness codex
+```
+
+Codex reads personal skills from `~/.agents/skills`. It still reads the older `~/.codex/skills` and lists both, so a skill linked in both appears twice: the script prunes dangling links into this clone there and prints an `rm` command for each live one. Override the destination with `--dest codex=DIR` or `CODEX_SKILLS_DIR`. Earlier `activeloom add` releases copied Codex skills into `~/.codex/skills`; delete those copies after reinstalling.
+
+### Antigravity
+
+```bash
+./scripts/install-skills.sh --harness gemini
+```
+
+This installs for the Antigravity CLI (`agy`). The Antigravity app and IDE read `~/.gemini/config/skills` instead:
+
+```bash
+./scripts/install-skills.sh --harness gemini --dest gemini="$HOME/.gemini/config/skills"
+```
+
+`GEMINI_SKILLS_DIR` sets the same override. Earlier `activeloom add` releases copied these skills into `~/.agents/skills`, which is now Codex's directory; delete those copies after reinstalling.
 
 ## Troubleshooting
 

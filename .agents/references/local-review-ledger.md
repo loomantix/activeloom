@@ -218,29 +218,43 @@ before it requires or opens a draft PR, checks context, resolves a round or
 stance, takes a telemetry snapshot, or writes a result, attestation, tier or
 refactor marker, or telemetry record — so none of those artifacts exists for a
 human-glance range. One or more review-significant files means the normal chain,
-unless the workflow recommends human glance for a small change or a validated
-routine development-dependency patch update. Those recommendations stop the same
-way, and the chain runs when a human asks for it. A mixed changeset is not a
-partial human glance.
+unless the workflow recommends human glance for a small change, which stops the
+same way until a human asks for the chain, or the range is a dependency update.
+A dependency update — every review-significant file a dependency pin change —
+never gets a review chain: it stops the same way and gets a dependency analysis,
+which records its verdict in a `dependency-analysis:v1` comment at the exact
+head. A mixed changeset is not a partial human glance; in a bump-plus-code range
+the code follows the chain and the dependency files get the analysis.
 
 The workflow's "Human glance" section names the range each entry point
-classifies, the small-change and routine-dependency recommendations, their
-validation requirements and overrides, and the controller-scheduled pass that skips the
+classifies, the small-change recommendation and its overrides, the
+dependency-update route and its mixed-range rule, and the controller-scheduled pass that skips the
 gate. A later push that adds a review-significant file takes the
 PR out of human glance, and the normal tier resolution then covers the whole
 range.
 
 The file and size rules above are executable: `review-ledger classify-changeset
---base <sha> --head <sha>` returns `skip` and `smallChange` alongside per-file
-classifications, and every entry point uses those flags for the file and size gates. Routine dependency updates
-remain review-significant and outside `smallChange`; the workflow defines the
-separate evidence-based recommendation before reviewer setup. Neither a
-dependency filename nor a bot author establishes that its prerequisites hold.
+--base <sha> --head <sha>` returns `skip`, `smallChange`, and `dependencyUpdate`
+with `dependencyPaths` alongside per-file classifications, and every entry point
+uses those flags for the file, size, and dependency gates. A file is a dependency
+pin change only when its kind is known and every changed line is a recognised
+version, pin, tag, or digest line, with complete pinned before/after contents
+proving that non-pin fields and structure stayed unchanged. Missing context or
+unsupported syntax keeps the file on the normal route. That recognition is a
+best-effort heuristic over lines, not a parse, so `--force-review` reports
+`dependencyUpdate: false` and `dependencyReviewForced: true` for a range that
+would otherwise be a dependency update, keeping `dependencyPaths`; entry points
+pass it under the workflow's durable dependency review override: a direct human
+request, a current or previously applied `review: full` label, or a matching
+always-Deep repository tier extension. Lockfiles and gitlinks
+are the content-independent exceptions; renames and mode transitions still
+take the normal route. Neither a manifest filename alone nor a bot author
+makes a range a dependency update.
 
 The same call returns the class each file's churn belongs to — `app`, `test`,
 `docsConfig`, `generated` — which is a separate axis from whether the file is
 review-significant. A lockfile is both generated and review-significant: the
-dependency bump must be reviewed, and its line count must stay out of every
+dependency bump must be analysed, and its line count must stay out of every
 ratio.
 
 ## Build one immutable review packet
@@ -613,6 +627,48 @@ node <ledger-helper> post-finding \
   --content-file <regular-utf8-file>
 ```
 
+### Authorize a fix before editing
+
+For a `critique` / `deepcritique` pass in an authenticated run, after posting a
+finding and before editing or handing it to a fixer, run the controller beside
+the ledger helper with the `run_id` returned by
+`authorize-pass`:
+
+```bash
+python3 <controller> authorize-fix \
+  --repo <owner/repo> --pr <number> --head <current-pr-head> \
+  --base <pinned-base-sha> --run-id <authorized-run-id> \
+  --engine <engine> --round <n> --fingerprint <stable-id> --occurrence <n>
+```
+
+This read-only check revalidates the active run, pass order, budget, and head,
+then invokes `node <ledger-helper> preflight-fix` to read the authenticated
+posted finding. The finding must match the head, engine, round, fingerprint,
+and latest occurrence and have no disposition yet. In convergence its recorded
+severity must be `blocking`; defer `major`, `minor`, and `nit` findings. An
+adversarial finding still needs to clear the skill's Disposition Bar.
+
+Only pass eligible findings to a fixing stage. Re-run authorization if the PR
+head changes before starting another fix; the check grants no permission to
+edit unrelated findings. It is a cooperative preflight, not a filesystem write
+barrier. Final result validation remains required and rejects ineligible fixes
+even when the preflight was skipped.
+
+If a convergence result is rejected for a non-blocking fix, preserve the result
+and ledger evidence. Never edit a marker or relabel a finding just to satisfy
+validation. A demonstrably mistaken classification requires impact evidence
+and a supported ledger operation; if none exists, report that boundary. For a
+correctly classified non-blocking finding, remove only its ineligible code
+change and defer it through supported recovery. An already posted `fixed`
+disposition cannot be erased or overwritten to claim a clean pass. Recovery
+does not reset the run budget.
+
+Under agent-loop, when `write-result` refuses a result after its fix was
+published, write a blocked result naming the refusal. If the ledger is otherwise
+complete and the refusal is only that slip, or a finding posted at its fix head,
+the wrapper's `check-blocked-round` keeps the published head and reviews it
+again in the next round. Do not correct the ledger by hand to avoid that.
+
 When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 
@@ -685,6 +741,18 @@ two.
    `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke that wrapper-owned helper with
    no arguments exactly once for the pass, not once per finding. Otherwise push
    normally without force. A pass with no new commits needs no publication.
+
+   Before invoking the helper, write
+   `$AGENT_LOOP_LOG_DIR/ledger-content/publish-fixes.json` with the file-editing
+   tool: a JSON array of `{"fingerprint": "<stable-id>", "occurrence": <n>}`
+   naming every finding the push fixes, inherited cleanup included. The helper
+   runs `preflight-publish` and refuses to publish unless each named finding is
+   posted at the current PR head by this engine and round, is its latest
+   occurrence, has no disposition, and, in convergence, is `blocking`. On a
+   refusal nothing is published: post the missing finding, or defer the
+   non-blocking one and remove its change from the local commits, then invoke
+   the helper again. `write-result` still validates the result.
+
 3. For each finding, put the fix SHA, validation result, and concise rationale
    in a content file. Use `dispose` with the matching fingerprint and occurrence
    at the published head. For dismissal or tracked deferral, use

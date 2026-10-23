@@ -52,6 +52,8 @@ Stage 5 is where most setups go wrong. `base_branch`, `setup_hook`, and `validat
 
 Keep the first loop run small and explicitly allowlisted. Omitting `--issues` falls back to the ready queue, which is fine only once the queue has been trusted through an RCA cycle.
 
+Before moving beyond setup, follow `review-setup`'s **Repository auto-glance** step even if the personal profile is already configured. Record the confirmed `glance.auto` choice and integration branch, or report it as deferred; see [Choose auto-glance](getting-started.md#choose-auto-glance).
+
 ## Decisions to settle with the user, not guess
 
 Ask these in one round, each with a recommended answer and the evidence behind it. A plausible guess here steers what an unattended agent builds.

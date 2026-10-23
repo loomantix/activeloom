@@ -15,11 +15,20 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `dep-analysis` instead: no review chain runs on a
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
+`--force-review` and continue as for a mixed range. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
@@ -66,13 +75,13 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
-Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise
 select one past the active engine's highest completed round within the latest
 authenticated `local-review-run:v1` (1 when it has none), using only pass/complete
 comments after that run marker. Resolve Agy as `gemini`, including historical
 `antigravity` aliases in that engine's evidence; use `codex` only for a Codex pass.
-Honor the run's cap and confirm the round with the shared run controller at
-`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
+Honor the run's cap and confirm the round with this root's copy of the run controller at
+`.agents/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
 unauthorized. An ended run, including an aborted one, requires fresh restart
 authorization: this controller has no budget-preserving resume command.

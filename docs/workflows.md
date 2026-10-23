@@ -145,9 +145,15 @@ Run these in a fresh session, not the one that wrote the change. Both start from
 
 You don't have to pick the tier by gut feel. The review workflow chooses Deep when a change touches security or data boundaries, can't be reverted, fans out to other repositories, or changes subtle runtime behavior. `deepcritique` hands a change that resolves to Lean back to `critique`. `critique deep` or asking for a deep review forces Deep.
 
-Both need a review profile (`review-setup`), a clean committed feature branch, and the Codex harness installed in the repository, since the run controller lives there. Repository-specific review lessons go in `.review/addendum.local.md`, which both read. A change that only needs a human glance, such as docs-only, ends immediately with no review. A change of fewer than 20 lines of code or configuration ends with a recommendation to read and merge it; ask for the chain to run it anyway.
+Both need a review profile (`review-setup`) and a clean committed feature branch. Whichever harness you installed is enough: the run controller that numbers each pass ships with every harness root. Repository-specific review lessons go in `.review/addendum.local.md`, which both read. A change that only needs a human glance, such as docs-only, ends immediately with no review. A change of fewer than 20 lines of code or configuration ends with a recommendation to read and merge it; ask for the chain to run it anyway. A dependency update — a manifest, lockfile, Actions pin, or container image bump — skips the chain: it gets a dependency analysis (`dep-analysis`) that runs the affected tests and names the signal to watch after merge. Dependency detection is a heuristic; ask for the chain to review it anyway, or add the `review: full` label to the PR, and the chain runs with the analysis beside it.
 
 Each run ends `clean`, `changed`, or `blocked`, and reports the tier, rounds, and fix commits. Neither skill merges, force-pushes, or marks a PR ready while threads are still open.
+
+## `red-team` — find how a reviewed change fails before merge
+
+Run `red-team [PR]` after the review chain or `hreview` has converged and before you merge. Where the chain asks whether the diff is correct, `red-team` asks how the change fails once it is live: hostile inputs, retries and races, rollout and rollback, callers in other packages, and whether the chain's own fixes hold.
+
+It reports each finding with a severity, a confidence, and a recommendation — fix before merge, follow-up issue, or accept — then waits for you to decide. It fixes the findings you keep on the PR branch, and files the follow-ups as issues after showing you one preview. Pushing a fix moves the PR past the review chain's attestations; whether the chain runs again is your call. It writes nothing to the review ledger, and never merges or marks a PR ready.
 
 ## The automatic review chain
 
@@ -212,4 +218,5 @@ It refuses to merge unless `GCHAT_DEV_WEBHOOK_URL` or `GCHAT_DEV_WEBHOOK_FILE` i
 ## Where to go next
 
 - [Set up for autonomous development](autonomous-development.md) connects these skills into an unattended pipeline, with `agent-loop` implementing the ready queue.
+- [Herd orchestration](herd-orchestration.md) runs these workflows across agents in visible herdr panes: live review chains, automated grills, an orchestrator that ships converged work, and promotions.
 - [Agent entry guide](agent-guide.md) maps every other skill to the task it fits.

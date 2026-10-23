@@ -41,6 +41,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Clarify a design before code                 | `grill`                                    | An interview and design exercise; does not implement the feature                                                                    |
 | Validate a product problem or user value     | `product-grill`                            | Product discovery regardless of job title; can conclude don't build or gather evidence first                                        |
 | Investigate a reproducible bug               | `diagnosing-bugs`                          | Establish the symptom and a tight reproduction before changing code                                                                 |
+| Write or resume an issue-comment handoff     | `handoff`                                  | The marked comment is the instruction of record; every fact it states is checked at write time                                      |
 | Reduce comment bloat without changing code   | `simplify-comments`                        | Comments and docstrings only; the code fingerprint and repository gates must pass before the PR                                     |
 | Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                                                           |
 | Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                                            |
@@ -52,7 +53,18 @@ Names below identify skills; use the invocation supported by the current harness
 | Choose reviewer models, effort, and order    | `review-setup`                             | Confirm settings with the user; the helper is the profile's only writer                                                             |
 | Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                                                          |
 | Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and a repository validation contract or legacy commands |
+| Find how a reviewed PR fails before merge    | `red-team`                                 | Run after the review chain; writes no ledger records; fixes and follow-up issues only on user confirmation                          |
 | Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                                                |
+| Run a review chain in visible herdr panes    | `hreview`                                  | Requires herdr and the Codex control surface; same ledger and tier rules as an ordinary chain; never merges                         |
+| Stand a model in for a human glance          | `auto-glance`                              | Only when the repository sets `glance.auto`; never merges or pushes to the PR                                                       |
+| Grill issues across several engines          | `hgrill`                                   | Touches only the chained issues and their children; ends at an assumptions block for a human check                                  |
+| Orchestrate a herdr workspace                | `horch`                                    | Needs a per-push instruction file; ships only to the integration branch, through `ship-staging`                                     |
+| Run a batch of agent issues on herdr         | `hloop`                                    | Runs under `horch`'s rules; skips issues with an open design; ships only through `horch`'s gate                                     |
+| Promote integration to production            | `promote`                                  | Runs the repository's `.activeloom-promote.json` recipe; stops at the human approval and merge                                      |
+| Red-team a reviewed PR on herdr              | `hred-team`                                | Fixes blocker and high findings on the PR and files the rest as issues; never restarts the review chain or merges                   |
+| Promote integration to production on herdr   | `hpromote`                                 | Needs a `promotion` section; stops at the human approval and merge                                                                  |
+
+The herd skills (`hreview`, `auto-glance`, `hgrill`, `horch`, `hloop`, `hpromote`, `hred-team`) share their mechanics in each root's `references/herdr.md` and read `.activeloom-herd.json` from the integration branch; see [Herd orchestration](herd-orchestration.md).
 
 For repository-owned internal documentation, use `internal-docs` and the
 consumer command/setup contract described in [Internal docs](internal-docs.md).
@@ -69,7 +81,7 @@ The protocol uses a draft PR as shared review context. Reviewers record verified
 
 Lean and Deep describe review scope and budgets. Resolve them from the installed workflow's triggers; the size of a diff or the presence of a `deepcritique` skill is not sufficient to choose a tier. The workflow defines how explicit deep-review requests are handled.
 
-For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md); [Everyday workflows](workflows.md#the-automatic-review-chain) summarizes setup and outcomes for the user. The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install that controller. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
+For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md); [Everyday workflows](workflows.md#the-automatic-review-chain) summarizes setup and outcomes for the user. The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install the runner. It is not the run controller that numbers each pass — that ships with every harness root, so a single-harness repository can still run `critique` and `deepcritique`. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
 
 Use checked-in launchers and the required validation commands. Launcher failure, missing evidence, and exhausted budgets must be reported as such. A fixed plan can complete without independent convergence. Success does not authorize merge, deployment, or a new run with a reset budget.
 

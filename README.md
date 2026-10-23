@@ -8,9 +8,11 @@ It helps an existing agent plan work, investigate bugs, implement bounded tasks,
 
 This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses and models they select. Separate engine upstreams are not required.
 
-**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md). For the skills most teams use day to day — `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain — use [Everyday workflows](docs/workflows.md). To go from nothing installed to an agent working your backlog, use [Set up for autonomous development](docs/autonomous-development.md).
+**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md). For the skills most teams use day to day — `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain — use [Everyday workflows](docs/workflows.md). To go from nothing installed to an agent working your backlog, use [Set up for autonomous development](docs/autonomous-development.md). To drive review chains, grills, builds and promotions across agents in visible herdr panes, use [Herd orchestration](docs/herd-orchestration.md).
 
 ## What it provides
+
+Setup also asks whether to enable [auto-glance](docs/getting-started.md#choose-auto-glance): one local non-author reviewer for eligible `skip`/`smallChange` PRs instead of waiting for a human glance. It is recommended for herdr workflows, but stays off until confirmed in the repository's `.activeloom-herd.json`; personal installation does not enable it globally.
 
 | Capability                 | What you get                                                                                                                                                                                                            |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -130,6 +132,7 @@ The installer contains code, not the prompt payload. By default it downloads thi
 | Which files consumers receive                      | `scripts/sync-targets.yml`                                                                 |
 | A repository's stack, rules, or selected harnesses | Its `.activeloom-config.yml`                                                               |
 | Repository-specific review lessons                 | Its consumer-owned `.review/addendum.local.md`                                             |
+| A repository's herd orchestration rules            | Its consumer-owned `.activeloom-herd.json`                                                 |
 | A vendored ledger contract or helper               | `packages/review-ledger`, rebuilt into every harness root; do not patch the bundle         |
 
 Managed consumer files are overwritten on sync. Files marked `create_if_missing` are bootstrapped once and remain consumer-owned. See [sync ownership](docs/sync.md), [prompt rendering](docs/prompt-rendering.md), and the [review learning loop](docs/review-learning-loop.md).

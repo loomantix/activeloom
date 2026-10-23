@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -81,6 +82,56 @@ def wire(
 
     monkeypatch.setattr(controller, "_post_issue_comment", post)
     return posted
+
+
+@pytest.mark.parametrize("failure", [None, "ledger", "result-changed"])
+def test_recover_pass_checks_inherited_history_before_posting(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    failure: str | None,
+) -> None:
+    rows = [event(0)]
+    posted = wire(controller, monkeypatch, rows)
+    result_file = tmp_path / "result.json"
+    result_file.write_text("original blocked result")
+    result_sha = hashlib.sha256(result_file.read_bytes()).hexdigest()
+    calls: list[list[str]] = []
+
+    def node(argv: list[str], **_: Any) -> SimpleNamespace:
+        calls.append(argv)
+        if "validate-result" in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(dict(status="blocked", resultSha256=result_sha)))
+        assert "check-blocked-round" in argv
+        assert argv[argv.index("--before") + 1] == BASE
+        if failure == "result-changed":
+            result_file.write_text("changed")
+        return SimpleNamespace(
+            returncode=1 if failure == "ledger" else 0,
+            stdout=json.dumps(dict(recoverable=True)), stderr="unresolved finding",
+        )
+
+    monkeypatch.setattr(controller.subprocess, "run", node)
+    args = SimpleNamespace(repo="owner/repo", pr=42, run_id=run()["run_id"], engine="claude", round=1,
+                           head=HEAD, before=HEAD, base=BASE, result_file=str(result_file))
+    if failure:
+        with pytest.raises(controller.HandoffError):
+            controller._recover_pass(args)
+        assert not posted
+    else:
+        controller._recover_pass(args)
+        assert len(posted) == 1 and "local-review-recovery:v1" in posted[0]
+        assert "not an attestation" in posted[0]
+        rows.append(dict(id=22, body=posted[0]))
+        assert controller._sequence_decision(rows, run(), HEAD)["round"] == 2
+
+
+def test_recovery_cannot_extend_round_budget(controller: ModuleType) -> None:
+    policy = {**run(), "max_rounds": 2}
+    rows = []
+    for index in range(4):
+        body = controller._recovery_body(policy["run_id"], ["codex", "claude"][index % 2],
+                                         index // 2 + 1, BASE, HEAD, HEAD, "e" * 64, "Review again.\n")
+        rows.append(dict(id=21 + index, body=body))
+    assert controller._sequence_decision(rows, policy, HEAD)["status"] == "exhausted"
 
 
 @pytest.mark.parametrize(

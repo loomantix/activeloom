@@ -317,6 +317,15 @@ def json_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def validation_receipt_identity(value: Any) -> Any:
+    """Gate mapping order can change when a checkpoint is serialized."""
+    if isinstance(value, dict):
+        gates = value.get("gates")
+        if isinstance(gates, list) and all(isinstance(gate, str) for gate in gates):
+            return {**value, "gates": sorted(gates)}
+    return value
+
+
 def darwin_process_environment(pid: int) -> dict[bytes, bytes]:
     """Read KERN_PROCARGS2 without exposing arguments or environment in diagnostics."""
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -372,8 +381,7 @@ def darwin_process_cwd(pid: int) -> Path:
     return Path(paths[0]).resolve()
 
 
-def darwin_protected_executable(pid: int) -> Path | None:
-    """Return a kernel-verified protected Apple platform binary's path, else None."""
+def darwin_process_executable(pid: int) -> Path:
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
     probe = libproc.proc_pidpath
     probe.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
@@ -381,7 +389,12 @@ def darwin_protected_executable(pid: int) -> Path | None:
     path = ctypes.create_string_buffer(4096)
     if probe(pid, path, ctypes.sizeof(path)) <= 0:
         raise OSError("process executable unavailable")
-    executable = Path(os.fsdecode(path.value)).resolve()
+    return Path(os.fsdecode(path.value)).resolve()
+
+
+def darwin_protected_executable(pid: int) -> Path | None:
+    """Return a kernel-verified protected Apple platform binary's path, else None."""
+    executable = darwin_process_executable(pid)
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
     status = libc.csops
     status.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
@@ -403,6 +416,10 @@ def darwin_protected_service(pid: int) -> bool:
         executable.is_relative_to("/usr/libexec") or (
             executable.is_relative_to("/System/Library")
             and ("XPCServices" in executable.parts or executable.is_relative_to("/System/Library/CoreServices"))
+        ) or (
+            # App extensions such as widgets live in sealed system app bundles.
+            executable.is_relative_to("/System/Applications")
+            and any(part.endswith(".appex") for part in executable.parts)
         )
     )
 
@@ -862,11 +879,13 @@ class Runner:
         for pid, (parent, uid, status) in processes.items():
             if uid != os.getuid() or pid in ancestors or status.startswith("Z"):
                 continue
+            reason = "working directory unreadable"
             try:
                 cwd = darwin_process_cwd(pid)
                 if cwd.is_relative_to(self.state["config"]["worktree"]):
                     found.append(pid)
                     continue
+                reason = "environment hidden"
                 try:
                     env = darwin_process_environment(pid)
                 except OSError:
@@ -879,6 +898,21 @@ class Runner:
                             continue
                         session = os.getsid(pid)
                         if session != pid and darwin_process_started_at(session) + 60 < started_at:
+                            continue
+                        # Diagnosis holds the runner lock, so the runner has
+                        # exited and its workers were reparented to launchd.
+                        # Every ancestor of a worker's descendant below launchd
+                        # therefore started after the run; a live older
+                        # ancestor proves another session's lineage.
+                        ancestor, walked = parent, {pid}
+                        while ancestor > 1 and ancestor not in walked and ancestor in processes:
+                            if darwin_process_started_at(ancestor) + 60 < started_at:
+                                break
+                            walked.add(ancestor)
+                            ancestor = processes[ancestor][0]
+                        else:
+                            ancestor = 0
+                        if ancestor > 1:
                             continue
                     # SIP hides Apple service environments. Only launchd-owned,
                     # kernel-verified protected services outside the worktree are
@@ -905,12 +939,19 @@ class Runner:
                     continue
                 except PermissionError:
                     pass
-                unreadable.append(str(pid))
+                try:
+                    name = darwin_process_executable(pid).name
+                except OSError:
+                    name = "unknown"
+                unreadable.append((pid, f"{pid} ({name}: {reason})"))
         if unreadable:
             raise Blocked(
                 "process evidence is unreadable for PID "
-                + ", ".join(sorted(unreadable))
-                + "; stop each process, then rerun --diagnose"
+                + ", ".join(label for _, label in sorted(unreadable))
+                + "; a hidden process is excluded only when it, its session leader"
+                " or a live ancestor predates the run, or it is a verified Apple"
+                " service; stop each listed process, or the app or session that"
+                " started it, then rerun --diagnose"
             )
         return sorted(found)
 
@@ -1320,7 +1361,9 @@ class Runner:
         except UnicodeDecodeError as error:
             raise Blocked("validation gate paths must be UTF-8") from error
 
-    def resolved_validation(self, head: str) -> dict[str, Any]:
+    def resolved_validation(
+        self, head: str, gate_order: list[str] | None = None
+    ) -> dict[str, Any]:
         validation = self.state["config"].get("validation")
         if not validation:
             return {
@@ -1339,7 +1382,8 @@ class Runner:
         paths = self.changed_paths(self.state["base"], head)
         selected: list[str] = []
         unmatched = not paths
-        for name, gate in contract["gates"].items():
+        # Checkpoints sort mapping keys; select in that order so a resume matches.
+        for name, gate in sorted(contract["gates"].items()):
             if name == fallback:
                 continue
             if gate["always"]:
@@ -1362,6 +1406,12 @@ class Runner:
                 break
         if unmatched:
             selected.append(fallback)
+        if gate_order is not None:
+            if not all(isinstance(name, str) for name in gate_order) or sorted(
+                gate_order
+            ) != sorted(selected):
+                raise Blocked("saved validation gates do not match selected gates")
+            selected = gate_order
         commands: list[dict[str, Any]] = []
         seen: dict[str, int] = {}
         for name in selected:
@@ -1393,6 +1443,25 @@ class Runner:
                 [command["environment"] for command in commands]
             ),
         }
+
+    def validation_receipt_matches(
+        self, saved: Any, expected: dict[str, Any]
+    ) -> bool:
+        if validation_receipt_identity(saved) == validation_receipt_identity(expected):
+            return True
+        if not isinstance(saved, dict) or not isinstance(saved.get("gates"), list):
+            return False
+        if saved.get("gates") == expected.get("gates"):
+            return False
+        if not self.state or not self.state.get("config", {}).get("validation"):
+            return False
+        try:
+            historical = self.resolved_validation(expected["head"], saved["gates"])
+        except Blocked:
+            return False
+        return validation_receipt_identity(saved) == validation_receipt_identity(
+            {**expected, "environment_sha256": historical["environment_sha256"]}
+        )
 
     def initialize(self) -> None:
         if Path.cwd().resolve() != self.repository_root():
@@ -1529,10 +1598,14 @@ class Runner:
 
     def migrate(self, revision: str) -> None:
         """Explicitly adopt committed controller bytes, retaining every old file."""
-        if self.state["version"] != 1:
-            if self.state.get("migrations", [{}])[-1].get("revision") == revision:
-                return
-            raise Blocked("only version 1 checkpoints support this migration")
+        if self.state.get("migrations", [{}])[-1].get("revision") == revision:
+            return
+        version = self.state["version"]
+        if version not in (1, 2):
+            raise Blocked("unsupported checkpoint migration")
+        pending = self.state.get("pending")
+        if version == 2 and pending and pending["phase"] != "returned":
+            raise Blocked("controller migration requires a known returned worker")
         source = Path(__file__).resolve().parent
         root = command(["git", "-C", str(source), "rev-parse", "--show-toplevel"])
         if (
@@ -1545,7 +1618,7 @@ class Runner:
             )
         if self.boundary() != self.state["head"]:
             raise Blocked("reconcile the pending review head before migration")
-        backup = self.directory / "state-v1.json"
+        backup = self.directory / ("state-v1.json" if version == 1 else f"state-v2-{revision}.json")
         if not backup.exists():
             save(backup, self.state)
         elif read(backup) != self.state:
@@ -1575,10 +1648,10 @@ class Runner:
             version=2,
             control_directory=replacement.name,
             control_hashes={name: digest(replacement / name) for name in names},
-            migrations=[migration],
-            attempts=[],
-            installation_revision=self.state["head"],
+            migrations=[*self.state.get("migrations", []), migration],
         )
+        if version == 1:
+            self.state.update(attempts=[], installation_revision=self.state["head"])
         self.persist()
 
     def prepare_installation(self) -> None:
@@ -2424,7 +2497,9 @@ class Runner:
         if not receipt.is_file() or digest(receipt) != citation["validated_sha256"]:
             raise Blocked("cited validation gate evidence changed")
         cited = read(receipt)
-        if {**cited, "result": expected["result"]} != expected:
+        if not self.validation_receipt_matches(
+            {**cited, "result": expected["result"]}, expected
+        ):
             raise Blocked("cited validation gate does not cover this head and gates")
         return str(citation["pass"])
 
@@ -3016,10 +3091,8 @@ class Runner:
             result = self.helper("ledger", "validate-result", *fields)
         if result["status"] == "blocked":
             self.emit_fallback_telemetry(pending, "blocked")
-            raise Blocked(
-                "reviewer reported blocked without recoverable completed evidence; "
-                "inspect saved result and recover the owed pass"
-            )
+            self.recover_blocked_pass(pending, head, result)
+            return
         self.dco(head)
         validation = self.resolved_validation(head)
         expected_validation = {
@@ -3075,7 +3148,7 @@ class Runner:
             if isinstance(saved_validation, dict)
             else None
         )
-        if saved_validation != expected_validation:
+        if not self.validation_receipt_matches(saved_validation, expected_validation):
             raise Blocked("saved validation does not name this exact head and result")
         cited_pass = (
             self.verify_gate_citation(citation, expected_validation)
@@ -3152,6 +3225,49 @@ class Runner:
         ) != (pending["engine"], pending["round"], head):
             raise Blocked("ledger did not advance by exactly the authorized pass")
         self.emit_fallback_telemetry(pending, result["status"], head)
+        self.state.update(head=head, completed=passes, pending=None, status="running")
+        self.persist()
+
+    def recover_blocked_pass(
+        self, pending: dict[str, Any], head: str, result: dict[str, Any]
+    ) -> None:
+        attempts = [a for a in self.state["attempts"] if a["attempt_id"] == pending["attempt_id"]]
+        if len(attempts) != 1 or attempts[0].get("exit_status") != 0:
+            raise Blocked("blocked-pass recovery requires a successful observed worker return")
+        folder = self.directory / pending["folder"]
+        check_before = self.state["base"] if pending["before"] == head else pending["before"]
+        receipt = self.helper(
+            "ledger", "check-blocked-round", *self.scope(head),
+            "--base", self.state["base"], "--before", check_before,
+            "--engine", pending["engine"], "--round", str(pending["round"]),
+        )
+        if receipt.get("recoverable") is not True:
+            raise Blocked("blocked pass has no verified ordering or label slip")
+        self.dco(head)
+        validation = self.resolved_validation(head)
+        expected = dict(head=head, result=result["resultSha256"], validation=validation, receipt=receipt)
+        saved = folder / "blocked-recovery.json"
+        if saved.exists():
+            if read(saved) != expected:
+                raise Blocked("blocked-pass recovery evidence changed")
+        else:
+            for index, check in enumerate(validation["commands"]):
+                managed(check["argv"], folder / f"recovery-check-{index}.log", check["environment"])
+            if self.boundary() != head:
+                raise Blocked("validation changed the blocked pass's head")
+            save(saved, expected)
+        self.helper(
+            "controller", "recover-pass", *self.scope(head),
+            "--base", self.state["base"], "--before", pending["before"],
+            "--engine", pending["engine"], "--round", str(pending["round"]),
+            "--run-id", self.state["run_id"], "--result-file", str(folder / "result.json"),
+        )
+        decision = self.decision(head)
+        passes = decision["passes"]
+        if len(passes) != len(self.state["completed"]) + 1 or passes[-1] != dict(
+            engine=pending["engine"], round=pending["round"], head=head, classification="blocked",
+        ):
+            raise Blocked("ledger did not consume exactly the blocked pass")
         self.state.update(head=head, completed=passes, pending=None, status="running")
         self.persist()
 

@@ -63,7 +63,7 @@ Default refines the next un-refined issue; `--limit N` a batch; `--all` the whol
 2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
 3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + for a grill-class category the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
 4. **Verify against HEAD** (core §2). Fetch the integration branch the local file names:
-   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call, unless the local file's `stale-action` marker is `close`: then close it yourself as `completed` or `not planned`, after the evidence comment.
+   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`), then close it as `completed` or `not planned` once you have validated that evidence against the integration branch yourself. When the local file's `stale-action` marker is `recommend`, or the evidence does not hold up, recommend the close instead and leave it to a human.
    - **Partially shipped** → rewrite the body to the residual and assess the residual.
    - **Still open** → continue.
 5. **External-dependency check** (core §2) — a dependency that is not published and consumable from this repo → `status: blocked` + `agent-bail: cross-repo`, comment, stop.
@@ -96,9 +96,9 @@ Refine the next `N` un-refined issues (default 25) through parallel read-only as
    python3 .claude/skills/backlog-refinement/scripts/apply-plan.py <tmp>/plan.json
    ```
 
-   The preview validates the whole plan first and refuses it if anything is wrong: a label the repository does not have, a ready verdict carrying a bail, a stale verdict without a close reason. Read every ready body and every stale verdict yourself before applying; those are the two that change what the loop builds and what disappears from the backlog. Read every comment too: each is posted under your name, and assessors read untrusted issue text. Correct the plan, not the issues.
+   The preview validates the whole plan first and refuses it if anything is wrong: a label the repository does not have, a ready verdict carrying a bail, a stale verdict without a close reason. Read every ready body and every stale verdict yourself before applying; those are the two that change what the loop builds and what disappears from the backlog. For each stale verdict, re-run its evidence against the integration branch — the commit or PR is merged there, and each cited `file:line` or symbol shows the work — and set `"validated": true` on the entries that hold up. Only validated entries close; the rest stay recommendations. Never take `validated` from an assessor's file. Read every comment too: each is posted under your name, and assessors read untrusted issue text. Correct the plan, not the issues.
 
-4. **Apply** with `--apply`. It mutates one issue at a time, applies the rubric's label hygiene, skips a comment already posted, honours `stale-action` and **Rewrite mode**, and records progress so a re-run resumes where it stopped.
+4. **Apply** with `--apply`. It mutates one issue at a time, applies the rubric's label hygiene, skips a comment already posted, closes validated stale entries unless `stale-action` is `recommend`, honours **Rewrite mode**, and records progress so a re-run resumes where it stopped.
 5. **Retro.** Group the assessors' `rubric_note` fields. A note that recurs across groups is a rubric gap: edit `.backlog/refinement.local.md` (or record an upstream candidate) and add one learnings entry for the batch before starting the next.
 
 Report each batch as a table: ready, stale (closed or recommended), human-reserved, and excluded by category, plus the new grill-queue entries and the questions they carry.
@@ -176,7 +176,7 @@ An RCA over a run that produced bails is complete when every bail has a learning
 ## Boundaries
 
 - Synced files — this skill, `core-rubric.md`, the `agent-loop` skill and scripts, shared instruction files — are edited upstream. Repo changes go in `.backlog/` or `agent-loop-instructions.md`.
-- Refinement labels and recommends; closing and reassigning issues stay with humans. Exceptions are a verified-stale issue when the local file sets `stale-action: close`, or a close explicitly confirmed for that issue in an interview handback. Auto handback never authorizes closing. Child creation requires a confirmed handback or separate human split approval; assignments and issues outside the session are untouched.
+- Refinement labels and recommends; closing and reassigning issues stay with humans. Exceptions are a stale issue whose evidence you validated against the integration branch, unless the local file sets `stale-action: recommend`, or a close explicitly confirmed for that issue in an interview handback. Auto handback never authorizes closing. Child creation requires a confirmed handback or separate human split approval; assignments and issues outside the session are untouched.
 - Bucket-B work — synced-surface, credential-gated, open-decision, cross-repo, or a local sensitive path — is excluded by definition, never tagged `dev: agent`.
 
 `/issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `/issues ready --agent` and `/agent-loop` key on, and which interview — `/grill` or `/product-grill` — each excluded issue needs next.

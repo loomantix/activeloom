@@ -22,6 +22,21 @@
 #                    `allowed_destinations` rather than through this value.
 #   `targets`        that harness's target list.
 #
+#   `home`           the harness's per-user directory, relative to `$HOME`.
+#                    Its presence (or `cli` on PATH) means the harness is
+#                    installed on this machine.
+#   `skills`         the user-level skills directory the harness reads,
+#                    relative to `$HOME`, as the harness's own docs give it.
+#   `legacy_skills`  optional: an older user-level skills directory the
+#                    harness still reads. The clone installer prunes and
+#                    reports links into its checkout there, never installs.
+#   `cli`            the harness's executable.
+#
+# The sync engine reads only `root` and `targets`. `home`, `skills`,
+# `legacy_skills`, and `cli` drive `scripts/install-skills.sh`; the CLI's
+# static table in `cli/lib/detect.js` mirrors them, checked by
+# `tests/cli/harness-table.test.js`.
+#
 # Harnesses are processed in declaration order. That only matters for a
 # `create_if_missing` destination shipped by more than one harness
 # (`agent-loop-instructions.md`): the first declared harness bootstraps the
@@ -44,11 +59,14 @@ harnesses:
   # Claude consumer reads.
   claude:
     root: .claude
+    home: .claude
+    skills: .claude/skills
+    cli: claude
     targets:
       # Claude Code skills — checked into consumer repo so teammates without the
-      # global install can still invoke them. Devs who installed via
-      # `scripts/install-skills.sh` will resolve from `~/.claude/skills/` first;
-      # the in-repo copy is the fallback for everyone else and for CI contexts.
+      # global install can still invoke them. Developers who ran
+      # `scripts/install-skills.sh` also have them in `~/.claude/skills/`, where
+      # a same-named personal skill takes precedence over this project copy.
       - source: .claude/skills/internal-docs/SKILL.md
         destination: .claude/skills/internal-docs/SKILL.md
         substitutions: []
@@ -185,6 +203,16 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # The run controller — it owns the `local-review-run:v1` markers every
+      # pass is numbered inside, so `critique` and `deepcritique` cannot run a
+      # pass without it. One implementation, rendered into each root from
+      # `packages/review-ledger/protocol/`; it ships with every harness so a
+      # repository that selected only this one can still review.
+      - source: .claude/skills/critique/scripts/local-review-handoff.py
+        destination: .claude/skills/critique/scripts/local-review-handoff.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/deepcritique/SKILL.md
         destination: .claude/skills/deepcritique/SKILL.md
         substitutions: []
@@ -245,6 +273,18 @@ harnesses:
         destination: .claude/skills/feature-dev/SKILL.md
         substitutions: []
 
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .claude/skills/handoff/SKILL.md
+        destination: .claude/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .claude/skills/dep-analysis/SKILL.md
+        destination: .claude/skills/dep-analysis/SKILL.md
+        substitutions: []
+
       # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
       # model-invoked: its whole value is firing on "this is broken" before the
       # session has already guessed at a cause.
@@ -299,6 +339,73 @@ harnesses:
         destination: .claude/skills/review-setup/scripts/review-settings.py
         substitutions: []
         mode: '0755'
+
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .claude/skills/hreview/SKILL.md
+        destination: .claude/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/auto-glance/SKILL.md
+        destination: .claude/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hgrill/SKILL.md
+        destination: .claude/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/horch/SKILL.md
+        destination: .claude/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hloop/SKILL.md
+        destination: .claude/skills/hloop/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hpromote/SKILL.md
+        destination: .claude/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hred-team/SKILL.md
+        destination: .claude/skills/hred-team/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hreview/scripts/herd-config.py
+        destination: .claude/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/hreview/scripts/herd-config.schema.json
+        destination: .claude/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/hreview/scripts/herd-user.schema.json
+        destination: .claude/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .claude/skills/promote/SKILL.md
+        destination: .claude/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .claude/skills/promote/scripts/promote-recipe.py
+        destination: .claude/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/promote/scripts/promote-recipe.schema.json
+        destination: .claude/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/references/herdr.md
+        destination: .claude/references/herdr.md
+        substitutions: []
 
       - source: .claude/skills/phone-install/SKILL.md
         destination: .claude/skills/phone-install/SKILL.md
@@ -574,15 +681,28 @@ harnesses:
         destination: .claude/skills/product-grill/SKILL.md
         substitutions: []
 
+      # /red-team — pre-merge pass for how a reviewed change fails once live;
+      # sorts findings into fix-now and follow-up for the user. User-invoked.
+      - source: .claude/skills/red-team/SKILL.md
+        destination: .claude/skills/red-team/SKILL.md
+        substitutions: []
+
   # Codex. Ships the cross-engine review roles under `references/roles/` that
   # the Claude tree expresses as `.claude/agents/` subagents instead.
   codex:
     root: .codex
+    home: .codex
+    # Codex documents `$HOME/.agents/skills` as its user scope and still reads
+    # the older `~/.codex/skills`, without de-duplicating the two.
+    skills: .agents/skills
+    legacy_skills: .codex/skills
+    cli: codex
     targets:
       # Codex skills — checked into consumer repo so teammates without the
-      # global install can still invoke them. Devs who installed via
-      # `scripts/install-skills.sh` will resolve from `~/.codex/skills/` first;
-      # the in-repo copy is the fallback for everyone else and for CI contexts.
+      # global install can still invoke them. Developers who ran
+      # `scripts/install-skills.sh` also have them in `~/.agents/skills/`, Codex's
+      # user scope; Codex lists user and repository skills side by side rather
+      # than letting one shadow the other.
       - source: .codex/skills/internal-docs/SKILL.md
         destination: .codex/skills/internal-docs/SKILL.md
         substitutions: []
@@ -651,6 +771,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .codex/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -783,6 +905,10 @@ harnesses:
         destination: .codex/skills/ship-staging/SKILL.md
         substitutions: []
 
+      - source: .codex/skills/ship-staging/scripts/check-pr-checks.py
+        destination: .codex/skills/ship-staging/scripts/check-pr-checks.py
+        substitutions: []
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -812,12 +938,91 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .codex/skills/hreview/SKILL.md
+        destination: .codex/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/auto-glance/SKILL.md
+        destination: .codex/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hgrill/SKILL.md
+        destination: .codex/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/horch/SKILL.md
+        destination: .codex/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hloop/SKILL.md
+        destination: .codex/skills/hloop/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hpromote/SKILL.md
+        destination: .codex/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hred-team/SKILL.md
+        destination: .codex/skills/hred-team/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hreview/scripts/herd-config.py
+        destination: .codex/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/hreview/scripts/herd-config.schema.json
+        destination: .codex/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .codex/skills/hreview/scripts/herd-user.schema.json
+        destination: .codex/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .codex/skills/promote/SKILL.md
+        destination: .codex/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .codex/skills/promote/scripts/promote-recipe.py
+        destination: .codex/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/promote/scripts/promote-recipe.schema.json
+        destination: .codex/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .codex/references/herdr.md
+        destination: .codex/references/herdr.md
+        substitutions: []
+
       - source: .codex/skills/phone-install/SKILL.md
         destination: .codex/skills/phone-install/SKILL.md
         substitutions: []
 
       - source: .codex/skills/feature-dev/SKILL.md
         destination: .codex/skills/feature-dev/SKILL.md
+        substitutions: []
+
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .codex/skills/handoff/SKILL.md
+        destination: .codex/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .codex/skills/dep-analysis/SKILL.md
+        destination: .codex/skills/dep-analysis/SKILL.md
         substitutions: []
 
       # diagnosing-bugs — debugging discipline gated on a tight, deterministic
@@ -1094,9 +1299,20 @@ harnesses:
         destination: .codex/skills/product-grill/SKILL.md
         substitutions: []
 
+      # red-team — pre-merge pass for how a reviewed change fails once live.
+      - source: .codex/skills/red-team/SKILL.md
+        destination: .codex/skills/red-team/SKILL.md
+        substitutions: []
+
   # Gemini, whose harness reads `.agents` rather than a vendor-named root.
   gemini:
     root: .agents
+    # The Antigravity CLI (`agy`). The Antigravity app and IDE read
+    # `~/.gemini/config/skills` instead; install there with a destination
+    # override.
+    home: .gemini/antigravity-cli
+    skills: .gemini/antigravity-cli/skills
+    cli: agy
     targets:
       # Antigravity / Gemini skills
       - source: .agents/skills/internal-docs/SKILL.md
@@ -1140,6 +1356,8 @@ harnesses:
         mode: '0644'
 
       # Deliver repository gates independently of the host application env.
+      # Sourced from the byte-identical Claude copy, so this root's copies of
+      # both scripts are covered by `destination:`, not `source:`.
       - source: .claude/skills/critique/scripts/review-telemetry-gates.js
         destination: .agents/skills/critique/scripts/review-telemetry-gates.js
         substitutions: []
@@ -1175,6 +1393,16 @@ harnesses:
         destination: .agents/skills/critique/scripts/review-ledger.integrity
         substitutions: []
         mode: '0644'
+
+      # The run controller — it owns the `local-review-run:v1` markers every
+      # pass is numbered inside, so `critique` and `deepcritique` cannot run a
+      # pass without it. One implementation, rendered into each root from
+      # `packages/review-ledger/protocol/`; it ships with every harness so a
+      # repository that selected only this one can still review.
+      - source: .agents/skills/critique/scripts/local-review-handoff.py
+        destination: .agents/skills/critique/scripts/local-review-handoff.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/deepcritique/SKILL.md
         destination: .agents/skills/deepcritique/SKILL.md
@@ -1222,6 +1450,10 @@ harnesses:
         destination: .agents/skills/ship-staging/SKILL.md
         substitutions: []
 
+      - source: .agents/skills/ship-staging/scripts/check-pr-checks.py
+        destination: .agents/skills/ship-staging/scripts/check-pr-checks.py
+        substitutions: []
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -1251,12 +1483,91 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hloop, hpromote, hred-team). The seven move together with the shared herdr
+      # reference and the config helper beside hreview, which the others call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .agents/skills/hreview/SKILL.md
+        destination: .agents/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/auto-glance/SKILL.md
+        destination: .agents/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hgrill/SKILL.md
+        destination: .agents/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/horch/SKILL.md
+        destination: .agents/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hloop/SKILL.md
+        destination: .agents/skills/hloop/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hpromote/SKILL.md
+        destination: .agents/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hred-team/SKILL.md
+        destination: .agents/skills/hred-team/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hreview/scripts/herd-config.py
+        destination: .agents/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/hreview/scripts/herd-config.schema.json
+        destination: .agents/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .agents/skills/hreview/scripts/herd-user.schema.json
+        destination: .agents/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      # Recipe-driven promotion; hpromote reads its step rules and runs its helper.
+      - source: .agents/skills/promote/SKILL.md
+        destination: .agents/skills/promote/SKILL.md
+        substitutions: []
+        create_if_missing: true
+
+      - source: .agents/skills/promote/scripts/promote-recipe.py
+        destination: .agents/skills/promote/scripts/promote-recipe.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/promote/scripts/promote-recipe.schema.json
+        destination: .agents/skills/promote/scripts/promote-recipe.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .agents/references/herdr.md
+        destination: .agents/references/herdr.md
+        substitutions: []
+
       - source: .agents/skills/phone-install/SKILL.md
         destination: .agents/skills/phone-install/SKILL.md
         substitutions: []
 
       - source: .agents/skills/feature-dev/SKILL.md
         destination: .agents/skills/feature-dev/SKILL.md
+        substitutions: []
+
+      # handoff — write or resume a session handoff kept as an issue comment.
+      - source: .agents/skills/handoff/SKILL.md
+        destination: .agents/skills/handoff/SKILL.md
+        substitutions: []
+
+      # dep-analysis — what a dependency update could break, the tests that
+      # exercise it, and a verdict at the exact head. Review skills route
+      # dependency updates here, so it ships wherever they do.
+      - source: .agents/skills/dep-analysis/SKILL.md
+        destination: .agents/skills/dep-analysis/SKILL.md
         substitutions: []
 
       - source: .agents/skills/diagnosing-bugs/SKILL.md
@@ -1480,6 +1791,10 @@ harnesses:
 
       - source: .agents/skills/product-grill/SKILL.md
         destination: .agents/skills/product-grill/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/red-team/SKILL.md
+        destination: .agents/skills/red-team/SKILL.md
         substitutions: []
 
 # Harness-independent targets. Every consumer receives these regardless of

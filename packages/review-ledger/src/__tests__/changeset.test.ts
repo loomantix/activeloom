@@ -387,7 +387,13 @@ describe('parseDiffPatch', () => {
       '+const newValue = 1;',
     ].join('\n');
     expect(parseDiffPatch(patch)).toEqual([
-      { path: 'src/a.ts', added: 1, deleted: 1, blank: 0 },
+      {
+        path: 'src/a.ts',
+        added: 1,
+        deleted: 1,
+        blank: 0,
+        changedLines: ['const oldValue = 1;', 'const newValue = 1;'],
+      },
     ]);
   });
 
@@ -404,8 +410,20 @@ describe('parseDiffPatch', () => {
       '+new b',
     ].join('\n');
     expect(parseDiffPatch(patch)).toEqual([
-      { path: 'src/a.ts', added: 1, deleted: 1, blank: 0 },
-      { path: 'src/b.ts', added: 1, deleted: 0, blank: 0 },
+      {
+        path: 'src/a.ts',
+        added: 1,
+        deleted: 1,
+        blank: 0,
+        changedLines: ['old a', 'new a'],
+      },
+      {
+        path: 'src/b.ts',
+        added: 1,
+        deleted: 0,
+        blank: 0,
+        changedLines: ['new b'],
+      },
     ]);
   });
 
@@ -430,7 +448,18 @@ describe('parseDiffPatch', () => {
       '',
     ].join('\n');
     expect(parseDiffPatch(patch)).toEqual([
-      { path: 'src/a.ts', added: 3, deleted: 1, blank: 1 },
+      {
+        path: 'src/a.ts',
+        added: 3,
+        deleted: 1,
+        blank: 1,
+        changedLines: [
+          'const gone = 2;',
+          'const added = 2;',
+          '',
+          'const other = 3;',
+        ],
+      },
     ]);
   });
 
@@ -500,7 +529,13 @@ describe('parseDiffPatch', () => {
       '\\ No newline at end of file',
     ].join('\n');
     expect(parseDiffPatch(patch)).toEqual([
-      { path: 'a.txt', added: 1, deleted: 1, blank: 0 },
+      {
+        path: 'a.txt',
+        added: 1,
+        deleted: 1,
+        blank: 0,
+        changedLines: ['old', 'new'],
+      },
     ]);
   });
 
@@ -514,7 +549,13 @@ describe('parseDiffPatch', () => {
       '+++ not-a-header',
     ].join('\n');
     expect(parseDiffPatch(patch)).toEqual([
-      { path: 'src/query.sql', added: 1, deleted: 1, blank: 0 },
+      {
+        path: 'src/query.sql',
+        added: 1,
+        deleted: 1,
+        blank: 0,
+        changedLines: ['-- README.md', '++ not-a-header'],
+      },
     ]);
   });
 });

@@ -64,7 +64,7 @@ the existing `<<KEY>>` profile substitutions, applied after composition.
 
 The initial shared policy covers the human-glance entry gate and workflow,
 findings before telemetry emission, finding severity, and tier non-triggers.
-The routine dependency recommendation lives only in `human-glance.hbs`.
+The dependency-update route lives only in `human-glance.hbs`.
 Different review lenses, launch instructions, and calibrated wording stay in the
 engine templates. The parity lint continues comparing these engine-specific
 outputs; composition does not exempt them from that check.
@@ -88,8 +88,10 @@ text and static partial includes: no helpers, conditionals, variables, dynamic
 names, context overrides, or fallback blocks. Profile vocabulary remains the
 only substitution interface. Templates and partials are covered by skill-content
 lint, and rendered Markdown is formatted and compared by the existing check.
-`.gitattributes` marks the exact composed outputs as generated so GitHub collapses
-their diffs by default; source templates and partials remain visible.
+The render also owns a marked block in `.gitattributes` that marks every
+rendered Markdown file as generated, so GitHub collapses those copies in PR diffs.
+Rendered scripts stay visible, as do sources, templates, and partials. `--check`
+fails when the block drifts from the generated-path inventory.
 
 Because every `{{` is parsed, a few things that are ordinary in prompt prose fail
 composition:
@@ -131,17 +133,26 @@ an unrelated hand-authored skill.
 ## Vendored documents
 
 `VENDORED_DOCUMENTS` in `scripts/render-prompts.py` maps a repo-relative source
-to the path it is copied to under **every** harness root. One entry today:
+to the path it is copied to under **every** harness root:
 
-| Source                                                   | Written to                                 |
-| -------------------------------------------------------- | ------------------------------------------ |
-| `packages/review-ledger/protocol/local-review-ledger.md` | `<root>/references/local-review-ledger.md` |
+| Source                                                    | Written to                                               |
+| --------------------------------------------------------- | -------------------------------------------------------- |
+| `packages/review-ledger/protocol/local-review-ledger.md`  | `<root>/references/local-review-ledger.md`               |
+| `packages/review-ledger/protocol/local-review-handoff.py` | `<root>/skills/critique/scripts/local-review-handoff.py` |
+| `prompts/references/herdr.md`                             | `<root>/references/herdr.md`                             |
 
-The ledger protocol is the engine-neutral contract that
+`herdr.md` is the engine-neutral mechanics reference the herd skills share; it describes every engine, so it carries no harness vocabulary. The ledger protocol is the engine-neutral contract that
 [`packages/review-ledger`](../packages/review-ledger/README.md) implements, so
 the package is the only place it can be authored without the document and the
 code enforcing it drifting apart. A hand-edit to a copy fails `--check` like
 any other generated file, and a write-mode render restores it.
+
+The run controller is there for the same reason and one more: every engine's
+passes are numbered inside the `local-review-run:v1` markers it owns, so a
+harness that did not receive it cannot run a review pass at all. Vendoring it
+per root is what stops harness selection from deciding that — see
+[`docs/decisions/0017`](decisions/0017-run-controller-is-vendored-per-root.md).
+Mode is carried from the source, so the copies stay executable.
 
 Two deliberate differences from a rendered skill:
 
@@ -161,10 +172,18 @@ domain no longer admits, which is a render that cannot be made to pass.
 
 Only the exact paths the table produces are renderer-owned. `references/`
 itself is not: it holds hand-authored prompts in two roots, and a destination
-directory is never swept the way a rendered skill directory is. A destination
-inside `skills/` is rejected too: a rendered skill directory is wholly owned by
-the skill render, so a document there could collide with a file that skill
-emits, and a hand-authored skill directory is not the renderer's to write into.
+directory is never swept the way a rendered skill directory is.
+
+A destination inside a **rendered** skill's directory is rejected. That
+directory is wholly owned by the skill render, and `render_documents` runs after
+it, so a colliding destination would overwrite a rendered file with the source
+bytes and nothing would report it: the path is in the written set, so
+`unowned_files` skips it, the manifest dedupes the double entry, and `--check`
+compares staging against a repository already holding those bytes. An
+**unrendered** skill's directory has no render to collide with, so one shared
+file may be vendored in beside its hand-maintained siblings; that is how the run
+controller reaches `skills/critique/scripts/`. The rest of that directory stays
+hand-maintained, and only the vendored path is renderer-owned.
 
 ## The prompt stack manifest
 

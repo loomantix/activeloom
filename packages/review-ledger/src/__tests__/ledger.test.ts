@@ -3,6 +3,11 @@ import {
   dispose,
   postFinding,
   preflightAnchor,
+  preflightFix,
+  preflightPublish,
+  buildFindingBody,
+  buildDispositionBody,
+  sha256Text,
   reconcile,
   reopenOccurrence,
   resolve,
@@ -207,6 +212,255 @@ describe('ledger operations and workflow verification', () => {
     });
     expect(res.verified).toBe(true);
     expect(res.anchor).toBe('RIGHT:2');
+  });
+
+  describe('preflight-fix', () => {
+    const params = {
+      repo: 'example/repo',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+      fingerprint: 'window',
+      occurrence: 1,
+    };
+    function post(severity: 'blocking' | 'major' | 'minor' | 'nit', round = 3) {
+      mock.reviewComments.push({
+        id: 201,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          round,
+          severity,
+          lens: 'code-reviewer',
+          content: 'Reachable defect.',
+        }).body,
+      });
+    }
+
+    it.each(['major', 'minor', 'nit'] as const)(
+      'rejects a convergence %s before any write',
+      (severity) => {
+        post(severity);
+        const before = JSON.stringify(mock.reviewComments);
+        expect(() => preflightFix(params)).toThrow(
+          /convergence fixes require a posted blocking finding/,
+        );
+        expect(JSON.stringify(mock.reviewComments)).toBe(before);
+        expect(mock.commentIdSeq).toBe(200);
+      },
+    );
+
+    it('permits a posted blocker in convergence', () => {
+      post('blocking');
+      expect(preflightFix(params)).toMatchObject({
+        verified: true,
+        severity: 'blocking',
+        stance: 'convergence',
+      });
+    });
+
+    it('permits a major in an adversarial round', () => {
+      post('major', 1);
+      expect(preflightFix({ ...params, round: 1 })).toMatchObject({
+        stance: 'adversarial',
+      });
+    });
+
+    it('uses the authenticated Lean run for the round-two boundary', () => {
+      const content = 'Authorized run.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 2,
+          start_head: headSha,
+          supersedes: null,
+          tier: 'lean',
+        }),
+      );
+      mock.issueComments = [
+        {
+          id: 20,
+          user: { login: mock.actor },
+          body: `<!-- local-review-run:v1 id=${digest} tier=lean max-rounds=2 base=${mock.prBase} start-head=${headSha} supersedes=none content-sha256=${digest} -->\n${content}`,
+        },
+      ];
+      post('major', 2);
+      expect(() => preflightFix({ ...params, round: 2 })).toThrow(
+        /convergence fixes require/,
+      );
+    });
+
+    it.each([
+      { head: 'a'.repeat(40) },
+      { engine: 'claude' as const },
+      { round: 4 },
+      { fingerprint: 'other' },
+      { occurrence: 2 },
+    ])('rejects an identity mismatch: %j', (change) => {
+      post('blocking');
+      expect(() => preflightFix({ ...params, ...change })).toThrow();
+    });
+
+    it('rejects a missing or foreign-owned finding', () => {
+      expect(() => preflightFix(params)).toThrow(
+        /exactly one authenticated finding/,
+      );
+      post('blocking');
+      mock.reviewComments[0]!['user'] = { login: 'someone-else' };
+      expect(() => preflightFix(params)).toThrow(
+        /exactly one authenticated finding/,
+      );
+    });
+
+    it('rejects tampered content', () => {
+      post('blocking');
+      mock.reviewComments[0]!['body'] += 'tampered';
+      expect(() => preflightFix(params)).toThrow(/digest|hash/);
+    });
+
+    it('rejects duplicate, superseded, and already disposed findings', () => {
+      post('blocking');
+      post('blocking');
+      expect(() => preflightFix(params)).toThrow(/exactly one/);
+      mock.reviewComments.pop();
+      mock.reviewComments.push({
+        id: 202,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          occurrence: 2,
+          severity: 'blocking',
+          lens: 'code-reviewer',
+          content: 'Later occurrence.',
+        }).body,
+      });
+      expect(() => preflightFix(params)).toThrow(/latest finding occurrence/);
+      mock.reviewComments.pop();
+      mock.reviewComments.push({
+        id: 202,
+        user: { login: mock.actor },
+        body: buildDispositionBody({
+          ...params,
+          outcome: 'deferred',
+          content: 'Follow-up.',
+        }).body,
+      });
+      expect(() => preflightFix(params)).toThrow(/undisposed finding/);
+    });
+  });
+
+  describe('preflight-publish', () => {
+    const params = {
+      repo: 'example/repo',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+    };
+    let nextId = 300;
+    function post(
+      fingerprint: string,
+      severity: 'blocking' | 'major' | 'minor' | 'nit',
+      round = 3,
+    ) {
+      mock.reviewComments.push({
+        id: nextId++,
+        user: { login: mock.actor },
+        body: buildFindingBody({
+          ...params,
+          round,
+          fingerprint,
+          occurrence: 1,
+          severity,
+          lens: 'code-reviewer',
+          content: 'Reachable defect.',
+        }).body,
+      });
+    }
+    const fixes = (...fingerprints: string[]) =>
+      fingerprints.map((fingerprint) => ({ fingerprint, occurrence: 1 }));
+
+    it('permits posted blockers in convergence and reports each severity', () => {
+      post('window', 'blocking');
+      post('lease', 'blocking');
+      expect(
+        preflightPublish({ ...params, findings: fixes('window', 'lease') }),
+      ).toMatchObject({
+        stance: 'convergence',
+        verified: true,
+        findings: [
+          { fingerprint: 'window', severity: 'blocking' },
+          { fingerprint: 'lease', severity: 'blocking' },
+        ],
+      });
+    });
+
+    it('refuses a convergence push that fixes a non-blocking finding', () => {
+      post('window', 'blocking');
+      post('label', 'major');
+      const before = JSON.stringify(mock.reviewComments);
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window', 'label') }),
+      ).toThrow(
+        /label occurrence 1 is major: defer it and leave its change out/,
+      );
+      expect(JSON.stringify(mock.reviewComments)).toBe(before);
+    });
+
+    it('permits a non-blocking fix in an adversarial round', () => {
+      post('cleanup', 'nit', 1);
+      expect(
+        preflightPublish({ ...params, round: 1, findings: fixes('cleanup') }),
+      ).toMatchObject({ stance: 'adversarial' });
+    });
+
+    it('refuses a fix whose finding was not posted before the push', () => {
+      post('window', 'major', 1);
+      expect(() =>
+        preflightPublish({
+          ...params,
+          round: 1,
+          findings: fixes('window', 'cleanup'),
+        }),
+      ).toThrow(/cleanup occurrence 1 .*post the finding before its fix/);
+    });
+
+    it('refuses a finding posted at another head or already disposed', () => {
+      post('window', 'blocking');
+      expect(() =>
+        preflightPublish({
+          ...params,
+          head: 'a'.repeat(40),
+          findings: fixes('window'),
+        }),
+      ).toThrow();
+      mock.reviewComments.push({
+        id: nextId++,
+        user: { login: mock.actor },
+        body: buildDispositionBody({
+          ...params,
+          fingerprint: 'window',
+          occurrence: 1,
+          outcome: 'deferred',
+          content: 'Follow-up.',
+        }).body,
+      });
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window') }),
+      ).toThrow(/undisposed finding/);
+    });
+
+    it('refuses an empty or repeated manifest', () => {
+      post('window', 'blocking');
+      expect(() => preflightPublish({ ...params, findings: [] })).toThrow(
+        /requires the finding identity of every fix/,
+      );
+      expect(() =>
+        preflightPublish({ ...params, findings: fixes('window', 'window') }),
+      ).toThrow(/must not repeat/);
+    });
   });
 
   it('posts a finding and records comment', () => {

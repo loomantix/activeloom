@@ -85,19 +85,31 @@ The "fix forward in upstream first" rule is the only sustainable shape — the s
 
 ## Dev-side flow (`install-skills.sh`)
 
-Skills resolve from `~/.claude/skills/` before falling back to per-repo `.claude/skills/`. Symlinking the upstream-checkout's skills into the global directory means **`git pull` in the upstream clone updates every skill instantly** — no per-repo PR-merge round-trip for the developer's own tooling.
+Each harness reads a user-level skills directory alongside the per-repo copy. Symlinking the upstream checkout's skills into those directories means **`git pull` in the upstream clone updates every skill instantly** — no per-repo PR-merge round-trip for the developer's own tooling.
 
 ```bash
 cd <your upstream clone>
 git pull
-./scripts/install-skills.sh         # safe — only installs missing skills
-./scripts/install-skills.sh --force # replaces existing entries (backed up)
+./scripts/install-skills.sh                 # every harness found on this machine
+./scripts/install-skills.sh --harness codex # one harness
+./scripts/install-skills.sh --force         # replaces existing entries (backed up)
 ./scripts/install-skills.sh --dry-run
+./scripts/install-skills.sh --check         # after a pull: anything not installed or stale?
 ```
 
-The script symlinks `<upstream>/.claude/skills/<name>` → `~/.claude/skills/<name>`. Set `CLAUDE_SKILLS_DIR` to override the destination.
+A pull can add a skill that linked skills already call; `--check` names it, the skills that require it ([`scripts/skill-requires.txt`](../scripts/skill-requires.txt)), and the fix, and exits 1. The script also links each harness's support files (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …) beside the skills directory, never replacing an existing file.
 
-The CI flow still keeps the in-repo `.claude/skills/` copy in sync — that copy is what teammates without the global install (and CI contexts) use.
+The script reads `root`, `home`, `skills`, and `cli` from each entry under `harnesses:` in `scripts/sync-targets.yml` and symlinks `<upstream>/<root>/skills/<name>` → `~/<skills>/<name>`:
+
+| Harness  | Source           | Destination                        | Override            |
+| -------- | ---------------- | ---------------------------------- | ------------------- |
+| `claude` | `.claude/skills` | `~/.claude/skills`                 | `CLAUDE_SKILLS_DIR` |
+| `codex`  | `.codex/skills`  | `~/.agents/skills`                 | `CODEX_SKILLS_DIR`  |
+| `gemini` | `.agents/skills` | `~/.gemini/antigravity-cli/skills` | `GEMINI_SKILLS_DIR` |
+
+`--dest <id>=DIR` overrides one destination and wins over the variable. A harness's optional `legacy_skills` names an older directory it still reads (`~/.codex/skills` for Codex); the script prunes dangling links into the checkout there and reports live ones, but never installs into it. Adding a harness to the manifest is enough for the script to install it; `cli/lib/detect.js` mirrors the same table for `activeloom add`, enforced by `tests/cli/harness-table.test.js`. Per-harness setup, including the Antigravity app and IDE directory, is in [Getting started](getting-started.md#installing-from-a-clone). Choose models and effort per engine with `review-setup` or `activeloom review-config` ([Review profile](getting-started.md#review-profile)).
+
+The CI flow still keeps the in-repo copies in sync — those copies are what teammates without the global install (and CI contexts) use.
 
 ## `.activeloom-config.yml` schema
 

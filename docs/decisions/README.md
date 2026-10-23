@@ -28,9 +28,12 @@ presumed accidental.
 | 0011 | [Assurance setup interaction](0011-assurance-setup-interaction.md) — context-first one-accept setup; the agent recommends facts and the resolver alone computes controls                         |
 | 0012 | [Assurance ledger compatibility](0012-assurance-ledger-compatibility.md) — two new marker families, versioned finish and telemetry records, and an expand-then-use rollout                       |
 | 0013 | [Invoking a review is not an escalation](0013-review-invocation-is-not-escalation.md) — a review request is not trigger 6, the tier order runs as returned, and the classifier owns human glance |
-| 0014 | [Dependency review tier and hosted review boundaries](0014-dependency-review-tier-and-reviewit-boundaries.md) — dependency updates are Lean, and hosted review is a review-profile setting       |
+| 0014 | [Dependency review tier and hosted review boundaries](0014-dependency-review-tier-and-reviewit-boundaries.md) — dependency half superseded by 0018; hosted review is a review-profile setting    |
 | 0015 | [Small changes default to a human glance](0015-small-changes-default-to-human-glance.md) — under 20 lines of code or config stops with a recommendation, and a human asks for the chain          |
 | 0016 | [Review metrics leave the PR conversation](0016-review-metrics-leave-the-pr-conversation.md) — proposed: a locked per-repository issue as the store, pull export as JSONL, no new token scope    |
+| 0017 | [The run controller is vendored per root](0017-run-controller-is-vendored-per-root.md) — one source in `packages/`, a copy in every harness root, no cross-root path                             |
+| 0018 | [Dependency updates get an analysis, not a review](0018-dependency-updates-get-an-analysis-not-a-review.md) — no chain on a dependency update; mixed ranges split by part                        |
+| 0019 | [The dependency analysis opens a fix PR for test gaps](0019-dependency-analysis-opens-a-fix-pr-for-test-gaps.md) — a draft PR with the update and missing tests, reviewed by the normal chain    |
 
 Most records here are parity divergences, and those are the ones
 `parity-allowlist.yml` cites. A record may also fix a vocabulary that several

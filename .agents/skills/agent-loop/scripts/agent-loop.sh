@@ -24,6 +24,7 @@ NC='\033[0m'
 # Review context is owned by this wrapper. Do not leak state from an outer
 # agent-loop/deepcritique invocation into setup, worker, or worker validation.
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_LEDGER \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
@@ -764,7 +765,7 @@ stop_resumed_human_glance() {
     local head="$1" base
     base="$(jq -er '.baseSha' <<<"$RESUME_STATE_JSON")" || return 1
     human_glance_gate "$base" "$head" || return 0
-    recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+    recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
     return 1
 }
 
@@ -778,7 +779,7 @@ refuse_unfinished_batch_child() {
         base="$(jq -er '.baseSha' <<<"$child_json")" || return 1
         head="$(jq -er '.headSha' <<<"$child_json")" || return 1
         human_glance_gate "$base" "$head" || return 0
-        recovery_message "Batch issue #$issue stopped for a human glance and starts no review chain; read its draft PR before explicitly bailing it." human-glance
+        recovery_message "Batch issue #$issue stopped for $(human_glance_need) and starts no review chain; read its draft PR before explicitly bailing it." human-glance
         print_batch_bail_command "$issue" active
         return 1
     fi
@@ -830,7 +831,7 @@ resume_initial_publication() {
         return 1
     }
     if human_glance_gate "$base" "$(git rev-parse HEAD)"; then
-        recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+        recovery_message "Draft PR requires $(human_glance_need); no review chain was started." human-glance
         return 1
     fi
 }
@@ -1826,6 +1827,21 @@ finalize_blocked_review_result() {
     node "$REVIEW_LEDGER" validate-result "${identity[@]}"
 }
 
+# A blocked round whose fix is already published, and whose result failed only
+# on a bookkeeping slip (a finding posted at its fix head, or a non-blocking fix
+# in convergence), keeps that head and reviews it again in the next round. The
+# ledger decides; any other blocked result still stops the run.
+recover_blocked_round() {
+    local slug="$1" round="$2" before_sha="$3" after_sha="$4"
+    local historical_comment_ids_file="$5"
+    [ "$before_sha" != "$after_sha" ] || return 1
+    node "$REVIEW_LEDGER" check-blocked-round \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
+        --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+        --before "$before_sha" --head "$after_sha" \
+        --historical-comment-ids-file "$historical_comment_ids_file"
+}
+
 run_review_pass() {
     local budgeted=true
     local engine="$1" slug="$2" hook="$3" round="$4"
@@ -1835,7 +1851,7 @@ run_review_pass() {
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local historical_comment_ids_signature
-    local result_recovery_signature=missing recovered_result_json
+    local result_recovery_signature=missing current_recovery_signature recovered_result_json blocked_round_json
     local boundary_status
 
     prepare_review_pass_budget || return 1
@@ -1956,6 +1972,31 @@ run_review_pass() {
                     fi
                     ;;
             esac
+        fi
+        if [ "$result_status" = blocked ] && \
+            [[ "$blocker" == *"fixed finding was not posted before its disposition head"* || \
+               "$blocker" == *"convergence review results cannot fix non-blocking findings"* ]] && \
+            current_recovery_signature="$(review_outcome_signature "$result_file.recovery.json")" && \
+            [ "$current_recovery_signature" = "$result_recovery_signature" ] && \
+            blocked_round_json="$(recover_blocked_round "$slug" "$round" \
+                "$before_sha" "$after_sha" "$historical_comment_ids_file")"; then
+            echo "   recovered: blocked-round ($engine, round $round); its published fix is reviewed again next round"
+            jq -r '.slips[] | "     slip: " + .' <<<"$blocked_round_json"
+            boundary_status=0
+            attest_review_head "after $engine blocked-round recovery in round $round" \
+                "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+            if [ "$boundary_status" -eq 2 ]; then
+                return 2
+            elif [ "$boundary_status" -ne 0 ]; then
+                recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
+                return 1
+            fi
+            export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
+            run_validation "$slug-review-round-$round" true || {
+                recovery_message "Validation after $validation_description failed in review round $round."
+                return 1
+            }
+            return 3
         fi
         if [ "$result_status" = blocked ]; then
             recovery_message "$engine review blocked in round $round: $blocker"
@@ -2110,15 +2151,31 @@ budget_finish() {
 
 # A range with no review-significant file needs a human glance, not a review
 # chain. Classify before the first round so no hook, checkpoint, latch, or
-# marker is spent on it. Returns 0 only on a confident skip carrying at least
+# marker is spent on it. A dependency update stops the same way, for a
+# dependency analysis. Returns 0 only on a dependency update or a confident skip carrying at least
 # one file; an unreadable classification falls through to the normal review.
+human_glance_need() {
+    if [ "${HUMAN_GLANCE_KIND:-human-glance}" = dependency-update ]; then
+        echo "a dependency analysis"
+    else
+        echo "a human glance"
+    fi
+}
+
 human_glance_gate() {
     local base_sha="$1" head_sha="$2" report
     HUMAN_GLANCE_FILES=0
+    HUMAN_GLANCE_KIND=human-glance
     [ -n "$REVIEW_LEDGER" ] && [ -f "$REVIEW_LEDGER" ] || return 1
     command -v node >/dev/null 2>&1 || return 1
     report="$(node "$REVIEW_LEDGER" classify-changeset \
         --base "$base_sha" --head "$head_sha" 2>/dev/null)" || return 1
+    # A dependency update never gets a review chain; it waits for a dependency analysis.
+    if [ "$(jq -r '.dependencyUpdate // false' <<<"$report" 2>/dev/null)" = true ]; then
+        HUMAN_GLANCE_KIND=dependency-update
+        HUMAN_GLANCE_FILES="$(jq -r '.dependencyPaths | length' <<<"$report" 2>/dev/null)" || return 1
+        return 0
+    fi
     [ "$(jq -r '.skip // false' <<<"$report" 2>/dev/null)" = true ] || return 1
     HUMAN_GLANCE_FILES="$(jq -r '.classifications | length' <<<"$report" 2>/dev/null)" || return 1
     [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
@@ -2213,6 +2270,14 @@ run_review_convergence() {
                     return 1
                 }
                 continue
+            elif [ "$pass_status" -eq 3 ]; then
+                round=$((round + 1))
+                update_run_state reviewing "$round" "$round_base_sha" \
+                    "$(git rev-parse HEAD)" "" "" gemini || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
             elif [ "$pass_status" -ne 0 ]; then
                 return 1
             fi
@@ -2241,6 +2306,14 @@ run_review_convergence() {
                 update_run_state reviewing "$round" \
                     "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
                     "" "" gemini || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -eq 3 ]; then
+                round=$((round + 1))
+                update_run_state reviewing "$round" "$round_base_sha" \
+                    "$(git rev-parse HEAD)" "" "" gemini || {
                     recovery_message "Could not checkpoint the next review round."
                     return 1
                 }
@@ -2737,6 +2810,16 @@ finalize_pr() {
     attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
     verify_local_review_threads || return 1
     verify_converged_review_outcomes || return 1
+    # A mixed range is ready only with a clear dependency analysis at this head,
+    # which agent-loop does not run: leave the PR in draft for it. A range that
+    # cannot be classified stays in draft too.
+    local dependency_report
+    dependency_report="$(node "$REVIEW_LEDGER" classify-changeset \
+        --base "$REVIEWED_BASE_SHA" --head "$final_sha" 2>/dev/null)" &&
+        [ "$(jq -r '.dependencyPaths | length' <<<"$dependency_report" 2>/dev/null)" = 0 ] || {
+        recovery_message "Review converged at $final_sha, but the range changes dependency files or could not be classified. Run the dependency analysis (dep-analysis) at that head before marking PR $AGENT_LOOP_PR_URL ready; it stays in draft." human-glance
+        return 1
+    }
     update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
         "$final_sha" || {
         recovery_message "Could not checkpoint the finalizing review state."
@@ -2851,6 +2934,7 @@ resume_review_run() {
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     [ "$state_phase" != draft-open ] || stop_resumed_human_glance "$state_head" || return 1
     case "$state_phase" in
         worker-running|worker-complete|integrating|integrated|publishing|pushed)
@@ -3385,6 +3469,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     run_worker "$start_sha" || exit 1
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_LEDGER="$REVIEW_LEDGER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     update_run_state worker-complete 1 "$start_sha" "$(git rev-parse HEAD)" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
@@ -3410,8 +3495,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
     if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
-        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
-        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain." human-glance
+        if [ "$HUMAN_GLANCE_KIND" = dependency-update ]; then
+            echo "Dependency update: $HUMAN_GLANCE_FILES dependency files, no review chain. Run the dependency analysis (dep-analysis)."
+        else
+            echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
+        fi
+        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs $(human_glance_need), not a review chain." human-glance
         exit 1
     fi
 

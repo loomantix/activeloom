@@ -19,6 +19,7 @@ import {
   TELEMETRY_STATUSES,
   TELEMETRY_TOKEN_SOURCES,
   TELEMETRY_TRIGGERS,
+  TOKEN_RE,
 } from './constants.js';
 import { fail } from './errors.js';
 import { assertRegularFile, parseJsonOrFail } from './io.js';
@@ -31,6 +32,9 @@ import {
   postFinding,
   postPrComment,
   preflightAnchor,
+  preflightFix,
+  preflightPublish,
+  checkBlockedRound,
   reconcile,
   reopenOccurrence,
   reply,
@@ -165,6 +169,7 @@ interface CliArgs {
   promptSurfaces?: string[] | undefined;
   truncated?: boolean | undefined;
   dryRun?: boolean | undefined;
+  forceReview?: boolean | undefined;
   prs?: string | undefined;
   since?: string | undefined;
   until?: string | undefined;
@@ -196,6 +201,33 @@ function readJsonArray(pathValue: string, label: string): unknown[] {
   return parsed;
 }
 
+/** Read the `[{fingerprint, occurrence}]` identities a review push fixes. */
+function readPublishFindings(
+  pathValue: string,
+): Array<{ fingerprint: string; occurrence: number }> {
+  return readJsonArray(pathValue, 'publish findings file').map((entry) => {
+    const row = entry as Record<string, unknown> | null;
+    if (
+      typeof row !== 'object' ||
+      row === null ||
+      Array.isArray(row) ||
+      Object.keys(row).sort().join(',') !== 'fingerprint,occurrence' ||
+      typeof row.fingerprint !== 'string' ||
+      !TOKEN_RE.test(row.fingerprint) ||
+      !Number.isSafeInteger(row.occurrence) ||
+      (row.occurrence as number) < 1
+    ) {
+      fail(
+        'publish findings must be objects with a fingerprint token and a positive occurrence',
+      );
+    }
+    return {
+      fingerprint: row.fingerprint as string,
+      occurrence: row.occurrence as number,
+    };
+  });
+}
+
 /**
  * Resolve the classified changeset for the pinned review range.
  *
@@ -205,10 +237,12 @@ function readJsonArray(pathValue: string, label: string): unknown[] {
  * would report a changeset no reviewer saw.
  */
 function resolveChangesetReport(args: CliArgs): ChangesetReport {
-  const options =
-    args.promptSurfaces === undefined
-      ? undefined
-      : { promptSurfaces: args.promptSurfaces };
+  const options = {
+    ...(args.promptSurfaces === undefined
+      ? {}
+      : { promptSurfaces: args.promptSurfaces }),
+    ...(args.forceReview === true ? { forceReview: true } : {}),
+  };
   if (args.diffFile) {
     assertRegularFile(
       args.diffFile,
@@ -326,6 +360,12 @@ function parseCliArgs(argv: string[]): CliArgs {
 
     if (arg === '--dry-run') {
       args.dryRun = true;
+      i++;
+      continue;
+    }
+
+    if (arg === '--force-review') {
+      args.forceReview = true;
       i++;
       continue;
     }
@@ -635,6 +675,62 @@ function runCliCommand(argv: string[]): number {
   validateArgs(args);
 
   switch (args.command) {
+    case 'preflight-fix': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.fingerprint ||
+        args.occurrence === undefined
+      ) {
+        fail(
+          'preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence',
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightFix({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            fingerprint: args.fingerprint,
+            occurrence: args.occurrence,
+          }),
+        ) + '\n',
+      );
+      break;
+    }
+    case 'preflight-publish': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.findingsFile
+      ) {
+        fail(
+          'preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file',
+        );
+      }
+      process.stdout.write(
+        JSON.stringify(
+          preflightPublish({
+            repo: args.repo,
+            pr: args.pr,
+            head: args.head,
+            engine: args.engine,
+            round: args.round,
+            findings: readPublishFindings(args.findingsFile),
+          }),
+        ) + '\n',
+      );
+      break;
+    }
     case 'preflight-anchor': {
       if (!args.repo || args.pr === undefined || !args.head || !args.path) {
         fail('preflight-anchor requires --repo, --pr, --head, and --path');
@@ -858,6 +954,35 @@ function runCliCommand(argv: string[]): number {
       writeSortedJson(out);
       break;
     }
+    case 'check-blocked-round': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.base ||
+        !args.before
+      ) {
+        fail(
+          'check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before',
+        );
+      }
+      writeSortedJson(
+        checkBlockedRound({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          base: args.base,
+          before: args.before,
+          allowedHeadsFile: args.allowedHeadsFile,
+          historicalCommentIdsFile: args.historicalCommentIdsFile,
+        }),
+      );
+      break;
+    }
     case 'write-blocked-result': {
       if (
         !args.head ||
@@ -1064,6 +1189,9 @@ function runCliCommand(argv: string[]): number {
         smallChange: report.smallChange,
         smallChangeLines: report.smallChangeLines,
         smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
+        dependencyUpdate: report.dependencyUpdate,
+        dependencyPaths: report.dependencyPaths,
+        dependencyReviewForced: report.dependencyReviewForced,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications,
       });

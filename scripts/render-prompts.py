@@ -58,6 +58,12 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 SKILLS_SRC = PROMPTS_DIR / "skills"
 PROFILES_DIR = PROMPTS_DIR / "profiles"
 MANIFEST_PATH = PROMPTS_DIR / "rendered-files.txt"
+GITATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
+GITATTRIBUTES_BEGIN = (
+    "# BEGIN render-prompts: generated Markdown, collapsed in PR diffs. "
+    "Edit prompts/, not this block.\n"
+)
+GITATTRIBUTES_END = "# END render-prompts\n"
 
 VERSION_PATH = REPO_ROOT / "PROMPT_STACK_VERSION"
 
@@ -82,6 +88,14 @@ VENDORED_DOCUMENTS: dict[str, str] = {
     "packages/review-ledger/protocol/local-review-ledger.md": (
         "references/local-review-ledger.md"
     ),
+    # The run controller is protocol, not a launcher: it owns the
+    # `local-review-run:v1` markers every engine's passes are numbered inside.
+    # One implementation, vendored into each root so a harness resolves it under
+    # its own root and a repository that selected one harness still gets it.
+    "packages/review-ledger/protocol/local-review-handoff.py": (
+        "skills/critique/scripts/local-review-handoff.py"
+    ),
+    "prompts/references/herdr.md": "references/herdr.md",
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
@@ -657,10 +671,20 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        raise ValueError(
-            f"vendored document destination must not sit inside a rendered "
-            f"skill directory: {root_relative!r}"
-        )
+        # A *rendered* skill's directory is wholly owned by the skill render, and
+        # `render_documents` runs after it, so a colliding vendored destination
+        # would overwrite a rendered file with the source bytes and nothing would
+        # say so: the path is in `written`, so `unowned_files` skips it,
+        # `_manifest_text` dedupes the double entry, and `--check` compares
+        # staging against a repo already holding those bytes. An unrendered skill
+        # has no render to collide with, so the guard rejects the rendered
+        # roster's directories rather than all of `skills/`.
+        owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
+        if len(root_path.parts) < 2 or root_path.parts[1] in owned_skills:
+            raise ValueError(
+                f"vendored document destination must not sit inside a rendered "
+                f"skill directory: {root_relative!r}"
+            )
     source = REPO_ROOT / source_path
     current = REPO_ROOT
     for part in source_path.parts:
@@ -850,6 +874,40 @@ def _manifest_text(written: list[Path]) -> str:
     return "".join(f"{path.as_posix()}\n" for path in sorted(set(written)))
 
 
+def _gitattributes_text(current: str, written: list[Path]) -> str:
+    """`current` with its generated block replaced, or appended if absent.
+
+    Only rendered Markdown is marked: GitHub then collapses those copies in PR
+    diffs, while rendered scripts stay visible for review. Lines outside the
+    block are left alone.
+    """
+    block = (
+        GITATTRIBUTES_BEGIN
+        + "".join(
+            f"/{path.as_posix()} linguist-generated=true\n"
+            for path in sorted(set(written))
+            if path.suffix == ".md"
+        )
+        + GITATTRIBUTES_END
+    )
+    begins = current.count(GITATTRIBUTES_BEGIN)
+    ends = current.count(GITATTRIBUTES_END)
+    if begins == 0 and ends == 0:
+        separator = "" if not current or current.endswith("\n") else "\n"
+        return current + separator + block
+    begin = current.find(GITATTRIBUTES_BEGIN)
+    end = current.find(GITATTRIBUTES_END)
+    if begins != 1 or ends != 1 or end < begin:
+        raise ValueError(f"{GITATTRIBUTES_PATH}: malformed render-prompts block")
+    return current[:begin] + block + current[end + len(GITATTRIBUTES_END) :]
+
+
+def _read_gitattributes() -> str:
+    if not GITATTRIBUTES_PATH.exists():
+        return ""
+    return GITATTRIBUTES_PATH.read_text(encoding="utf-8")
+
+
 def _load_manifest(profiles: list[Profile]) -> list[Path]:
     """Read and validate the previously generated path set.
 
@@ -975,6 +1033,9 @@ def _publish_outputs(
         shutil.copy2(staging / relative, target)
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     MANIFEST_PATH.write_text(_manifest_text(written), encoding="utf-8")
+    GITATTRIBUTES_PATH.write_text(
+        _gitattributes_text(_read_gitattributes(), written), encoding="utf-8"
+    )
 
 
 def _render_file(
@@ -1178,12 +1239,18 @@ def _report_drift(
         encoding="utf-8"
     ) != _manifest_text(written)
 
+    committed_attributes = _read_gitattributes()
+    attributes_drift = committed_attributes != _gitattributes_text(
+        committed_attributes, written
+    )
+
     if (
         not missing
         and not differing
         and not stale
         and not unowned
         and not manifest_drift
+        and not attributes_drift
     ):
         print(f"rendered output matches all {len(written)} committed file(s)")
         return 0
@@ -1199,6 +1266,8 @@ def _report_drift(
         sys.stderr.write(f"  unowned:   {relative}\n")
     if manifest_drift:
         sys.stderr.write(f"  differs:   {MANIFEST_PATH.relative_to(REPO_ROOT)}\n")
+    if attributes_drift:
+        sys.stderr.write(f"  differs:   {GITATTRIBUTES_PATH.relative_to(REPO_ROOT)}\n")
     sys.stderr.write(
         "\nThe harness roots are generated. Edit the source in `prompts/skills/`, "
         "`prompts/review/`, or `prompts/partials/` "

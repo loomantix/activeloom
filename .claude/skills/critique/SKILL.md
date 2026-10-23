@@ -16,11 +16,20 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
-For a dependency-only diff, also apply the workflow's "Routine dependency
-updates" rule before continuing; a qualifying recommendation stops the same way.
+On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
+the same way, and run `/dep-analysis` instead: no review chain runs on a
+dependency update, whatever the tier marker or skill name, unless the
+workflow's dependency review override applies — a direct human request, a
+current or previously applied `review: full` label, or a matching always-Deep
+repository tier extension. Resolve it using the workflow's complete label-event
+history rule; label removal alone does not cancel it. Then classify again with
+`--force-review` and continue as for a mixed range. When
+`dependencyPaths` is non-empty and `dependencyUpdate` is false, the range is
+mixed: continue for the code, and follow the workflow's "Dependency updates"
+rule for the dependency files.
 
-Continue when the range carries a review-significant file and is not a small
-change and does not qualify for the dependency recommendation, when a human
+Continue when the range carries a review-significant file and is neither a
+small change nor a dependency update, when a human
 explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
@@ -71,12 +80,12 @@ the tier resolved to Deep, and Phase 0 checks it against the PR's tier marker.
 ## Stance resolution
 
 Before selecting lenses, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
-or the round supplied by `/deepcritique`. Otherwise select one past Claude's
+or the round supplied by `/deepcritique`. The controller that sets `$AGENT_LOOP_REVIEW_ROUND` has already authorized that round, so when it is set, skip both `authorize-pass` and run initialization. Otherwise select one past Claude's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only its pass/complete comments after that run marker.
 Honor the run's cap and confirm the round with the run controller at
-`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
-is shared by every surface despite its path. If it is absent from the checkout,
+`.claude/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`);
+every root ships the same bytes. If it is absent from the checkout,
 report that and stop rather than running unauthorized. Follow the workflow's
 [run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass)
 when no run exists. An ended run, including an aborted one, requires fresh
@@ -101,7 +110,7 @@ the fix bias, as set out under "Convergence rounds" below. It does not change th
 post-before-editing, reply, or resolve contract, and it does not raise the round
 cap.
 
-Take the stance from `authorize-pass`'s `stance` field and state the round and
+When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
 stance in the output. The ledger refuses a convergence result that fixed a
 non-blocking finding.
 
@@ -335,8 +344,9 @@ For confirmed fixes, including cleanup inherited from refactorpass:
 1. make the smallest safe edit;
 2. run focused validation;
 3. commit all corrections locally, then publish once for the enclosing pass.
-   When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke it exactly once after
-   the last fix; otherwise push normally. Include inherited cleanup commits
+   When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, write the publish-fixes
+   manifest the ledger's "Fix, reply, and resolve" describes, then invoke the
+   helper exactly once after the last fix; otherwise push normally. Include inherited cleanup commits
    even when this lane found no new defect. Skip publication only when the
    entire enclosing pass made no new commits;
 4. require local HEAD, remote head, and PR head to match;

@@ -25,6 +25,8 @@ Inline setup is complete when `check` exits 0 and the user has seen the stored v
 
 ## First run
 
+When this skill is invoked as part of installation or repository onboarding, include [Repository auto-glance](#repository-auto-glance) even if the personal profile is already configured.
+
 1. Run `show`. If it reports `"configured": true`, go to [Inline setup](#inline-setup) when it lists `missing` keys, otherwise to [Changing a setting](#changing-a-setting).
 2. Run `detect` and `defaults`. Present one table — engine, CLI installed, recommended reviewer model and effort, recommended worker model and effort, note — then the recommended order for `lean` and `deep`.
 3. Explain `inherit` where it appears: the engine CLI's own configured default model applies, so the model changes whenever that configuration does.
@@ -32,7 +34,29 @@ Inline setup is complete when `check` exits 0 and the user has seen the stored v
 5. Write the profile: `init --accept-defaults`, followed on the same line by one assignment per change (for example `init --accept-defaults claude.effort=high gemini.availability=unavailable reviewit.availability=unavailable`). The helper fits the proposal to those choices: unassigned worker values follow the engine's reviewer values, and unavailable engines leave the proposed orders.
 6. Run `show` and present the stored values.
 
-Setup is complete when `show` reports `"configured": true` with an empty `missing` list and the user has seen the stored values.
+7. Follow [Repository auto-glance](#repository-auto-glance). This is a separate repository decision, not a key in the personal profile.
+8. Follow [Herd sessions in auto mode](#herd-sessions-in-auto-mode).
+
+Setup is complete when `show` reports `"configured": true` with an empty `missing` list, the user has seen the stored values, the auto-glance choice is recorded or explicitly deferred, and the auto-mode section was skipped, stopped at its first step, reported `ready`, or was deferred by the user.
+
+## Repository auto-glance
+
+Run this step during first-time setup, when `onboard` delegates here, or when the user asks to configure auto-glance. Routine profile repairs and model changes need not repeat it.
+
+1. Establish the target repository. For personal-only setup outside a repository, explain the choice below and ask which repository to configure, or let the user defer it. `glance.auto` belongs only in the consumer-owned `.activeloom-herd.json`, never in the personal review profile or per-user `herd.json`.
+2. Read any existing `.activeloom-herd.json` and validate it with `python3 -I .claude/skills/hreview/scripts/herd-config.py validate .activeloom-herd.json`. For personal installations, locate `hreview/scripts/herd-config.py` beside the installed skills instead. If the helper or `auto-glance` skill is missing, report the required installation and defer the write. Preserve an explicit existing `glance.auto` choice unless the user asks to change it; an absent key still needs the question even though its runtime default is `false`. Invalid configuration needs repair before proceeding, not replacement.
+3. Explain: eligible changes classified `skip` (docs/config only) or `smallChange` get one local non-author reviewer through `/auto-glance` instead of waiting for a human glance. It requires herdr and an available non-author engine in the Lean review order. A clean read with green CI can mark the PR ready; auto-glance never merges. Always-Deep surfaces still need the full review chain.
+4. Ask: **"Enable auto-glance for this repository? Yes (recommended for herdr workflows with an independent local reviewer), No (keep human glance), or defer."** Show the current value if present. Recommend No or deferral when the prerequisites are missing. Wait for an explicit answer; an unanswered prompt, non-interactive setup, or installer `--yes` is not consent.
+5. Confirm the integration branch from repository guidance and existing configuration; do not assume the current feature branch or default branch is the integration branch. After Yes or No, create or update `.activeloom-herd.json` with `schema_version: 1`, the confirmed `integration_branch`, and `glance.auto` as a JSON boolean (`true` for Yes, `false` for No). Merge only those fields into the existing object, preserving all other fields, including other `glance` options. On deferral, leave the file untouched and report the effective default as `false` only when the key is absent.
+6. Run `python3 -I .claude/skills/hreview/scripts/herd-config.py validate .activeloom-herd.json` (or the located personal helper), show the diff and validation result, and leave the change for the repository's normal PR process. A working-tree validation is not activation: `herd-config.py repo` reads the remote default branch first, then the named integration branch. When those branches differ, both must carry the configuration naming the same integration branch. The choice takes effect only after the required branch copies land; setup does not merge them or start a reviewer.
+
+## Herd sessions in auto mode
+
+Run this during first-time setup, or when the user asks how to run the herd skills (`hreview`, `horch`, `hloop`, `hgrill`, `hpromote`) without approval prompts. Skip it when the user does not drive the herd skills.
+
+1. Ask whether the user runs Claude Code in auto mode, or starts herd panes with `--permission-mode auto` in `~/.config/activeloom/herd.json`. If neither, say the check runs again before every herd launch and stop here.
+2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I .claude/skills/hreview/scripts/herd-config.py claude-settings --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. Add `--session-mode auto` only when the user runs Claude Code in auto mode; the helper detects auto-mode herd panes from `herd.json` itself. If the helper is missing, report the required installation and defer.
+3. Act on the report as that section says: when `ready` is false, show each missing entry and why, the draft path and the copy command, and let the user run the command. Rerun until `ready` is true or the user defers. Never edit Claude settings yourself.
 
 ## Changing a setting
 

@@ -54,7 +54,7 @@ done
 # Pinned loomantix/activeloom commit whose `.agents` tree is the only
 # relay surface this launcher exposes to the unattended reviewer. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="c4c7a1d3956b94f05b320f57b3218a596ea40c54"
+agy_surface_sha="03d3dda77333bc8d430e45dffd2d1f67cb9b4ce3"
 
 # The companion surface must speak this engine's ledger protocol. Reading the
 # expectation from the vendored version file beside this script keeps the two
@@ -398,7 +398,7 @@ if not isinstance(payload, dict):
 
 status = payload.get("status")
 if exit_code != 0 or status != "SUCCESS":
-    message = payload.get("response") or payload.get("error") or "no error detail"
+    message = payload.get("error") or payload.get("response") or "no error detail"
     raise SystemExit(
         f"the review failed (exit {exit_code}, status {status!r}): {message}\n"
         "A narrated success, or a ledger comment the reviewer already posted, is not a passing "

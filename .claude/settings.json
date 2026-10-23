@@ -1,4 +1,6 @@
 {
-  "$comment_purpose": "Reserved for shared Claude Code hook or env settings. Currently empty.",
-  "$comment_scope": "This file is synced from the upstream repo — edits in a consumer will be overwritten on next sync. Add consumer-specific settings to .claude/settings.local.json instead (gitignored, per-developer)."
+  "$comment_purpose": "Claude Code settings for this repository only. Consumers receive settings.json.template, rendered from their own telemetry block.",
+  "$comment_scope": "Personal settings belong in .claude/settings.local.json (gitignored).",
+  "$comment_env": "Review metrics for this repository go to its locked activeloom:review-metrics issue. Set here, not in a review-telemetry.json beside the bundle, because user-level installs link these skill directories. .codex/config.toml sets the same value for Codex.",
+  "env": { "LOOM_REVIEW_TELEMETRY_STORE": "issue" }
 }

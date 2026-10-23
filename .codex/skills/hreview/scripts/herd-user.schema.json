@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/loomantix/activeloom/herd-user.schema.json",
+  "title": "~/.config/activeloom/herd.json",
+  "description": "Per-user settings for the herdr orchestration skills. Models, efforts and engine order stay in the review profile.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "$defs": {
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^\\n\\u0000]+$"
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "launch_args": {
+          "$ref": "#/$defs/args",
+          "description": "Added to every launch of this engine."
+        },
+        "permission_off_args": {
+          "$ref": "#/$defs/args",
+          "description": "Added to sessions that edit; omitted for read-only sessions. A flag may appear once across both lists."
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "worktree_root": { "type": "string", "minLength": 1, "default": "~/wt" },
+    "push_notifications": { "type": "boolean", "default": true },
+    "engines": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude": { "$ref": "#/$defs/engine" },
+        "codex": { "$ref": "#/$defs/engine" },
+        "gemini": { "$ref": "#/$defs/engine" }
+      }
+    }
+  }
+}

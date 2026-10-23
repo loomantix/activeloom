@@ -4,7 +4,7 @@
 >
 > This file is synced from upstream and overwritten on every sync. A rule that names this repository's paths, labels, or past incidents belongs in `.backlog/refinement.local.md`; a rule that would hold in any repository belongs here, proposed upstream.
 >
-> **Core rubric version: 5.** (v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
+> **Core rubric version: 6.** (v6: verified-stale issues close by default once the orchestrator validates the evidence. v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
 
 ## The two questions (the continuous-improvement contract)
 
@@ -155,10 +155,12 @@ Each maps to an `agent-bail:` label. Refinement applies these at prep time; the 
 
 ### The stale action
 
-The local file's `<!-- stale-action: recommend | close -->` marker sets what refinement does with a verified-stale issue. It defaults to `recommend`.
+The local file's `<!-- stale-action: close | recommend -->` marker sets what refinement does with a verified-stale issue. It defaults to `close`.
 
-- **`recommend`** — apply `agent: refined` + `agent-bail: stale`, comment with the evidence (commit, PR, or `file:line`), and recommend close. A human closes it.
-- **`close`** — post the evidence comment first, apply the same labels, then close the issue as `completed` when the work shipped or `not planned` when it is obsolete or superseded. Remove any state label whose premise the close resolves, such as `status: blocked`. Every other close — a duplicate, a won't-fix — stays a recommendation.
+A stale verdict is **validated** when whoever applies the plan — never the assessor that proposed it — has re-run its evidence against the freshly fetched integration branch: the commit or PR is merged there, and each cited `file:line` or symbol shows the work. Only a validated verdict closes without asking; an unvalidated one is a recommendation under either setting.
+
+- **`close`** (default) — for a validated verdict, post the evidence comment first, apply the same labels, then close the issue as `completed` when the work shipped or `not planned` when it is obsolete or superseded. Remove any state label whose premise the close resolves, such as `status: blocked`. Every other close — a duplicate, a won't-fix, an interview's don't-build — stays a recommendation or needs explicit confirmation.
+- **`recommend`** — apply `agent: refined` + `agent-bail: stale`, comment with the evidence (commit, PR, or `file:line`), and recommend close. A human closes it. Choose it where a wrong close is expensive to notice or undo.
 
 ### Workflow-auto-managed issues (skipped entirely — not even labelled)
 

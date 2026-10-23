@@ -112,7 +112,7 @@ def test_the_gate_stops_on_a_small_change(root: str, skill: str) -> None:
         "On `smallChange: true`, print that section's small-change recommendation "
         "and stop the same way." in gate
     )
-    assert "and is not a small change" in gate
+    assert "and is neither a small change nor a dependency update" in gate
     assert "overrode a small-change recommendation" in gate
     # A relay already under way is not stopped by a later session's gate.
     assert "when a small change's open PR already carries a tier marker" in gate
@@ -139,42 +139,162 @@ def test_the_workflow_recommends_a_glance_for_a_small_change(root: str) -> None:
         "starts the runner" in gate
     )
     # No human acts on a recommendation inside agent-loop.
-    assert "so it gates on `skip` alone and ignores `smallChange`" in gate
+    assert "so it gates on `skip` and `dependencyUpdate` alone and ignores `smallChange`" in gate
     # A recommendation never supplies merge authority.
     assert "No human-glance recommendation authorizes a merge." in gate
 
 
 @pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
-def test_dependency_recommendation_precedes_reviewer_setup(root: str, skill: str) -> None:
+def test_the_gate_routes_a_dependency_update_to_the_analysis(root: str, skill: str) -> None:
     body = _skill(root, skill)
     gate = " ".join(body.split(GATE_HEADING, 1)[1].split("\n## ", 1)[0].split())
-    assert 'workflow\'s "Routine dependency updates" rule' in gate
-    assert gate.index("For a dependency-only diff") < gate.index("Continue when")
-    assert "a qualifying recommendation stops the same way" in gate
+    assert "On `dependencyUpdate: true`" in gate
+    assert "dep-analysis" in gate
+    assert "no review chain runs on a dependency update, whatever the tier marker or skill name" in gate
+    # Direct and standing human requests persist across invocation boundaries.
+    assert "current or previously applied `review: full` label" in gate
+    assert "matching always-Deep repository tier extension" in gate
+    assert "label removal alone does not cancel it" in gate
+    assert "classify again with `--force-review` and continue as for a mixed range" in gate
+    # The dependency route is decided before anything that would continue the chain.
+    assert gate.index("On `dependencyUpdate: true`") < gate.index("Continue when")
+    assert "the range is mixed: continue for the code" in gate
+    assert "Routine dependency updates" not in gate
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
-def test_dependency_recommendation_requires_evidence_and_preserves_active_reviews(
-    root: str,
-) -> None:
+def test_the_workflow_gives_a_dependency_update_no_chain(root: str) -> None:
     body = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8").split())
-    rule = body.split("**Routine dependency updates.**", 1)[1].split(
+    assert "**Routine dependency updates.**" not in body
+    rule = body.split("**Dependency updates.**", 1)[1].split(
         "No human-glance recommendation authorizes a merge.", 1
     )[0]
     for requirement in (
-        "existing direct development dependencies",
-        "no other manifest fields or files",
-        "transitive updates, release notes and advisories",
-        "successful frozen install",
-        "required CI at the current head",
-        "Missing or failed validation",
-        "PR with a tier marker",
-        "explicit request to run review anyway",
-        "controller-scheduled pass",
-        "reviewer launch failure never qualifies",
-        "does not change the classifier's `skip` or `smallChange` flags",
+        '`"dependencyUpdate": true`',
+        "No review chain runs on it",
+        "unless the dependency review override below applies",
+        "Dependency update: N dependency files, no review chain.",
+        "is **mixed**",
+        "leave the dependency files to the analysis, except under the dependency review override",
+        "the session that ends the run",
+        "at the converged head before marking the PR ready",
+        "<!-- dependency-analysis:v1 head=<sha> verdict=<clear|gaps|broken|blocked> -->",
+        "requires `verdict=clear` at the exact current head",
+        "separate issue documenting the test and telemetry gaps",
     ):
-        assert requirement in rule
+        assert requirement in rule, requirement
+    tier = body.split("### What does not set the tier", 1)[1]
+    assert "**Dependency updates take no tier.**" in tier
+    # An explicit request on a dependency update is the dependency review override.
+    assert "on a dependency update, that request is the dependency review override below" in body
+    override = body.split("**Dependency review override.**", 1)[1].split("- **Small-change override.**", 1)[0]
+    for requirement in (
+        "best-effort heuristic",
+        "the open PR carries the `review: full` label",
+        "complete paginated label-event history",
+        "Label removal alone never revokes the request",
+        "always-Deep surface",
+        "takes precedence over dependency routing",
+        "classify again with `--force-review`",
+        '`"dependencyReviewForced": true`',
+        "with `dependencyPaths` kept",
+        "those files can set the tier",
+        "still covers `dependencyPaths` at the converged head",
+        "A session never adds the label or the flag on its own reading of the diff",
+    ):
+        assert requirement in override, requirement
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_dependency_evidence_rejects_edits_before_ready_or_shipping(root: str) -> None:
+    workflow = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text().split())
+    evidence = workflow.split("The analysis records its outcome", 1)[1].split(
+        "No human-glance recommendation", 1
+    )[0]
+    assert "including `author`, `body`, `createdAt` and `lastEditedAt`" in evidence
+    assert "Select that actor's latest analysis comment before" in evidence
+    assert "`lastEditedAt` to be null" in evidence
+    assert "never fall back to an older report" in evidence
+    assert "immediately before readiness or shipping" in evidence
+    analysis = " ".join(_skill(root, "dep-analysis").split())
+    ready = analysis.split("### 7. Ready", 1)[1]
+    assert "label-event history and tier extensions" in ready
+    assert "unedited exact-head `clear` report" in ready
+    for skill in ("horch", "hreview"):
+        consumer = " ".join(_skill(root, skill).split())
+        assert "lastEditedAt" in consumer
+        assert "durable" in consumer
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_gap_fix_pr_takes_the_review_route_and_is_handed_back(root: str) -> None:
+    analysis = " ".join(_skill(root, "dep-analysis").split())
+    fix = analysis.split("### 6. Fix test gaps", 1)[1].split("### 7. Ready", 1)[0]
+    for requirement in (
+        "Runs only on verdict `gaps`",
+        "step 1 reported `\"dependencyUpdate\": true`",
+        "`--no-fix`",
+        "A missing signal, or a test that needs a change to product code",
+        "no other open PR (besides `<pr>`) already updates these dependencies or claims the issue",
+        "before running any package manager install or lifecycle script",
+        "never hand-edit a lockfile",
+        "must fail at the base and pass with the fix",
+        '`node $L classify-changeset --base "$fix_base_sha" --head "$(git rev-parse HEAD)"`',
+        "Every file in `classifications` must be in `dependencyPaths` or have `class: \"test\"`",
+        "Inspect each non-dependency file's diff to confirm it changes only tests",
+        "a test-class path can contain configuration, product code or test tooling",
+        "The whole-range `smallChangeLines` includes dependency manifest changes, so it is not an eligibility check",
+        "`gh pr create --draft --base <base-branch>`",
+        "`Closes #<issue>`",
+        "This skill does not review, mark ready or merge the fix PR",
+        "takes the normal review route",
+        "DEP-FIX-PR: <fix pr number> <fix head sha> issue=<issue number> supersedes=<analysed pr number>",
+    ):
+        assert requirement in fix, requirement
+    rules = analysis.split("## Rules", 1)[1]
+    assert "No merge." in rules
+    assert "belong to its review chain and the orchestrator" in rules
+    horch = " ".join(_skill(root, "horch").split())
+    assert "Once the herder is `done` or `idle`, a dependency analysis at `gaps` whose pane prints a `DEP-FIX-PR: <fix> <head> issue=<i> supersedes=<n>` line" in horch
+    assert "`isCrossRepository: false`" in horch
+    assert "start a review chain for it as for any PR" in horch
+    assert "Leave `<n>` unshipped" in horch
+    hreview = " ".join(_skill(root, "hreview").split())
+    assert "end this PR's final report with its `DEP-FIX-PR` line" in hreview
+    assert "Start no chain for the fix PR in this invocation" in hreview
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_first_party_review_evidence_precedes_installation(root: str) -> None:
+    body = " ".join(_skill(root, "dep-analysis").split())
+    preflight, tests = body.split("### 3. Tests", 1)
+    assert "exact target SHA or artifact's source commit" in preflight
+    assert "reviewed or explicitly accepted by a human" in preflight
+    assert "source-to-artifact binding" in preflight
+    assert "Missing or inaccessible evidence blocks the analysis before installation" in preflight
+    assert "could not establish required first-party review evidence" in tests
+    assert "`clear` — no provenance change, required first-party review evidence established" in body
+    herder = " ".join(_skill(root, "hreview").split())
+    assert "provenance and first-party review evidence checks" in herder
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_the_dependency_analysis_skill_records_a_verdict_at_the_head(root: str) -> None:
+    body = " ".join(_skill(root, "dep-analysis").split())
+    assert "disable-model-invocation" not in body
+    for requirement in (
+        "### 2. What could break",
+        "### 3. Tests",
+        "### 4. Telemetry",
+        "### 5. Report",
+        "<!-- dependency-analysis:v1 head=<head sha> verdict=<clear|gaps|broken|blocked> -->",
+        "opens an issue documenting each gap, to close before merge.",
+        "the repository's own gate commands",
+        "No review chain on a dependency update",
+        "No merge.",
+        "It writes no ledger run, roster, tier marker, attestation, or review telemetry record.",
+    ):
+        assert requirement in body, requirement
 
 
 def test_the_small_change_limit_matches_the_documented_figure() -> None:
@@ -190,6 +310,17 @@ def test_agent_loop_gates_on_skip_alone(root: str) -> None:
         encoding="utf-8"
     )
     assert "smallChange" not in script
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_agent_loop_stops_a_dependency_update_before_review(root: str) -> None:
+    script = (ROOT / root / "skills/agent-loop/scripts/agent-loop.sh").read_text(
+        encoding="utf-8"
+    )
+    gate = script.split("human_glance_gate() {", 1)[1].split("\n}\n", 1)[0]
+    # The dependency route is checked before the skip check can fall through.
+    assert gate.index(".dependencyUpdate // false") < gate.index(".skip // false")
+    assert "Run the dependency analysis (dep-analysis)." in script
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
