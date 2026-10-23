@@ -3120,6 +3120,10 @@ class Runner:
             result = self.helper("ledger", "validate-result", *fields)
         if result["status"] == "blocked":
             self.emit_fallback_telemetry(pending, "blocked")
+            if pending.get("validation_origin"):
+                # Automatic recovery would consume only the repair's transition
+                # and silently drop the original candidate's fixes.
+                raise Blocked("blocked validation repair requires explicit recovery")
             self.recover_blocked_pass(pending, head, result)
             return
         if origin := pending.get("validation_origin"):

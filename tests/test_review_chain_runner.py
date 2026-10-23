@@ -1534,6 +1534,31 @@ def test_changed_candidate_validation_repairs_preserve_original_transition(
     assert runner.state["run_id"] == "d" * 64
 
 
+def test_blocked_changed_candidate_repair_is_not_recovered_automatically(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = validation_repair_harness.harness
+    wrapped = h.module.managed
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        wrapped(argv, log, env, *args, **kwargs)
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env and len(h.launches) == 1:
+            path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+            result = h.module.read(path)
+            h.controls.head = "c" * 40
+            result.update(status="changed", afterSha=h.controls.head, classification="material",
+                          findingFingerprints=["original-finding"])
+            h.module.save(path, result)
+            h.controls.outcome = "blocked"
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="blocked validation repair requires explicit recovery"):
+        runner.run()
+    assert runner.state["head"] == HEAD
+    assert runner.state["completed"] == []
+
+
 @pytest.mark.parametrize("engine", ["codex", "claude", "gemini"])
 def test_failed_validation_repairs_once_without_resetting_run_or_round(
     validation_repair_harness: Any, engine: str,
