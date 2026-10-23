@@ -14,8 +14,8 @@ LEDGER = "skills/critique/scripts/review-ledger.version"
 REPAIR = (
     "Commit A must bump and vendor the ledger; commit B must pin A in both "
     "pinned launchers and AGY_SURFACE_SHA in tests/test_agy_review_launcher.py. "
-    "Use a merge commit to preserve A. With squash merges, land the ledger first "
-    "and move the pin in a separate PR before distributing. See CONTRIBUTING.md."
+    "Land both commits together with a merge commit to preserve A; do not squash "
+    "or split the upgrade across PRs. See CONTRIBUTING.md."
 )
 
 

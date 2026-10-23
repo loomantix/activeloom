@@ -54,7 +54,8 @@ def test_ledger_bump_without_pin_move(repo: Path) -> None:
     result = run(repo)
     assert result.returncode == 1
     assert "ledger is 1.11.0; engine ledger is 1.12.0" in result.stderr
-    assert "squash merges" in result.stderr
+    assert "Land both commits together with a merge commit" in result.stderr
+    assert "do not squash or split the upgrade across PRs" in result.stderr
     # Release checking must inspect the candidate, not the working directory.
     assert run(repo, "--ref", "HEAD").returncode == 0
 

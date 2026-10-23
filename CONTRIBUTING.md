@@ -110,8 +110,9 @@ For public documentation changes, keep the root README, [agent entry guide](docs
 After a ledger bump, use two commits: A builds and vendors the ledger into all
 three harness roots; B sets `agy_surface_sha` in both `.claude` and `.codex`
 critique launchers and `AGY_SURFACE_SHA` in `tests/test_agy_review_launcher.py`
-to A. Use a merge commit so A remains reachable. With squash merges, land the
-ledger change first, then move the pin in a separate PR before distribution.
+to A. Land both commits together with a merge commit so A remains reachable.
+Do not squash this upgrade or split it across PRs: the ledger bump alone fails
+the compatibility check until the pin is updated.
 The `.agents` agent-loop launcher instead trusts `AGENT_LOOP_TRUSTED_BASE_REF`;
 it has no companion commit pin.
 
