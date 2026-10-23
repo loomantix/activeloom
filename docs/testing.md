@@ -35,6 +35,11 @@ pinned dependency once per checkout or worktree with
 prompt rendering, CLI tests, and review-ledger package validation keep their
 existing commands in CI and the review contract.
 
+The Codex-root agent-loop controller supervises hooks with a Linux subreaper
+and `/proc`, and its review push helper uses `flock` and GNU `stat`. Cases that
+run them are marked Linux-only and skip on macOS. CI runs on Linux and covers
+them; to run them on a Mac, use a Linux container.
+
 The comment-verifier tests also require the pinned TypeScript compiler from
 `packages/review-ledger`. Prepare it with
 `pnpm --dir packages/review-ledger install --frozen-lockfile --ignore-scripts`.

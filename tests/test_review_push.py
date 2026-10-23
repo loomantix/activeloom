@@ -16,6 +16,11 @@ pytestmark = pytest.mark.regression
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".claude/skills/agent-loop/scripts/review-push.sh"
+AGENTS_HELPER = ROOT / ".agents/skills/agent-loop/scripts/review-push.sh"
+# The publish-time ledger gate is the same in each harness that runs it on this host.
+LEDGER_GATE_HELPERS = pytest.mark.parametrize(
+    "helper", [HELPER, AGENTS_HELPER], ids=[".claude", ".agents"]
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -252,10 +257,10 @@ def test_v2_guard_preserves_explicit_staged_review_push(tmp_path: Path) -> None:
 
 
 def _run(
-    repo: Path, env: dict[str, str], *args: str
+    repo: Path, env: dict[str, str], *args: str, helper: Path = HELPER
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(HELPER), *args], cwd=repo, env=env, capture_output=True, text=True
+        [str(helper), *args], cwd=repo, env=env, capture_output=True, text=True
     )
 
 
@@ -402,11 +407,12 @@ def _remote_head(repo: Path) -> str:
     ).split()[0]
 
 
+@LEDGER_GATE_HELPERS
 def test_checks_named_fixes_against_the_ledger_before_push(
-    review_repo: tuple[Path, dict[str, str], str],
+    review_repo: tuple[Path, dict[str, str], str], helper: Path
 ) -> None:
     repo, env, start = review_repo
-    result = _run(repo, env)
+    result = _run(repo, env, helper=helper)
     assert result.returncode == 0, result.stderr
     [call] = [
         json.loads(line)
@@ -430,27 +436,29 @@ def test_checks_named_fixes_against_the_ledger_before_push(
     assert json.loads(call["manifest"]) == [{"fingerprint": "window", "occurrence": 1}]
 
 
+@LEDGER_GATE_HELPERS
 def test_refuses_publication_without_a_fix_manifest(
-    review_repo: tuple[Path, dict[str, str], str],
+    review_repo: tuple[Path, dict[str, str], str], helper: Path
 ) -> None:
     repo, env, start = review_repo
     (Path(env["AGENT_LOOP_LOG_DIR"]) / "ledger-content/publish-fixes.json").unlink()
-    result = _run(repo, env)
+    result = _run(repo, env, helper=helper)
     assert result.returncode != 0
     assert "publish-fixes.json" in result.stderr
     assert "posted before publication" in result.stderr
     assert _remote_head(repo) == start
 
 
+@LEDGER_GATE_HELPERS
 def test_refuses_publication_the_ledger_rejects(
-    review_repo: tuple[Path, dict[str, str], str],
+    review_repo: tuple[Path, dict[str, str], str], helper: Path
 ) -> None:
     repo, env, start = review_repo
     env["FAKE_LEDGER_REFUSE"] = (
         "convergence fixes require a posted blocking finding; "
         "label occurrence 1 is major: defer it and leave its change out of the push"
     )
-    result = _run(repo, env)
+    result = _run(repo, env, helper=helper)
     assert result.returncode != 0
     assert "label occurrence 1 is major" in result.stderr
     assert "refused publication" in result.stderr
@@ -458,12 +466,13 @@ def test_refuses_publication_the_ledger_rejects(
     assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text() == f"{start}\n"
 
 
+@LEDGER_GATE_HELPERS
 def test_contract_v2_publication_skips_the_v3_ledger_check(
-    review_repo: tuple[Path, dict[str, str], str],
+    review_repo: tuple[Path, dict[str, str], str], helper: Path
 ) -> None:
     repo, env, _ = review_repo
     env["AGENT_LOOP_REVIEW_CONTRACT_VERSION"] = "2"
     (Path(env["AGENT_LOOP_LOG_DIR"]) / "ledger-content/publish-fixes.json").unlink()
-    result = _run(repo, env)
+    result = _run(repo, env, helper=helper)
     assert result.returncode == 0, result.stderr
     assert not Path(env["FAKE_LEDGER_LOG"]).exists()

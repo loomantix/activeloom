@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_codex_agent_loop import Consumer, _executable, _git
+from tests.test_codex_agent_loop import LINUX_ONLY, Consumer, _executable, _git
 
 
 pytestmark = pytest.mark.regression
@@ -209,6 +209,7 @@ def test_isolate_rejects_resume_before_creating_destination(tmp_path: Path, resu
     assert "issue edit" not in consumer.log("gh.log")
 
 
+@LINUX_ONLY
 @pytest.mark.parametrize("mutate_isolated", [False, True])
 def test_worker_config_changes_are_scoped_to_isolated_repository(
     tmp_path: Path, mutate_isolated: bool

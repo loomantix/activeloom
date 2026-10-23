@@ -18,6 +18,7 @@ pytestmark = pytest.mark.regression
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPERVISOR = ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py"
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper and /proc")
 
 
 def _load_supervisor() -> Any:
@@ -53,6 +54,7 @@ def _assert_recorded_process_dead(pid_file: Path) -> None:
     assert not Path(f"/proc/{pid}").exists()
 
 
+@LINUX_ONLY
 def test_supervisor_self_test() -> None:
     result = subprocess.run(
         [sys.executable, str(SUPERVISOR), "--self-test"],
@@ -95,6 +97,7 @@ def test_descendant_enumeration_ignores_unrelated_proc_entries(tmp_path: Path) -
     assert supervisor._descendants(1, tmp_path) == set()
 
 
+@LINUX_ONLY
 def test_supervisor_kills_double_forked_session(tmp_path: Path) -> None:
     pid_file = tmp_path / "detached.pid"
 
@@ -120,6 +123,7 @@ def test_supervisor_kills_double_forked_session(tmp_path: Path) -> None:
     _assert_recorded_process_dead(pid_file)
 
 
+@LINUX_ONLY
 def test_supervisor_kills_detached_session_on_timeout(tmp_path: Path) -> None:
     pid_file = tmp_path / "timeout.pid"
     result = subprocess.run(
@@ -145,6 +149,7 @@ def test_supervisor_kills_detached_session_on_timeout(tmp_path: Path) -> None:
     _assert_recorded_process_dead(pid_file)
 
 
+@LINUX_ONLY
 def test_supervisor_cleans_up_when_terminated(tmp_path: Path) -> None:
     pid_file = tmp_path / "terminated.pid"
     process = subprocess.Popen(
@@ -174,6 +179,7 @@ def test_supervisor_cleans_up_when_terminated(tmp_path: Path) -> None:
     _assert_recorded_process_dead(pid_file)
 
 
+@LINUX_ONLY
 def test_signal_during_cleanup_does_not_interrupt_reaping(tmp_path: Path) -> None:
     pid_file = tmp_path / "cleanup-signal.pid"
     child = f"""
@@ -221,6 +227,7 @@ while not Path({str(pid_file)!r}).exists() and time.monotonic() < deadline:
     _assert_recorded_process_dead(pid_file)
 
 
+@LINUX_ONLY
 def test_supervisor_kills_active_fork_churn(tmp_path: Path) -> None:
     pid_file = tmp_path / "fork-churn.pids"
     child = f"""

@@ -4379,7 +4379,12 @@ def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkou
 
 
 def _blocked_slip_hook(
-    tmp_path: Path, *, resolved: bool = True, blocker: str = "write-result: fixed finding was not posted before its disposition head"
+    tmp_path: Path,
+    *,
+    resolved: bool = True,
+    blocker: str = "write-result: fixed finding was not posted before its disposition head",
+    root: str = ".claude",
+    engine: str = "codex",
 ) -> Path:
     """Round 1 publishes a posted fix, then posts a cleanup finding at the
     published head (the ordering slip) and writes a blocked result; later rounds
@@ -4392,20 +4397,20 @@ import hashlib, json, os, subprocess
 from pathlib import Path
 
 env = os.environ
-ledger = ".claude/skills/critique/scripts/review-ledger.js"
+ledger = "{root}/skills/critique/scripts/review-ledger.js"
 before = env["AGENT_LOOP_PR_HEAD_SHA"]
 round_number = int(env["AGENT_LOOP_REVIEW_ROUND"])
-identity = ["--engine", "codex", "--round", str(round_number),
+identity = ["--engine", "{engine}", "--round", str(round_number),
     "--base", env["AGENT_LOOP_REVIEW_BASE_SHA"], "--before", before]
 if round_number > 1:
-    result = {{"version": 3, "status": "clean", "engine": "codex", "round": round_number,
+    result = {{"version": 3, "status": "clean", "engine": "{engine}", "round": round_number,
         "baseSha": env["AGENT_LOOP_REVIEW_BASE_SHA"], "beforeSha": before,
         "afterSha": before, "classification": None, "findingFingerprints": [],
         "finalLaneComplete": True}}
     Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"]).write_text(json.dumps(result))
     raise SystemExit(0)
 
-subprocess.run(["fixture-post-fix", "codex", "real-fix", "major"], check=True)
+subprocess.run(["fixture-post-fix", "{engine}", "real-fix", "major"], check=True)
 Path("real-fix.txt").write_text("fixed\\n")
 Path("cleanup.txt").write_text("tidied\\n")
 subprocess.run(["git", "add", "real-fix.txt", "cleanup.txt"], check=True)
@@ -4416,7 +4421,7 @@ after = subprocess.run(["git", "rev-parse", "HEAD"], check=True,
 
 def record(kind, fingerprint, head, extra, content):
     digest = hashlib.sha256(content.encode()).hexdigest()
-    return (f"<!-- local-review{{kind}}:v3 engine=codex round={{round_number}} head={{head}} "
+    return (f"<!-- local-review{{kind}}:v3 engine={engine} round={{round_number}} head={{head}} "
         f"fingerprint={{fingerprint}} occurrence=1 {{extra}} content-sha256={{digest}} -->\\n{{content}}")
 
 def thread(fingerprint, severity, finding_head):
