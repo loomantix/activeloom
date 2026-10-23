@@ -178,6 +178,8 @@ def main() -> int:
             else ""
         )
         + "Resolve the recorded tier; use critique for Lean. Read prior non-telemetry ledger evidence. "
+        "The launching controller already authorized this exact engine and round; "
+        "do not repeat authorize-pass or initialize a run through an older installed helper. "
         f"This pass's confirmed reviewer settings are model {model}, effort {effort}. "
         "Use the same model and effort for any delegated Codex review lanes; "
         "inherit means keep the current session model. "

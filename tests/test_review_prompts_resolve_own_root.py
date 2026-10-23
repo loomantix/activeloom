@@ -43,6 +43,7 @@ REVIEW_PROMPTS = (
     "skills/hloop/SKILL.md",
     "skills/horch/SKILL.md",
     "skills/hpromote/SKILL.md",
+    "skills/hred-team/SKILL.md",
     "skills/hreview/SKILL.md",
     # hpromote follows its step rules and runs its helper.
     "skills/promote/SKILL.md",

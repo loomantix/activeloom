@@ -86,11 +86,16 @@ import type {
   PreflightAnchorResult,
   PreflightFixParams,
   PreflightFixResult,
+  PreflightPublishParams,
+  PreflightPublishResult,
+  CheckBlockedRoundParams,
+  CheckBlockedRoundResult,
   ReconcileParams,
   ReconcileResult,
   RecoverResultParams,
   ReopenOccurrenceParams,
   ReopenOccurrenceResult,
+  SupportedSeverity,
   ReplyParams,
   ResolveParams,
   ResolveResult,
@@ -521,6 +526,7 @@ export function sameRoundDispositions(
   args: { engine: SupportedEngine; round: number; repo?: string | undefined },
   matched: Array<[FindingV3Match, DispositionV3Match]>,
   allowedHeads: Record<string, number>,
+  slips?: string[],
 ): Array<[string, boolean, boolean, boolean]> {
   const evidence = new Map<string, [boolean, boolean, boolean]>();
 
@@ -559,21 +565,31 @@ export function sameRoundDispositions(
     }
 
     if (disposition.outcome === 'fixed' && dispositionHead === findingHead) {
-      fail('fixed finding was not posted before its disposition head');
-    }
-    const dispositionPosition = Object.prototype.hasOwnProperty.call(
-      allowedHeads,
-      dispositionHead,
-    )
-      ? allowedHeads[dispositionHead]!
-      : undefined;
-    if (
-      dispositionPosition === undefined ||
-      dispositionPosition < findingPosition ||
-      (disposition.outcome === 'fixed' &&
-        dispositionPosition === findingPosition)
-    ) {
-      fail('same-round finding disposition is outside the observed transition');
+      // `checkBlockedRound` collects this ordering slip instead of failing, so a
+      // published fix whose finding was posted late can be recovered.
+      if (slips === undefined) {
+        fail('fixed finding was not posted before its disposition head');
+      }
+      slips.push(
+        `${finding.fingerprint} occurrence ${finding.occurrence} was posted at its fix head`,
+      );
+    } else {
+      const dispositionPosition = Object.prototype.hasOwnProperty.call(
+        allowedHeads,
+        dispositionHead,
+      )
+        ? allowedHeads[dispositionHead]!
+        : undefined;
+      if (
+        dispositionPosition === undefined ||
+        dispositionPosition < findingPosition ||
+        (disposition.outcome === 'fixed' &&
+          dispositionPosition === findingPosition)
+      ) {
+        fail(
+          'same-round finding disposition is outside the observed transition',
+        );
+      }
     }
     if (finding.severity === 'blocking' && disposition.outcome !== 'fixed') {
       fail('blocking local-review findings must be fixed');
@@ -858,6 +874,66 @@ export function writeResult(params: WriteResultParams): LedgerResult {
 }
 
 /**
+ * Decide whether a blocked round's published fix can be kept and reviewed again
+ * in the next round. It can only when the ledger is otherwise complete and the
+ * result failed solely on bookkeeping slips: a finding posted at its fix head,
+ * or a non-blocking finding fixed in convergence. Anything else, including a
+ * published change with no fixed same-round finding, is refused.
+ */
+export function checkBlockedRound(
+  params: CheckBlockedRoundParams,
+): CheckBlockedRoundResult {
+  if (params.before === params.head) {
+    fail('a blocked round that published nothing has no fix to recover');
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  verifyReviewBase(params.repo, params.pr, params.base, params.before);
+  verifyGitTransition(params.before, params.head, params.head);
+  const threads = reviewThreads(params.repo, params.pr);
+  const matched = verifyThreadDispositions(
+    threads,
+    loadHistoricalCommentIds(params.historicalCommentIdsFile),
+    { repo: params.repo, pr: params.pr },
+  );
+  const allowedHeads = transitionHeads(params);
+  const slips: string[] = [];
+  const dispositions = sameRoundDispositions(
+    params,
+    matched,
+    allowedHeads,
+    slips,
+  );
+  if (!dispositions.some(([, hasFix]) => hasFix)) {
+    fail(
+      'the blocked round published a change with no fixed same-round finding; it was not reviewed',
+    );
+  }
+  if (params.round >= convergenceStartRound(params.repo, params.pr)) {
+    for (const [fingerprint, , , hasNonblockingFix] of dispositions) {
+      if (hasNonblockingFix) {
+        slips.push(
+          `${fingerprint} is a non-blocking fix in a convergence round`,
+        );
+      }
+    }
+  }
+  if (slips.length === 0) {
+    fail(
+      'the blocked round has no label or ordering slip to recover; reconcile its ledger',
+    );
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  return {
+    engine: params.engine,
+    round: params.round,
+    before: params.before,
+    head: params.head,
+    slips,
+    recoverable: true,
+  };
+}
+
+/**
  * Retry finalization of a saved completed review without running a reviewer.
  * A range classified behavioral may promote a saved minor label to material;
  * identity, findings, and round remain pinned. Ordinary attest still verifies
@@ -914,6 +990,66 @@ export function preflightAnchor(
 export function preflightFix(params: PreflightFixParams): PreflightFixResult {
   verifyHead(params.repo, params.pr, params.head);
   const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const severity = fixableFindingSeverity(comments, params, stance);
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, severity, stance, verified: true };
+}
+
+/**
+ * Check every finding a review push fixes before the wrapper publishes it, so a
+ * slip the result would reject is refused while the reviewer can still correct
+ * it instead of after the head has moved.
+ */
+export function preflightPublish(
+  params: PreflightPublishParams,
+): PreflightPublishResult {
+  if (params.findings.length === 0) {
+    fail(
+      'preflight-publish requires the finding identity of every fix in the push; post each finding before publishing its fix',
+    );
+  }
+  const keys = params.findings.map(
+    ({ fingerprint, occurrence }) => `${fingerprint}#${occurrence}`,
+  );
+  if (new Set(keys).size !== keys.length) {
+    fail('preflight-publish findings must not repeat');
+  }
+  verifyHead(params.repo, params.pr, params.head);
+  const comments = getReviewComments(params.repo, params.pr);
+  const stance = roundStance(params.repo, params.pr, params.round);
+  const findings = params.findings.map((finding) => ({
+    ...finding,
+    severity: fixableFindingSeverity(
+      comments,
+      { ...params, ...finding },
+      stance,
+    ),
+  }));
+  verifyHead(params.repo, params.pr, params.head);
+  return { ...params, findings, stance, verified: true };
+}
+
+function roundStance(
+  repo: string,
+  pr: number,
+  round: number,
+): 'adversarial' | 'convergence' {
+  return round >= convergenceStartRound(repo, pr)
+    ? 'convergence'
+    : 'adversarial';
+}
+
+/**
+ * Severity of the one authenticated, latest, undisposed finding at this head,
+ * or a failure naming what the reviewer must correct before fixing it.
+ */
+function fixableFindingSeverity(
+  comments: GitHubReviewCommentNode[],
+  params: Omit<PreflightFixParams, 'repo' | 'pr'>,
+  stance: 'adversarial' | 'convergence',
+): SupportedSeverity {
+  const label = `${params.fingerprint} occurrence ${params.occurrence}`;
   const records = findingRows(comments, params.fingerprint);
   const matches = records.filter(
     ({ match }) =>
@@ -924,11 +1060,11 @@ export function preflightFix(params: PreflightFixParams): PreflightFixResult {
   );
   if (matches.length !== 1) {
     fail(
-      'preflight-fix requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence',
+      `fixing ${label} requires exactly one authenticated finding at this head, engine, round, fingerprint, and occurrence; post the finding before its fix is published`,
     );
   }
   if (records.some(({ match }) => match.occurrence > params.occurrence)) {
-    fail('preflight-fix requires the latest finding occurrence');
+    fail(`fixing ${label} requires the latest finding occurrence`);
   }
   if (
     comments.some((row) => {
@@ -941,20 +1077,15 @@ export function preflightFix(params: PreflightFixParams): PreflightFixResult {
       );
     })
   ) {
-    fail('preflight-fix requires an undisposed finding');
+    fail(`fixing ${label} requires an undisposed finding`);
   }
   const severity = matches[0]!.match.severity;
-  const stance =
-    params.round >= convergenceStartRound(params.repo, params.pr)
-      ? 'convergence'
-      : 'adversarial';
   if (stance === 'convergence' && severity !== 'blocking') {
     fail(
-      'convergence fixes require a posted blocking finding; defer non-blocking findings before editing',
+      `convergence fixes require a posted blocking finding; ${label} is ${severity}: defer it and leave its change out of the push`,
     );
   }
-  verifyHead(params.repo, params.pr, params.head);
-  return { ...params, severity, stance, verified: true };
+  return severity;
 }
 
 /** Parse each comment once and keep matching finding rows. */

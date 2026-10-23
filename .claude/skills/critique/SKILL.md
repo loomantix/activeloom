@@ -344,8 +344,9 @@ For confirmed fixes, including cleanup inherited from refactorpass:
 1. make the smallest safe edit;
 2. run focused validation;
 3. commit all corrections locally, then publish once for the enclosing pass.
-   When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke it exactly once after
-   the last fix; otherwise push normally. Include inherited cleanup commits
+   When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, write the publish-fixes
+   manifest the ledger's "Fix, reply, and resolve" describes, then invoke the
+   helper exactly once after the last fix; otherwise push normally. Include inherited cleanup commits
    even when this lane found no new defect. Skip publication only when the
    entire enclosing pass made no new commits;
 4. require local HEAD, remote head, and PR head to match;

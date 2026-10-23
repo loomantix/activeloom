@@ -14,6 +14,36 @@ from pathlib import Path
 import pytest
 
 
+# A v3 reviewer posts each finding before publishing its fix and names it in the
+# publish-fixes manifest; review-push refuses the push otherwise. Hooks that
+# commit a fix call this first: `fixture-post-fix <engine> <fingerprint> <severity>`.
+POST_FIX = r"""#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys
+engine, fingerprint, severity = sys.argv[1:4]
+content = 'Fixture finding.'
+marker = (
+    f"<!-- local-review:v3 engine={engine} round={os.environ['AGENT_LOOP_REVIEW_ROUND']} "
+    f"head={os.environ['AGENT_LOOP_PR_HEAD_SHA']} fingerprint={fingerprint} occurrence=1 "
+    f"severity={severity} lens=correctness "
+    f"content-sha256={hashlib.sha256(content.encode()).hexdigest()} -->"
+)
+threads_file = pathlib.Path(os.environ['AGENT_STATE_DIR']) / 'review-threads.json'
+threads = json.loads(threads_file.read_text()) if threads_file.exists() else []
+threads.append({
+    'id': f'THREAD-PREPUBLISH-{fingerprint}', 'isResolved': False,
+    'repository': {'nameWithOwner': 'fixture/consumer'}, 'pullRequest': {'number': 1},
+    'comments': {'nodes': [{'databaseId': 7000 + len(threads), 'body': marker + '\n' + content,
+        'author': {'login': 'tester'}}], 'pageInfo': {'hasNextPage': False}},
+})
+threads_file.write_text(json.dumps(threads))
+content_dir = pathlib.Path(os.environ['AGENT_LOOP_LOG_DIR']) / 'ledger-content'
+content_dir.mkdir(parents=True, exist_ok=True)
+(content_dir / 'publish-fixes.json').write_text(
+    json.dumps([{'fingerprint': fingerprint, 'occurrence': 1}])
+)
+"""
+
+
 pytestmark = pytest.mark.regression
 
 
@@ -163,6 +193,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo
     )
 
+    _write_executable(bin_dir / "fixture-post-fix", POST_FIX)
     gh = bin_dir / "gh"
     _write_executable(
         gh,
@@ -426,6 +457,15 @@ elif args[0] == 'api' and any(value.startswith('repos/') for value in args):
             'merge_base_commit': {'sha': before},
             'commits': [{'sha': after}],
         }))
+    elif endpoint_path.endswith('pulls/1/comments'):
+        threads_file = state / 'review-threads.json'
+        nodes = json.loads(threads_file.read_text()) if threads_file.exists() else []
+        rows = [
+            {'id': comment['databaseId'], 'body': comment['body'],
+             'user': {'login': comment.get('author', {}).get('login', 'tester')}}
+            for node in nodes for comment in node['comments']['nodes']
+        ]
+        print(json.dumps([rows] if '--slurp' in args else rows))
     elif endpoint_path.endswith('pulls/1/reviews'):
         reviews_file = state / 'reviews.json'
         reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
@@ -1091,7 +1131,8 @@ def test_park_mode_still_stops_on_an_uncertain_push(
     claude = (
         'if [ "$AGENT_LOOP_ISSUE_ID" = 53 ]; then '
         "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
-        "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
+        "git commit -m 'fix: early'; fixture-post-fix claude early-fix major; "
+        "\"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
         + _clean_v3_hook("claude")
     )
     result = _run(
@@ -1816,7 +1857,11 @@ def test_v3_cleanup_only_minor_transition_requires_ledger_evidence(
         ),
     )
     assert result.returncode != 0
-    assert "valid contract v3 result" in result.stderr
+    # The unposted cleanup is refused at publication, so the unpublished commit
+    # stops the run before any result is written.
+    assert "push checkpoint did not match its final head" in result.stderr
+    hook_log = next((tmp_path / "logs").glob("*-issue-32-*/codex-review-round-1.log"))
+    assert "posted before publication" in hook_log.read_text(encoding="utf-8")
     assert not (consumer[3] / "pr-ready").exists()
 
 
@@ -1921,6 +1966,7 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
         'before="$AGENT_LOOP_PR_HEAD_SHA"; '
         "printf 'material fix\\n' > final-round-fix.txt; "
         "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
+        "fixture-post-fix codex final-round-material major; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
@@ -2361,6 +2407,7 @@ def _minor_committed_v3_hook(engine: str) -> str:
         'before="$AGENT_LOOP_PR_HEAD_SHA"; '
         f"printf 'minor fix\\n' > minor-fix-{engine}.txt; "
         f"git add minor-fix-{engine}.txt; git commit -m 'fix: minor finding'; "
+        f"fixture-post-fix {engine} minor-finding minor; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
         f"printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine={engine} "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=minor-finding "
@@ -2470,6 +2517,7 @@ before = os.environ["AGENT_LOOP_PR_HEAD_SHA"]
 Path("material-fix.txt").write_text("fixed\\n", encoding="utf-8")
 subprocess.run(["git", "add", "material-fix.txt"], check=True)
 subprocess.run(["git", "commit", "-m", "fix: material review finding"], check=True)
+subprocess.run(["fixture-post-fix", "codex", "material-fix", "major"], check=True)
 subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
 after = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -3752,6 +3800,7 @@ if round_number != "1":
 Path("catalog.ts").write_text("// Corrected note.\\nexport const entries = [];\\n", encoding="utf-8")
 subprocess.run(["git", "add", "catalog.ts"], check=True)
 subprocess.run(["git", "commit", "-m", "fix: correct catalog note"], check=True)
+subprocess.run(["fixture-post-fix", "claude", "catalog-note", "minor"], check=True)
 subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
 after = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -4327,3 +4376,129 @@ def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkou
     source_worktrees = _run_git("worktree", "list", "--porcelain", cwd=repo).stdout
     assert source_worktrees.count("worktree ") == 1
     assert "agent-loop/issue-41-" not in _run_git("branch", "--list", cwd=repo).stdout
+
+
+def _blocked_slip_hook(
+    tmp_path: Path, *, resolved: bool = True, blocker: str = "write-result: fixed finding was not posted before its disposition head"
+) -> Path:
+    """Round 1 publishes a posted fix, then posts a cleanup finding at the
+    published head (the ordering slip) and writes a blocked result; later rounds
+    are clean."""
+    hook = tmp_path / "blocked-slip-hook.py"
+    _write_executable(
+        hook,
+        f"""#!/usr/bin/env python3
+import hashlib, json, os, subprocess
+from pathlib import Path
+
+env = os.environ
+ledger = ".claude/skills/critique/scripts/review-ledger.js"
+before = env["AGENT_LOOP_PR_HEAD_SHA"]
+round_number = int(env["AGENT_LOOP_REVIEW_ROUND"])
+identity = ["--engine", "codex", "--round", str(round_number),
+    "--base", env["AGENT_LOOP_REVIEW_BASE_SHA"], "--before", before]
+if round_number > 1:
+    result = {{"version": 3, "status": "clean", "engine": "codex", "round": round_number,
+        "baseSha": env["AGENT_LOOP_REVIEW_BASE_SHA"], "beforeSha": before,
+        "afterSha": before, "classification": None, "findingFingerprints": [],
+        "finalLaneComplete": True}}
+    Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"]).write_text(json.dumps(result))
+    raise SystemExit(0)
+
+subprocess.run(["fixture-post-fix", "codex", "real-fix", "major"], check=True)
+Path("real-fix.txt").write_text("fixed\\n")
+Path("cleanup.txt").write_text("tidied\\n")
+subprocess.run(["git", "add", "real-fix.txt", "cleanup.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "fix: real finding and cleanup"], check=True)
+subprocess.run([env["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
+after = subprocess.run(["git", "rev-parse", "HEAD"], check=True,
+    capture_output=True, text=True).stdout.strip()
+
+def record(kind, fingerprint, head, extra, content):
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    return (f"<!-- local-review{{kind}}:v3 engine=codex round={{round_number}} head={{head}} "
+        f"fingerprint={{fingerprint}} occurrence=1 {{extra}} content-sha256={{digest}} -->\\n{{content}}")
+
+def thread(fingerprint, severity, finding_head):
+    return {{"id": "THREAD-" + fingerprint, "isResolved": {resolved},
+        "repository": {{"nameWithOwner": "fixture/consumer"}}, "pullRequest": {{"number": 1}},
+        "comments": {{"nodes": [
+            {{"databaseId": len(fingerprint), "author": {{"login": "tester"}},
+             "body": record("", fingerprint, finding_head,
+                 f"severity={{severity}} lens=correctness", "Finding.")}},
+            {{"databaseId": 100 + len(fingerprint), "author": {{"login": "tester"}},
+             "body": record("-disposition", fingerprint, after, "outcome=fixed", "Fixed.")}},
+        ], "pageInfo": {{"hasNextPage": False}}}}}}
+
+threads = [thread("real-fix", "major", before), thread("cleanup", "nit", after)]
+Path(env["AGENT_STATE_DIR"], "review-threads.json").write_text(json.dumps(threads))
+blocker = Path(env["AGENT_LOOP_LOG_DIR"], "blocker.md")
+blocker.write_text({blocker!r} + "\\n")
+subprocess.run(["node", ledger, "write-blocked-result", *identity, "--head", after,
+    "--result-file", env["AGENT_LOOP_REVIEW_RESULT_FILE"], "--blocker-file", str(blocker)],
+    check=True)
+""",
+    )
+    return hook
+
+
+def test_v3_blocked_slip_after_publication_is_reviewed_next_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "91"],
+        issues=[_issue(91)],
+        config=_config_v3(
+            tmp_path, codex_review_hook=str(_blocked_slip_hook(tmp_path)), review_max_rounds=2
+        ),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "recovered: blocked-round (Codex, round 1)" in result.stdout
+    assert "slip: cleanup occurrence 1 was posted at its fix head" in result.stdout
+    assert "Local review convergence round 2/2" in result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_blocked_slip_with_an_incomplete_ledger_still_stops(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "92"],
+        issues=[_issue(92)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=str(_blocked_slip_hook(tmp_path, resolved=False)),
+            review_max_rounds=2,
+        ),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Codex review blocked in round 1" in result.stderr
+    assert "Stop category: review-blocked" in result.stderr
+    assert "recovered: blocked-round" not in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_blocked_slip_does_not_hide_an_unrelated_blocker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "93"],
+        issues=[_issue(93)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=str(
+                _blocked_slip_hook(tmp_path, blocker="review lane did not finish")
+            ),
+            review_max_rounds=2,
+        ),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Codex review blocked in round 1: review lane did not finish" in result.stderr
+    assert "recovered: blocked-round" not in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()

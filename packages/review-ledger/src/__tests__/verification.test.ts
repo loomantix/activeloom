@@ -26,6 +26,7 @@ import {
   recoverResult,
   readResult,
   writeBlockedResult,
+  checkBlockedRound,
 } from '../index.js';
 import { resetGitHubRunner, setGitHubRunner } from '../github.js';
 import type { GitHubReviewThreadNode, GitHubRunner } from '../types.js';
@@ -732,6 +733,83 @@ describe('writeResult rejects results its evidence does not support', () => {
     expect(out.status).toBe('changed');
     expect(out.findingFingerprints).toEqual(['fp1']);
     expect(out.resultSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('checkBlockedRound recovers only bookkeeping slips', () => {
+  const params = (overrides: Record<string, unknown> = {}) =>
+    ({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      engine: 'claude' as const,
+      round: 1,
+      base: BASE,
+      before: BEFORE,
+      ...overrides,
+    }) as Parameters<typeof checkBlockedRound>[0];
+
+  /** The cleanup slip: its finding was posted at the head that published it. */
+  function postedAtFixHead(): GitHubReviewThreadNode {
+    const thread = fixedThread('cleanup', 'nit');
+    const fc = 'the finding\n';
+    thread.comments.nodes[0]!.body = `${findingMarker({
+      fingerprint: 'cleanup',
+      severity: 'nit',
+      head: HEAD,
+      content: fc,
+    })}\n${fc}`;
+    return thread;
+  }
+
+  it('recovers a finding posted at its fix head that writeResult rejects', () => {
+    runner.threadNodes = [fixedThread('fp1'), postedAtFixHead()];
+    expect(() =>
+      writeResult({
+        ...params(),
+        resultFile: resultPath(),
+        classification: 'minor',
+      }),
+    ).toThrow('fixed finding was not posted before its disposition head');
+    expect(checkBlockedRound(params())).toMatchObject({
+      recoverable: true,
+      slips: ['cleanup occurrence 1 was posted at its fix head'],
+    });
+  });
+
+  it('recovers a non-blocking fix in a convergence round', () => {
+    runner.threadNodes = [fixedThread('fp1', 'major', 3)];
+    expect(checkBlockedRound(params({ round: 3 }))).toMatchObject({
+      slips: ['fp1 is a non-blocking fix in a convergence round'],
+    });
+  });
+
+  it('refuses a round the result rules would accept', () => {
+    runner.threadNodes = [fixedThread('fp1', 'blocking', 3)];
+    expect(() => checkBlockedRound(params({ round: 3 }))).toThrow(
+      'no label or ordering slip to recover',
+    );
+  });
+
+  it('refuses a published change with no fixed same-round finding', () => {
+    runner.threadNodes = [fixedThread('fp1', 'major', 2)];
+    expect(() => checkBlockedRound(params())).toThrow('it was not reviewed');
+  });
+
+  it('refuses an incomplete ledger', () => {
+    const thread = fixedThread('fp1', 'major', 3);
+    thread.isResolved = false;
+    runner.threadNodes = [thread];
+    expect(() => checkBlockedRound(params({ round: 3 }))).toThrow(
+      'is unresolved',
+    );
+  });
+
+  it('refuses a round that published nothing', () => {
+    runner.threadNodes = [fixedThread('fp1', 'major', 3)];
+    expect(() => checkBlockedRound(params({ round: 3, before: HEAD }))).toThrow(
+      'published nothing',
+    );
   });
 });
 
