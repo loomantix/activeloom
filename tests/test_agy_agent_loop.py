@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from tests.test_agent_loop import _blocked_slip_hook
+
 
 # A v3 reviewer posts each finding before publishing its fix and names it in the
 # publish-fixes manifest; review-push refuses the push otherwise. Hooks that
@@ -1552,3 +1554,77 @@ def test_isolated_batch_resumes_in_the_isolated_repository_from_the_source_check
     assert "refs/heads/agent-loop/issue-42-" in isolated_branches
     assert "agent-loop/issue-" not in _run_git("branch", "--list", cwd=repo).stdout
     assert _run_git("worktree", "list", "--porcelain", cwd=repo).stdout.count("worktree ") == 1
+
+
+def test_v3_blocked_slip_after_publication_is_reviewed_next_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "91"],
+        issues=[_issue(91)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook=str(
+                _blocked_slip_hook(tmp_path, root=".agents", engine="claude")
+            ),
+            review_max_rounds=2,
+        ),
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "recovered: blocked-round (Claude, round 1)" in result.stdout
+    assert "slip: cleanup occurrence 1 was posted at its fix head" in result.stdout
+    assert "Local review convergence round 2/2" in result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_blocked_slip_with_an_incomplete_ledger_still_stops(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "92"],
+        issues=[_issue(92)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook=str(
+                _blocked_slip_hook(
+                    tmp_path, resolved=False, root=".agents", engine="claude"
+                )
+            ),
+            review_max_rounds=2,
+        ),
+        timeout=180,
+    )
+    assert result.returncode != 0
+    assert "Claude review blocked in round 1" in result.stderr
+    assert "recovered: blocked-round" not in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_blocked_slip_does_not_hide_an_unrelated_blocker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "93"],
+        issues=[_issue(93)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook=str(
+                _blocked_slip_hook(
+                    tmp_path,
+                    blocker="review lane did not finish",
+                    root=".agents",
+                    engine="claude",
+                )
+            ),
+            review_max_rounds=2,
+        ),
+        timeout=180,
+    )
+    assert result.returncode != 0
+    assert "Claude review blocked in round 1: review lane did not finish" in result.stderr
+    assert "recovered: blocked-round" not in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()

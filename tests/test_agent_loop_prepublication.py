@@ -19,13 +19,14 @@ from tests.test_agent_loop import (
     _write_executable,
     consumer as consumer_fixture,
 )
+from tests.test_codex_agent_loop import LINUX_ONLY
 
 pytestmark = pytest.mark.regression
 
 consumer = consumer_fixture
 
 
-@pytest.fixture(params=(".codex", ".claude", ".agents"))
+@pytest.fixture(params=(pytest.param(".codex", marks=LINUX_ONLY), ".claude", ".agents"))
 def harness(
     request: pytest.FixtureRequest, consumer: tuple[Path, Path, Path, Path]
 ) -> str:

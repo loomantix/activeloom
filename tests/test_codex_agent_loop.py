@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ SKILL = REPO_ROOT / ".codex/skills/agent-loop"
 STATE_HELPER = SKILL / "scripts/agent-loop-state.py"
 CRITIQUE_SCRIPTS = REPO_ROOT / ".codex/skills/critique/scripts"
 LAUNCHER = SKILL / "scripts/run-codex-review.sh"
+# The config doctor passes only where the hook process supervisor can run.
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux hook supervisor")
 V3_TAIL = (
     " /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; "
     "node review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE"
@@ -300,6 +303,7 @@ def test_unavailable_reviewer_engine_fails_closed(tmp_path: Path) -> None:
     _assert_nothing_claimed(consumer)
 
 
+@LINUX_ONLY
 @pytest.mark.parametrize("contract", [3, 4])
 def test_dry_run_pins_reviewers_and_worker_from_the_profile(
     tmp_path: Path, contract: int
@@ -352,6 +356,7 @@ def test_conflicting_hook_literal_is_refused_before_claim(tmp_path: Path) -> Non
     _assert_nothing_claimed(consumer)
 
 
+@LINUX_ONLY
 def test_default_worker_runs_pinned_settings_then_its_fallback(tmp_path: Path) -> None:
     consumer = Consumer(tmp_path, 3)
     result = consumer.run(
@@ -384,6 +389,7 @@ def test_default_worker_runs_pinned_settings_then_its_fallback(tmp_path: Path) -
     assert pins["worker_fallback_engines"] == ["codex"]
 
 
+@LINUX_ONLY
 def test_inherit_worker_model_omits_the_model_flag(tmp_path: Path) -> None:
     consumer = Consumer(tmp_path, 3)
     profile = _profile()
