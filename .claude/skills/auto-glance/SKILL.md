@@ -1,7 +1,6 @@
 ---
 name: auto-glance
-description: Automated glance — one non-author model reads a pull request that the review workflow sent to human glance (docs/config only, or a small change), posts a structured result at the exact head, and marks the PR ready when the read is clean and CI is green. Opt-in per repository.
-disable-model-invocation: true
+description: Automated glance — one non-author model reads a pull request that the review workflow sent to human glance (docs/config only, or a small change), posts a structured result at the exact head, and marks the PR ready when the read is clean and CI is green. Opt-in per repository. Use when the user asks to run auto-glance on a PR, or when hreview dispatches an opted-in PR at the human-glance gate.
 argument-hint: '<pr> [--author claude|codex|gemini]'
 ---
 
