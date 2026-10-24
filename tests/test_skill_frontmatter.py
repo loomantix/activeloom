@@ -16,6 +16,9 @@ failure is:
    (`/refactorpass`, `/critique`, `/deepcritique`) have to stay model-invoked.
    Flipping one is a silent break — the chain simply stops running its
    tail, with no error — so it is worth a test rather than a comment.
+   The same holds for prose that tells the model, not the human, to start
+   a skill ("Run `/auto-glance <n>` yourself"): Claude Code refuses that
+   Skill call when the target is user-invoked.
 """
 
 from __future__ import annotations
@@ -35,6 +38,13 @@ SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
 # deliberately not matched: they instruct the human, not the model, so
 # they survive a skill becoming user-invoked.
 SKILL_TOOL_CALL = re.compile(r"""Skill\(\s*skill\s*=\s*["']([a-z0-9-]+)["']""")
+
+# "Run `/foo <args>` yourself" — prose telling this session to start
+# another skill rather than asking the human to type it. Bounded to one
+# clause so a later, unrelated "yourself" does not match.
+PROSE_SELF_INVOCATION = re.compile(
+    r"""\b[Rr]un `/([a-z0-9-]+)[^`]*`[^.;`]{0,80}?\byourself\b"""
+)
 
 SKILL_FILES = sorted(SKILLS_DIR.glob("*/SKILL.md"))
 
@@ -117,6 +127,57 @@ def test_skill_tool_targets_remain_model_invoked() -> None:
     assert not violations, (
         "these skills invoke a user-invoked skill via the Skill tool, which "
         "will not fire: " + "; ".join(sorted(violations))
+    )
+
+
+def _user_invoked_targets(body: str, user_invoked: set[str]) -> list[str]:
+    targets = SKILL_TOOL_CALL.findall(body) + PROSE_SELF_INVOCATION.findall(body)
+    return sorted({t for t in targets if t in user_invoked})
+
+
+def test_prose_self_invocation_pattern() -> None:
+    """Pin what the prose pattern does and does not treat as a model call."""
+    user_invoked = {"auto-glance", "hreview"}
+    assert _user_invoked_targets(
+        "Run `/auto-glance <n> --author <author>` yourself in this herder session.",
+        user_invoked,
+    ) == ["auto-glance"]
+    assert _user_invoked_targets(
+        'then Skill(skill="hreview") to continue', user_invoked
+    ) == ["hreview"]
+    # Instructions to the human, or "yourself" in a later sentence, are not calls.
+    assert _user_invoked_targets("Type `/hreview <n>` to start it.", user_invoked) == []
+    assert (
+        _user_invoked_targets(
+            "Run `/hreview <n>` in a new tab. Check it yourself.", user_invoked
+        )
+        == []
+    )
+
+
+def test_skills_run_by_another_skill_stay_model_invoked() -> None:
+    """A skill body that tells the session to run another skill itself —
+    by the Skill tool or in prose — needs that skill model-invoked."""
+    user_invoked = {
+        p.parent.name
+        for p in SKILL_FILES
+        if _frontmatter(p).get("disable-model-invocation")
+    }
+    violations = [
+        f"{path.parent.name} -> {target}"
+        for path in SKILL_FILES
+        for target in _user_invoked_targets(_split_frontmatter(path)[1], user_invoked)
+    ]
+    assert not violations, (
+        "these skills tell the model to run a user-invoked skill, which "
+        "Claude Code refuses: " + "; ".join(violations)
+    )
+
+
+def test_auto_glance_is_model_invoked_for_the_herder() -> None:
+    """hreview runs auto-glance in the herder session at the glance gate."""
+    assert not _frontmatter(SKILLS_DIR / "auto-glance" / "SKILL.md").get(
+        "disable-model-invocation"
     )
 
 
