@@ -128,10 +128,13 @@ modes silently in the middle of a round.
   run's pinned settings (recommended: `gemini-3.7-flash-high` at `high`) and pins
   accept-edits mode, unattended permissions, structured output, and the same
   60-minute default / 3600-second hard pass bound;
-  callers cannot supply or override them. It also requires Agy to resolve the
-  current `deepcritique` skill, resolves its real target, and validates a
-  structurally compatible relay surface from a clean, exact-commit companion
-  checkout before review. A consumer may explicitly retain Claude through the
+  callers cannot supply or override them. It also validates a structurally
+  compatible relay surface from a clean, exact-commit checkout of the canonical
+  upstream before review: the runner's own checkout when the runner launches it,
+  otherwise one the launcher builds once at its pin under the repository's Git
+  directory (`--repair-surface` preserves a refused one and rebuilds it). It
+  never uses Agy's skill discovery, which would find the review worktree's own
+  `.agents` copy. A consumer may explicitly retain Claude through the
   tested `run-claude-review.sh` launcher, which resolves its model and effort
   the same way. Agy starts a fresh one-shot by omitting continuation flags, but the
   current CLI has no equivalent of Claude's `--no-session-persistence`; retain
