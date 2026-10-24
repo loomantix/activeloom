@@ -8,7 +8,7 @@ set +m
 umask 077
 
 usage() {
-    echo "usage: $0 --repo OWNER/REPO --pr NUMBER --base SHA --head SHA --round NUMBER" >&2
+    echo "usage: $0 --repo OWNER/REPO --pr NUMBER --base SHA --head SHA --round NUMBER [--preflight-only] [--repair-surface]" >&2
     exit 2
 }
 
@@ -18,6 +18,7 @@ base=""
 head=""
 round=""
 preflight_only=false
+repair_surface=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -27,6 +28,7 @@ while [ "$#" -gt 0 ]; do
         --head) [ "$#" -ge 2 ] || usage; head="$2"; shift 2 ;;
         --round) [ "$#" -ge 2 ] || usage; round="$2"; shift 2 ;;
         --preflight-only) preflight_only=true; shift ;;
+        --repair-surface) repair_surface=true; shift ;;
         *) usage ;;
     esac
 done
@@ -100,7 +102,6 @@ agy_effort="${agy_settings#*$'\n'}"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
 chmod 700 "$temp_dir"
-skills_file="$temp_dir/skills.json"
 result_file="$temp_dir/result.json"
 agy_pid=""
 
@@ -148,89 +149,93 @@ trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
 trap 'forward_signal HUP 129' HUP
 
-# The outer bound stays above --print-timeout so the CLI's own timeout fires
-# first and still writes a structured payload for the parser below.
-launch_state preflight skill_discovery
-skills_exit=0
-if [ -z "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
-run_agy_managed "$skills_file" 2m \
-    --model "$agy_model" \
-    --effort "$agy_effort" \
-    --output-format json \
-    --print-timeout 90s \
-    --print '/skills' || skills_exit="$?"
+# Git runs programs named by a repository's own configuration, such as
+# core.fsmonitor. A relay surface is untrusted until the provenance checks
+# below pass, so neutralize that configuration on every command: the pin
+# decides, not the candidate's own config.
+surface_git() {
+    local dir="$1"
+    shift
+    git -c core.fsmonitor= -c core.hooksPath=/dev/null \
+        -c core.excludesFile=/dev/null --no-optional-locks \
+        -C "$dir" "$@"
+}
+
+# The review-chain runner nominates its own clean checkout. Any other caller,
+# such as /hreview, gets the same kind of checkout: a standalone clone of the
+# canonical upstream at the pin, kept under this repository's Git directory
+# and built once. Agy's own skill discovery is not consulted, because in a
+# consumer it finds the review worktree's .agents copy, whose remote is the
+# consumer. Building the checkout grants it no trust: the provenance checks
+# below apply to it exactly as to a nominated surface.
+build_managed_surface() {
+    local dir="$1"
+    surface_git "$dir" init -q &&
+        surface_git "$dir" remote add origin "$agy_surface_upstream" &&
+        surface_git "$dir" fetch -q --no-tags --depth=1 origin "$agy_surface_sha" &&
+        surface_git "$dir" checkout -q --detach "$agy_surface_sha"
+}
+
+launch_state preflight managed_surface
+agy_surface_upstream="https://github.com/loomantix/activeloom.git"
+agy_review_surface="${ACTIVELOOM_REVIEW_SURFACE:-}"
+managed_checkout=""
+if [ -z "$agy_review_surface" ]; then
+    git_common_dir="$(git rev-parse --git-common-dir)"
+    managed_parent="$(cd -- "$git_common_dir" && pwd -P)/activeloom-review"
+    for managed_dir in "$managed_parent" "$managed_parent/agy-surface"; do
+        [ ! -L "$managed_dir" ] || { echo "managed relay surface path cannot be a symlink: $managed_dir" >&2; exit 1; }
+        [ -d "$managed_dir" ] || mkdir -m 700 -- "$managed_dir" 2>/dev/null || [ -d "$managed_dir" ]
+    done
+    managed_parent="$managed_parent/agy-surface"
+    managed_checkout="$managed_parent/$agy_surface_sha"
+    if "$repair_surface" && { [ -e "$managed_checkout" ] || [ -L "$managed_checkout" ]; }; then
+        preserved="$(mktemp -d "$managed_parent/$agy_surface_sha.preserved.XXXXXX")"
+        mv -- "$managed_checkout" "$preserved/"
+        echo "preserved the previous managed relay surface in $preserved" >&2
+    fi
+    if [ ! -e "$managed_checkout" ] && [ ! -L "$managed_checkout" ]; then
+        staging="$(mktemp -d "$managed_parent/.staging.XXXXXX")"
+        if ! build_managed_surface "$staging"; then
+            rm -rf -- "$staging"
+            echo "cannot build the managed relay surface at activeloom commit $agy_surface_sha" \
+                "from $agy_surface_upstream; the first build needs network access" >&2
+            exit 1
+        fi
+        # A concurrent launcher may have finished first. Its checkout faces
+        # the same provenance checks, so losing the rename is not an error.
+        python3 -I -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
+            "$staging" "$managed_checkout" 2>/dev/null || rm -rf -- "$staging"
+    fi
+    [ ! -L "$managed_checkout" ] || { echo "managed relay surface cannot be a symlink: $managed_checkout" >&2; exit 1; }
+    agy_review_surface="$managed_checkout/.agents"
 fi
 
-agy_surface_root="$(python3 - "$skills_file" "$ledger_version" "$skills_exit" "$agy_surface_sha" <<'PY'
+# Name the managed checkout and how to rebuild it whenever it is refused. The
+# Python preflight prints its own reason, so it passes an empty message.
+refuse_surface() {
+    [ -z "$1" ] || echo "$1" >&2
+    if [ -n "$managed_checkout" ]; then
+        echo "The managed relay surface is $managed_checkout. Re-run with --repair-surface" \
+            "to preserve it and rebuild it at the pin." >&2
+    fi
+    exit 1
+}
+
+agy_surface_root="$(python3 - "$agy_review_surface" "$ledger_version" <<'PY'
 import json
-import os
 import pathlib
 import sys
 
-exit_code = int(sys.argv[3])
-if os.environ.get("ACTIVELOOM_REVIEW_SURFACE"):
-    nominated = pathlib.Path(os.environ["ACTIVELOOM_REVIEW_SURFACE"])
-    if not nominated.is_absolute() or nominated.is_symlink():
-        raise SystemExit("managed review surface must be an absolute regular directory")
-    payload = {"status": "SUCCESS", "command": {"data": {"skills": [
-        {"name": "deepcritique", "path": str(nominated / "skills/deepcritique/SKILL.md")}
-    ]}}}
-else:
-    try:
-        payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise SystemExit(f"skill preflight returned invalid JSON (exit {exit_code}): {error}")
-
-if not isinstance(payload, dict):
-    raise SystemExit(f"skill preflight returned non-dict JSON (exit {exit_code})")
-
-if exit_code != 0 or payload.get("status") != "SUCCESS":
-    status = payload.get("status", "missing status")
-    raise SystemExit(f"skill preflight did not succeed (exit {exit_code}): {status}")
-
+nominated = pathlib.Path(sys.argv[1])
+if not nominated.is_absolute() or nominated.is_symlink():
+    raise SystemExit("the relay surface must be an absolute regular directory")
 expected_ledger_version = sys.argv[2]
-pinned_surface_sha = sys.argv[4]
-
-def surface_restore_hint(reported: str) -> str:
-    # A swept trusted-surface checkout is the usual cause of an unresolvable
-    # skill: the installed skill links still point into a directory that no
-    # longer exists, so every relay path breaks at once. Name the dangling
-    # link and the pin that rebuilds its target rather than surfacing a bare
-    # ENOENT the reader has to work backwards from.
-    lines = []
-    if reported:
-        lines.append(f"The reviewer reported the deepcritique skill at {reported}.")
-        candidate = pathlib.Path(reported)
-        for part in [candidate, *candidate.parents]:
-            if part.is_symlink():
-                lines.append(f"{part} links to {os.readlink(part)}, which does not resolve.")
-                break
-        else:
-            missing = next((p for p in reversed(candidate.parents) if not p.exists()), None)
-            if missing is not None:
-                lines.append(f"The first missing directory on that path is {missing}.")
-    lines.append(
-        f"The pinned relay surface is activeloom commit {pinned_surface_sha}. If its "
-        "checkout was removed, recreate it from an activeloom clone with "
-        f"`git worktree add <checkout-dir> {pinned_surface_sha}`, then re-run the skill "
-        "installer so the links resolve again."
-    )
-    return "\n".join(lines)
-
-
-skills = payload.get("command", {}).get("data", {}).get("skills", [])
-matches = [row for row in skills if row.get("name") == "deepcritique"]
-if len(matches) != 1:
-    detail = "" if matches else f"\n{surface_restore_hint('')}"
-    raise SystemExit(f"the reviewer must resolve exactly one deepcritique skill{detail}")
 
 try:
-    path = pathlib.Path(str(matches[0].get("path", ""))).resolve(strict=True)
+    path = (nominated / "skills/deepcritique/SKILL.md").resolve(strict=True)
 except OSError as error:
-    raise SystemExit(
-        f"the deepcritique skill path cannot be resolved: {error}\n"
-        + surface_restore_hint(str(matches[0].get("path", "")))
-    )
+    raise SystemExit(f"the deepcritique skill path cannot be resolved: {error}")
 if path.name != "SKILL.md" or path.parent.name != "deepcritique" or any(".bak." in part for part in path.parts):
     raise SystemExit(f"the reviewer resolved a stale or unexpected deepcritique skill: {path}")
 
@@ -285,46 +290,30 @@ if not surface.is_absolute() or "\n" in surface_text or "\r" in surface_text:
     raise SystemExit("the relay surface path is unsafe")
 print(surface_text)
 PY
-)"
-
-# Git runs programs named by a repository's own configuration, such as
-# core.fsmonitor. The surface path is nominated by the reviewer CLI and is
-# untrusted until the provenance checks below pass, so neutralize that
-# configuration on every command: the pin decides, not the candidate's own
-# config.
-surface_git() {
-    local dir="$1"
-    shift
-    git -c core.fsmonitor= -c core.hooksPath=/dev/null \
-        -c core.excludesFile=/dev/null --no-optional-locks \
-        -C "$dir" "$@"
-}
+)" || refuse_surface ""
 
 launch_state preflight surface_provenance
 agy_surface_repo="$(surface_git "$agy_surface_root" rev-parse --show-toplevel)"
 [ "$agy_surface_root" = "$agy_surface_repo/.agents" ] || {
-    echo "the relay surface must be the .agents directory of its trusted checkout" >&2
-    exit 1
+    refuse_surface "the relay surface must be the .agents directory of its trusted checkout"
 }
 agy_surface_remote="$(surface_git "$agy_surface_repo" remote get-url origin)"
 case "$agy_surface_remote" in
     https://github.com/loomantix/activeloom.git|git@github.com:loomantix/activeloom.git) ;;
-    *) echo "the relay surface has an untrusted Git remote" >&2; exit 1 ;;
+    *) refuse_surface "the relay surface has an untrusted Git remote" ;;
 esac
 [ "$(surface_git "$agy_surface_repo" rev-parse HEAD)" = "$agy_surface_sha" ] || {
-    echo "the relay surface is not at the pinned activeloom commit $agy_surface_sha" >&2
-    exit 1
+    refuse_surface "the relay surface is not at the pinned activeloom commit $agy_surface_sha"
 }
 launch_state preflight dirty_surface
 surface_changes="$(surface_git "$agy_surface_repo" status --porcelain)"
 [ -z "$surface_changes" ] || {
-    printf 'the relay surface checkout must be clean: %s\n%s\n' "$agy_surface_repo" "$surface_changes" >&2
-    exit 1
+    refuse_surface "$(printf 'the relay surface checkout must be clean: %s\n%s\n' "$agy_surface_repo" "$surface_changes")"
 }
 launch_state ready
 if "$preflight_only"; then exit 0; fi
 
-prompt="/deepcritique ${pr}
+prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
 
 Continue review on PR #${pr} in ${repo}.
 
@@ -342,10 +331,6 @@ a path outside it. Do not invoke Claude Code or Codex; return control to the
 calling session when the Gemini pass is complete.
 Do not spawn subagents or background review lanes in this Agy print-mode pass. Run each review lane sequentially in series within the primary session. In each lane pass, post verified findings inline, apply fixes, and validate before proceeding to the next lane so subsequent lanes review the updated code and prior findings. Run all commands and tests synchronously in the foreground; never leave background tasks running. Write the canonical result and end the turn only after all lanes and validation are complete."
 
-if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
-    prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
-${prompt#*$'\n'}"
-fi
 
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
