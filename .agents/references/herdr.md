@@ -134,6 +134,7 @@ One rule on every harness: run the wait as a blocking command. If the harness mo
 - After answering a blocked UI, wait with `--until working --until done --until idle`. A bare wait matches the stale `blocked` at once.
 - State that only `gh` shows: one shell loop that checks the condition every 300 seconds and exits when it holds, run the same way.
 - A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its tab ID's label in the same kind of loop.
+- A process you started: wait on its PID (`while kill -0 <pid>`) or its harness task; never `pgrep -f <pattern>`, which matches the waiting loop's own command line and never ends. Give every hand-written wait loop a timeout.
 - To stop a background wait, stop that task by its ID. Never `pkill -f <pattern>`: the pattern can match your own command or a sibling wait and kill it too.
 
 Never `source` or `.` a `.env` or other secrets file into a session's shell. It exports every value to every later command, including ones that print the environment into a pane, a log or a PR comment, and the file can run arbitrary shell. Pass the one variable a command needs explicitly, or use that tool's own env-file option scoped to the one command.
