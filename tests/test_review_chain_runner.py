@@ -5545,6 +5545,7 @@ def test_darwin_hidden_environment_checks_process_and_session_creation(
 
 PROTECTED_SERVICES = (
     '/usr/libexec/service',
+    '/System/Library/ExtensionKit/Extensions/ImageThumbnailExtension.appex/Contents/MacOS/ImageThumbnailExtension',
     '/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
     '/System/Volumes/Preboot/Cryptexes/OS/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper',
 )
@@ -5558,6 +5559,12 @@ PROTECTED_SERVICES = (
     '/Applications/Tool.app/Contents/PlugIns/Widget.appex/Contents/MacOS/Widget',
     '/tmp/System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget',
     '/tmp/System/Volumes/Preboot/Cryptexes/OS/usr/libexec/service',
+    '/tmp/System/Library/ExtensionKit/Extensions/Image.appex/Contents/MacOS/Image',
+    '/System/Library/ExtensionKit/Extensions-extra/Image.appex/Contents/MacOS/Image',
+    '/System/Library/ExtensionKit/Extensions/Image.app/Contents/MacOS/Image',
+    '/System/Library/ExtensionKit/Extensions/Image.appex/Other/MacOS/Image',
+    '/System/Library/ExtensionKit/Extensions/Image.appex/Contents/Resources/Image',
+    '/System/Library/ExtensionKit/Extensions/Image.appex/Contents/MacOS/nested/Image',
     '/System/Volumes/Preboot/Cryptexes/OS-extra/usr/libexec/service',
     '/System/Volumes/Preboot/Cryptexes/OS/usr/bin/python3',
     '/System/Volumes/Preboot/Cryptexes/OS/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal',
