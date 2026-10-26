@@ -1152,3 +1152,56 @@ def test_wildcard_restrictions_block_complete_settings(
         "herdr agent send-keys",
     }
     assert json.loads((tmp_path / "claude/settings.json").read_text()) == settings
+
+
+# --- manual tests -----------------------------------------------------------------------
+
+
+def test_manual_tests_defaults_off() -> None:
+    assert herd.validate_repo({"schema_version": 1})["manual_tests"] == {"ux_globs": []}
+    assert herd.validate_user({"schema_version": 1})["promotion"] == {"offer_manual_tests": False}
+
+
+def test_manual_tests_settings_are_validated() -> None:
+    with pytest.raises(herd.ConfigError) as caught:
+        herd.validate_repo({"schema_version": 1, "manual_tests": {"ux_globs": ["../x"], "extra": 1}})
+    assert any("without '..'" in e for e in caught.value.errors)
+    assert any("unknown key 'extra'" in e for e in caught.value.errors)
+    with pytest.raises(herd.ConfigError, match="promotion.offer_manual_tests: must be true or false"):
+        herd.validate_user({"schema_version": 1, "promotion": {"offer_manual_tests": "yes"}})
+    with pytest.raises(herd.ConfigError, match="unknown key 'per_repo'"):
+        herd.validate_user({"schema_version": 1, "promotion": {"per_repo": True}})
+    assert herd.validate_user({"schema_version": 1, "promotion": {"offer_manual_tests": True}})["promotion"] == {
+        "offer_manual_tests": True
+    }
+
+
+def test_ux_paths_match_the_repository_globs() -> None:
+    globs = {"ux_globs": ["apps/web/src/**", "apps/mobile/**/*.tsx"]}
+    result = herd.ux_paths(globs, ["apps/web/src/pages/login.tsx", "docs/readme.md", "apps/mobile/a/b.tsx"])
+    assert result == {
+        "ux_globs": globs["ux_globs"],
+        "matches": ["apps/web/src/pages/login.tsx", "apps/mobile/a/b.tsx"],
+        "match": True,
+    }
+    assert herd.ux_paths({"ux_globs": []}, ["apps/web/src/x.ts"])["match"] is False
+
+
+def test_ux_paths_cli_reads_a_paths_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    (work / ".activeloom-herd.json").write_text(
+        json.dumps({"schema_version": 1, "manual_tests": {"ux_globs": ["apps/**"]}})
+    )
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(work), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+    subprocess.run(["git", "-C", str(work), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
+    paths = tmp_path / "files.txt"
+    paths.write_text("apps/web/page.tsx\nREADME.md\n")
+    code = herd.main(["ux-paths", "--repo-dir", str(work), "--no-fetch", "--paths-file", str(paths)])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and out["matches"] == ["apps/web/page.tsx"] and out["match"] is True

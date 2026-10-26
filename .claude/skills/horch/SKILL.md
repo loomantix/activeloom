@@ -86,7 +86,7 @@ Add `--deep` to either command only when the user asked for Deep. When `scope_de
 
 - Wait on events (herdr.md, Waiting). Read the pane before recording anything as finished; check `gh` before recording anything about a PR.
 - **Review tabs:** watch `gh`, not the herder's state; a herder goes idle between passes while its own waits run. Bind the watch to the current authenticated run ID from `run-state` when that run is active. If there is no run yet, or the latest run had already ended when the watch started, bind it to the first run observed while polling whose ID differs from that ended run, even if the new run has already ended; keep that ID fixed afterward. A run already ended at bind time is never the bound run. A failed read is a block. In one background loop every 300 seconds, stop when the PR leaves draft, a `local-review-run-end:v1` marker for the bound run appears (its `id=` matches; an earlier run's end marker does not count), the herder's pane shows a question, or the herder is `idle` or `done` and the PR has no `local-review-run:v1` marker (a herder parked at the human-glance gate reports `done`). Then read the pane:
-  - converged and ready, a clean auto-glance, or a `dependency-analysis:v1` comment at `verdict=clear` → [Shipping](#shipping);
+  - converged and ready, a clean auto-glance, or a `dependency-analysis:v1` comment at `verdict=clear` → [Shipping](#shipping); a converged chain also gets the [manual test offer](#manual-test-offer);
   - Once the herder is `done` or `idle`, a dependency analysis at `gaps` whose pane prints a `DEP-FIX-PR: <fix> <head> issue=<i> supersedes=<n>` line → the fix PR is new work, like a build's `BUILD-PR`. Check it with `gh pr view <fix> --json state,isDraft,baseRefName,headRefOid,isCrossRepository,author`: it must be open, a draft, based on the integration branch, at `<head>`, from the same repository (`isCrossRepository: false`), and authored by the authenticated GitHub actor. Then start a review chain for it as for any PR. It is a mixed range (dependency files plus tests), so its herder runs the chain and `dep-analysis` at the converged head, and it ships under the mixed-range gate. Leave `<n>` unshipped, notify that `<fix>` supersedes it, and leave closing `<n>` to its dependency bot or the user;
   - Once the herder is `done` or `idle`, a dependency analysis at `gaps` with no fix PR, or at `broken` or `blocked` → alert with its report. Never route a dependency update to a review chain or auto-glance yourself; only a human applies the `review: full` label. The herder honours the workflow's durable override, including previous label application and standing always-Deep extensions;
   - auto-glance in progress → keep watching; `hreview` owns the dispatch and ends with an `auto-glance-result:v1` reply. Do not launch a second auto-glance;
@@ -128,6 +128,17 @@ Invoking this skill is the user's standing request to ship, into the integration
    Notify `<repo>#<n>` `shipped to <integration branch>`.
 
 6. **Follow on.** Tell every session whose PR now needs a merge from the new base, start the next queued work, and log the ship.
+
+## Manual test offer
+
+When a review chain converges, offer a manual test plan for that PR once per converged head. It never holds the ship and never changes a gate. Skip the offer unless all hold:
+
+- the `manual-tests` skill is installed for Claude: `.claude/skills/manual-tests/SKILL.md` in the primary checkout, or `~/.claude/skills/manual-tests/SKILL.md`;
+- `python3 -I .claude/skills/review-setup/scripts/review-profile.py show` does not mark Claude unavailable;
+- the PR touches a UX path or declares manual checks. Write `gh pr view <n> --json files --jq '.files[].path'` to a file in the scratch directory and run `python3 -I $C ux-paths --paths-file <file>`; `match` true counts. So does a `Manual checks` heading in the PR body. With neither, no offer;
+- `state.md` in `python3 -I $C paths --repo $repo --skill manual-tests --key pr-<n>` has no `offered: <converged head> …` line.
+
+Ask the user in this session: "Build a manual test plan for #<n> in a new tab?" Then append `offered: <converged head> <yyyy-mm-dd> accepted|declined` to that `state.md`, keeping its other lines. A decline creates nothing. On yes, open tab `T<n>` with the primary checkout as `--cwd`, start agent `mt<n>` on Claude with the worker model and effort (`review-profile.py launch-args --engine claude --role worker --repo $repo`), and prompt it `/manual-tests <n>`. It finishes by reporting the page URL and a summary: relay those to the user, and leave the tab open. Its tester notes stay in its pane; never copy them into `state.md`, a notification or GitHub. A run that fails is reported as it stands; it is not a ship problem.
 
 ## Missing or stale skill: fix it upstream
 
