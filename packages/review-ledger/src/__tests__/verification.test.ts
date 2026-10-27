@@ -243,7 +243,11 @@ class ConfigurableRunner implements GitHubRunner {
       return this.diffNameStatus;
     }
     if (args[0] === 'diff') {
-      return this.diffPatches[args[args.length - 1]!] ?? '';
+      return (
+        this.diffPatches[
+          args[args.length - 1]!.replace(/^:\(top,literal\)/, '')
+        ] ?? ''
+      );
     }
     return '';
   }

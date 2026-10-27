@@ -1419,6 +1419,8 @@ sys.exit(int(sys.argv[2]))
                     check=True,
                 )
                 return dict(json.loads(result.stdout))
+            if operation == "classify-effect":
+                return {"effect": "non-behavioral"}
             if operation == "recover-result":
                 if controls.fail_recovery:
                     raise module.Blocked("synthetic finalization verification failure")
@@ -1916,6 +1918,90 @@ def test_restart_preserves_checkpoint_when_archive_already_exists(
 
     assert harness.module.read(directory / "state.json") == state
     assert archive.is_dir()
+
+
+@pytest.fixture
+def classification_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    h = harness
+    managed_before = h.module.managed
+    helper_before = h.runner.helper
+    controls = SimpleNamespace(late_failure=True, fail_derivation=False)
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        managed_before(argv, log, env, *args, **kwargs)
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env and len(h.launches) == 1:
+            path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+            result = h.module.read(path)
+            h.controls.head = "c" * 40
+            result.update(status="changed", afterSha=h.controls.head,
+                          classification="minor", findingFingerprints=["finding"])
+            h.module.save(path, result)
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts[0] == "classify-effect":
+            return {"effect": "non-behavioral" if controls.late_failure else "behavioral"}
+        if parts[0] == "attest" and controls.late_failure:
+            raise h.module.Blocked("minor classification requires a non-behavioral change range")
+        if parts[0] == "write-result":
+            if controls.fail_derivation:
+                raise h.module.Blocked("interrupted classification derivation")
+            options = dict(zip(parts[1::2], parts[2::2], strict=True))
+            path = Path(options["--result-file"])
+            original = h.module.read(path.parent.parent / "result.json")
+            assert options["--classification"] == "material"
+            h.module.save(path, {**original, "classification": "material"})
+            return {"verified": True}
+        return dict(helper_before(self, name, *parts))
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    monkeypatch.setattr(h.runner, "helper", helper)
+    with pytest.raises(h.module.Blocked, match="minor classification"):
+        h.runner(h.args, h.directory).run()
+    controls.late_failure = False
+    h.args.resume = True
+    return SimpleNamespace(harness=h, controls=controls)
+
+
+def test_late_classification_recovery_preserves_result_validation_and_budget(classification_harness: Any) -> None:
+    h = classification_harness.harness
+    before = h.module.read(h.directory / "state.json")
+    folder = h.directory / "pass-1"
+    originals = {name: (folder / name).read_bytes() for name in ("result.json", "validated.json", "historical.json")}
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert runner.state["run_id"] == before["run_id"]
+    assert h.launches == ["codex", "claude", "codex", "claude"]
+    assert len(runner.state["attempts"]) == 4
+    for name, content in originals.items():
+        assert (folder / name).read_bytes() == content
+    recovered = h.module.read(folder / "classification-recovery/result.json")
+    assert recovered == {**h.module.read(folder / "result.json"), "classification": "material"}
+    assert (folder / "classification-recovery/validated.json").is_file()
+
+
+@pytest.mark.parametrize("changed", [None, "result.json", "historical.json", "validated.json", "unknown-exit"])
+def test_late_classification_recovery_resumes_and_rejects_changed_evidence(classification_harness: Any, changed: str | None) -> None:
+    h = classification_harness.harness
+    controls = classification_harness.controls
+    controls.fail_derivation = True
+    with pytest.raises(h.module.Blocked, match="interrupted classification"):
+        h.runner(h.args, h.directory).run()
+    state = h.module.read(h.directory / "state.json")
+    assert state["pending"]["classification_origin"]
+    if changed == "unknown-exit":
+        state["attempts"][0]["exit_status"] = None
+        h.module.save(h.directory / "state.json", state)
+    elif changed:
+        path = h.directory / "pass-1" / changed
+        path.write_text(path.read_text() + "\n")
+    controls.fail_derivation = False
+    if changed:
+        with pytest.raises(h.module.Blocked):
+            h.runner(h.args, h.directory).run()
+        assert h.launches == ["codex"]
+    else:
+        assert h.runner(h.args, h.directory).run() == "converged"
+        assert h.launches == ["codex", "claude", "codex", "claude"]
 
 
 def test_completed_result_recovery_keeps_the_run_and_owed_pass(harness: Any) -> None:
