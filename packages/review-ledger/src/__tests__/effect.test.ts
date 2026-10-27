@@ -3,7 +3,7 @@ import { classifyRangeEffect } from '../effect.js';
 import { resetGitHubRunner, setGitHubRunner } from '../github.js';
 import type { GitHubRunner } from '../types.js';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,7 +35,7 @@ function withDiff(
       if (args.includes('--name-status')) {
         return `${nameStatus}\n`;
       }
-      const path = args[args.length - 1]!;
+      const path = args[args.length - 1]!.replace(/^:\(top,literal\)/, '');
       return patches[path] ?? '';
     },
   };
@@ -47,6 +47,66 @@ afterEach(() => {
 });
 
 describe('classifyRangeEffect', () => {
+  it.each(['py', 'ts'])(
+    'classifies real %s edits from a package directory',
+    (extension) => {
+      const directory = mkdtempSync(join(tmpdir(), 'review-effect-cwd-'));
+      let cwd = directory;
+      const git = (args: string[]) =>
+        execFileSync('git', args, { cwd, encoding: 'utf8' });
+      try {
+        git(['init', '-q']);
+        mkdirSync(join(directory, 'backend', 'app'), { recursive: true });
+        const path = join(directory, 'backend', 'app', `handler.${extension}`);
+        const commit = () => {
+          git(['add', '.']);
+          git([
+            '-c', 'user.name=Example',
+            '-c', 'user.email=example@example.invalid',
+            '-c', 'commit.gpgsign=false',
+            'commit', '-qm', 'fixture',
+          ]);
+          return git(['rev-parse', 'HEAD']).trim();
+        };
+        writeFileSync(
+          path,
+          extension === 'py' ? 'value = 1\n' : 'export const value = 1;\n',
+        );
+        const before = commit();
+        writeFileSync(
+          path,
+          extension === 'py' ? 'value = 2\n' : 'export const value = 2;\n',
+        );
+        const after = commit();
+        setGitHubRunner({
+          runGh() {
+            throw new Error('unexpected gh call');
+          },
+          runGit: git,
+        });
+        expect(classifyRangeEffect(before, after)).toBe('behavioral');
+        cwd = join(directory, 'backend');
+        expect(classifyRangeEffect(before, after)).toBe('behavioral');
+        git(['config', 'diff.relative', 'true']);
+        expect(classifyRangeEffect(before, after)).toBe('behavioral');
+        writeFileSync(
+          path,
+          extension === 'py'
+            ? '# Keeps the configured value.\nvalue = 2\n'
+            : '// Keeps the configured value.\nexport const value = 2;\n',
+        );
+        const comment = commit();
+        expect(classifyRangeEffect(after, comment)).toBe('non-behavioral');
+        if (extension === 'ts') {
+          chmodSync(path, 0o755);
+          expect(classifyRangeEffect(comment, commit())).toBe('behavioral');
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('accepts a comment-only Terraform range', () => {
     // The reported failure: five findings fixed, every changed line a comment,
     // and the plan still reporting no changes.
