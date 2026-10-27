@@ -3,7 +3,13 @@ import { classifyRangeEffect } from '../effect.js';
 import { resetGitHubRunner, setGitHubRunner } from '../github.js';
 import type { GitHubRunner } from '../types.js';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -61,10 +67,15 @@ describe('classifyRangeEffect', () => {
         const commit = () => {
           git(['add', '.']);
           git([
-            '-c', 'user.name=Example',
-            '-c', 'user.email=example@example.invalid',
-            '-c', 'commit.gpgsign=false',
-            'commit', '-qm', 'fixture',
+            '-c',
+            'user.name=Example',
+            '-c',
+            'user.email=example@example.invalid',
+            '-c',
+            'commit.gpgsign=false',
+            'commit',
+            '-qm',
+            'fixture',
           ]);
           return git(['rev-parse', 'HEAD']).trim();
         };
