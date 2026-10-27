@@ -15769,7 +15769,13 @@ function classifyRangeEffect(before, after) {
   if (!runner.runGit) {
     return "behavioral";
   }
-  const status = runner.runGit(["diff", "--no-relative", "--name-status", "--no-renames", `${before}..${after}`]).trim();
+  const status = runner.runGit([
+    "diff",
+    "--no-relative",
+    "--name-status",
+    "--no-renames",
+    `${before}..${after}`
+  ]).trim();
   if (status === "") {
     return "non-behavioral";
   }
