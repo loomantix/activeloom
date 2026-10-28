@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.13.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.13.1" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -144,6 +144,10 @@ function fail(message) {
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
+
+// src/github.ts
+import { execFileSync } from "child_process";
+import { readFileSync as readFileSync2 } from "fs";
 
 // src/io.ts
 import { lstatSync } from "fs";
@@ -378,12 +382,7 @@ function matchDisposition(body) {
   };
 }
 
-// src/ledger.ts
-import { execFileSync as execFileSync2 } from "child_process";
-
 // src/github.ts
-import { execFileSync } from "child_process";
-import { readFileSync as readFileSync2 } from "fs";
 var defaultActor = null;
 function execFailureDetail(error) {
   const execError = error;
@@ -15770,7 +15769,13 @@ function classifyRangeEffect(before, after) {
   if (!runner.runGit) {
     return "behavioral";
   }
-  const status = runner.runGit(["diff", "--name-status", "--no-renames", `${before}..${after}`]).trim();
+  const status = runner.runGit([
+    "diff",
+    "--no-relative",
+    "--name-status",
+    "--no-renames",
+    `${before}..${after}`
+  ]).trim();
   if (status === "") {
     return "non-behavioral";
   }
@@ -15795,11 +15800,12 @@ function classifyRangeEffect(before, after) {
       try {
         const summary = runner.runGit([
           "diff",
+          "--no-relative",
           "--summary",
           "--no-renames",
           `${before}..${after}`,
           "--",
-          path
+          `:(top,literal)${path}`
         ]);
         if (summary.trim() !== "" || !isCommentOnlySource(
           runner.runGit(["show", `${before}:${path}`]),
@@ -15818,11 +15824,12 @@ function classifyRangeEffect(before, after) {
     }
     const patch = runner.runGit([
       "diff",
+      "--no-relative",
       "--unified=0",
       "--no-renames",
       `${before}..${after}`,
       "--",
-      path
+      `:(top,literal)${path}`
     ]);
     if (!isCommentOnlyPatch(patch, syntax)) {
       return "behavioral";
@@ -15830,6 +15837,9 @@ function classifyRangeEffect(before, after) {
   }
   return "non-behavioral";
 }
+
+// src/ledger.ts
+import { execFileSync as execFileSync2 } from "child_process";
 
 // src/diff.ts
 function parseDiffLines(patch) {
@@ -20729,6 +20739,13 @@ function runCliCommand(argv) {
         bodyFile: args.bodyFile
       });
       process.stdout.write(JSON.stringify(out) + "\n");
+      break;
+    }
+    case "classify-effect": {
+      if (!args.base || !args.head) {
+        fail("classify-effect requires --base and --head");
+      }
+      writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
     }
     case "validate-result": {

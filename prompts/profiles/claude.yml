@@ -164,18 +164,24 @@ skills:
       argument-hint: (optional) PR number
     DESC_TRIGGER: ''
 
-  # Herd orchestration skills spawn many sessions, so each is user-invoked here;
-  # DESC_TRIGGER is empty for the same reason as `grill`.
+  # Herd orchestration skills spawn many sessions, so each is user-invoked here
+  # (except `auto-glance`, below); DESC_TRIGGER is empty for the same reason as
+  # `grill`.
   hreview:
     FM_EXTRAS: |-
       disable-model-invocation: true
       argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--restart [--deep] [--scope-decision keep|split]]'
     DESC_TRIGGER: ''
   auto-glance:
+    # The exception: model-invoked, because `hreview` runs it in the herder
+    # session at the glance gate and a user-invoked skill cannot be started
+    # from another skill's body (SKILL_AUTHORING.md section 2). Ad-hoc runs are
+    # still stopped by the skill's own preflight: it requires a herdr session
+    # (`HERDR_ENV=1`), the repository's `glance.auto: true`, and a PR that
+    # still classifies as a glance.
     FM_EXTRAS: |-
-      disable-model-invocation: true
       argument-hint: '<pr> [--author claude|codex|gemini]'
-    DESC_TRIGGER: ''
+    DESC_TRIGGER: ' Use when the user asks to run auto-glance on a PR, or when hreview dispatches an opted-in PR at the human-glance gate.'
   hgrill:
     FM_EXTRAS: |-
       disable-model-invocation: true

@@ -411,6 +411,17 @@ No reviewer is relaunched and the run ID, round and budget stay unchanged.
 This requires a helper that implements `recover-result`; update the published
 bundle through its normal verified distribution path, never patch it locally.
 
+Older helpers could accept a `minor` result from a package directory and then
+reject it as behavioral during root-level attestation. After a successful worker
+return, the controller rechecks the range's effect before validation. For a
+completed behavioral range labeled `minor`, it preserves the original result,
+snapshot and any validation receipt, and derives a `material` result through
+`write-result` in `classification-recovery/`. All ordinary evidence checks,
+validation and attestation still apply. Interrupted staging resumes only while
+the original digests, exact head and successful worker exit remain unchanged.
+No reviewer is relaunched and no run or round budget is reset. An affected
+existing run can adopt committed tooling through `--resume --migrate-controller`.
+
 ### Automatic validation repair
 
 When a reviewer returns a completed clean or changed canonical result and a

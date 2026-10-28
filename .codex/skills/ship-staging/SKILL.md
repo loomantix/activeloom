@@ -113,19 +113,22 @@ is intentionally narrow: it ships staging-base PRs only.
    - `isDraft != false` after the ready transition
    - `baseRefName != "staging"`
    - `mergeable != "MERGEABLE"`
-   - `mergeStateStatus` is `BLOCKED`, `BEHIND`, `DIRTY`, or `UNSTABLE`
+   - `mergeStateStatus` is anything other than `CLEAN` or `HAS_HOOKS`
    - `reviewDecision == "CHANGES_REQUESTED"`
    - any status check conclusion is `FAILURE`, `CANCELLED`, `TIMED_OUT`, or
      `ACTION_REQUIRED`
-   - the CI helper exits nonzero: required checks must pass; available checks
-     must pass or be skipped/neutral, with no failed, cancelled, or pending checks
+   - the CI helper exits nonzero: required and available checks must pass or be
+     skipped/neutral, with no failed, cancelled, or pending checks
 
    `mergeStateStatus` of `CLEAN` or `HAS_HOOKS` is acceptable when checks are
    otherwise green. No required checks is a valid repository configuration;
    report `required_count: 0` without requesting a bypass. This is distinct from
-   no available CI evidence, which the helper refuses. A skipped/neutral optional
-   check is acceptable; a skipped required check is not. Authentication, network,
-   malformed-response, and other lookup errors always stop shipment.
+   no available CI evidence, which the helper refuses. A skipped/neutral check,
+   including a required check, is acceptable only after the helper freshly reads
+   `mergeable == "MERGEABLE"` and `mergeStateStatus` of `CLEAN` or `HAS_HOOKS`
+   at the pinned head after checking CI. A changed head or branch, authentication,
+   network, malformed-response, or other lookup error stops shipment. This does
+   not replace the caller's local tests-at-head or promotion requirements.
 
 5. Draft a Google Chat message. Keep it under 600 characters and at most three
    sentences after the header. Do not include PHI, secrets, internal IPs, commit

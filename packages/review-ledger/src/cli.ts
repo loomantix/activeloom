@@ -22,6 +22,7 @@ import {
   TOKEN_RE,
 } from './constants.js';
 import { fail } from './errors.js';
+import { classifyRangeEffect } from './effect.js';
 import { assertRegularFile, parseJsonOrFail } from './io.js';
 import { readContent } from './protocol.js';
 import { requireSha } from './hash.js';
@@ -883,6 +884,13 @@ function runCliCommand(argv: string[]): number {
         bodyFile: args.bodyFile,
       });
       process.stdout.write(JSON.stringify(out) + '\n');
+      break;
+    }
+    case 'classify-effect': {
+      if (!args.base || !args.head) {
+        fail('classify-effect requires --base and --head');
+      }
+      writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
     }
     case 'validate-result': {

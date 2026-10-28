@@ -1,6 +1,6 @@
 {
   "name": "@loomantix/review-ledger",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "private": true,
   "type": "module",
   "description": "Deterministic local-review ledger protocol, verification, and CLI for multi-engine code review relays.",
@@ -38,6 +38,6 @@
     "@types/node": "26.6.5",
     "tsup": "9.0.0",
     "typescript": "5.9.3",
-    "vitest": "5.0.4"
+    "vitest": "5.0.5"
   }
 }

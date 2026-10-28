@@ -400,7 +400,13 @@ export function classifyRangeEffect(
   }
 
   const status = runner
-    .runGit(['diff', '--name-status', '--no-renames', `${before}..${after}`])
+    .runGit([
+      'diff',
+      '--no-relative',
+      '--name-status',
+      '--no-renames',
+      `${before}..${after}`,
+    ])
     .trim();
   if (status === '') {
     return 'non-behavioral';
@@ -428,11 +434,12 @@ export function classifyRangeEffect(
       try {
         const summary = runner.runGit([
           'diff',
+          '--no-relative',
           '--summary',
           '--no-renames',
           `${before}..${after}`,
           '--',
-          path,
+          `:(top,literal)${path}`,
         ]);
         if (
           summary.trim() !== '' ||
@@ -454,11 +461,12 @@ export function classifyRangeEffect(
     }
     const patch = runner.runGit([
       'diff',
+      '--no-relative',
       '--unified=0',
       '--no-renames',
       `${before}..${after}`,
       '--',
-      path,
+      `:(top,literal)${path}`,
     ]);
     if (!isCommentOnlyPatch(patch, syntax)) {
       return 'behavioral';
