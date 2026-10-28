@@ -474,10 +474,12 @@
     }
 
     function stateFromPlan(c) {
+      const fit =
+        c.latest && c.latest.rev === c.rev && c.latest.basis === c.basis;
       return {
         state: c.state,
         group: c.group,
-        latest: c.latest ? { ...c.latest, case_rev: c.latest.rev } : null,
+        latest: fit ? { ...c.latest, case_rev: c.latest.rev } : null,
         all: [],
       };
     }
@@ -781,6 +783,7 @@
       if (!active.length) tally.append(el('span', 'pill', 'No active cases'));
 
       const groups = document.getElementById('groups');
+      const firstRender = !groups.hasChildNodes();
       // A live update from another tester rebuilds the cards; keep what this tester has typed.
       const kept = new Map();
       for (const f of groups.querySelectorAll('input, textarea'))
@@ -826,7 +829,7 @@
         ).length;
         const d = el('details', 'fold');
         d.dataset.key = 'promotion-' + i;
-        if (i === promos.length - 1) d.open = true;
+        if (firstRender && i === promos.length - 1) d.open = true;
         d.append(
           el(
             'summary',
@@ -842,8 +845,7 @@
               ' failed',
           ),
         );
-        if (i === promos.length - 1)
-          for (const c of list) d.append(caseCard(c, states.get(c.id)));
+        for (const c of list) d.append(caseCard(c, states.get(c.id)));
         groups.append(d);
       });
 

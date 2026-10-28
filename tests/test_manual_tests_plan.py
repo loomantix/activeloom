@@ -138,6 +138,14 @@ def test_state_dir_is_the_one_horch_records_offers_in(tmp_path: Path, monkeypatc
         (lambda p: p["changes"][0].update(head="abc"), "full 40-character"),
         (lambda p: p.update(target="staging"), "target:"),
         (lambda p: p["changes"].append(change("pr-13", B)), "lists exactly pr-12"),
+        (lambda p: p["scope"].update(prs=[True]), "positive PR numbers"),
+        (lambda p: p["review"][0].update(pr=True), "review\\[0\\]: needs pr"),
+        (lambda p: p["review"][0].update(pr=0), "review\\[0\\]: needs pr"),
+        (lambda p: p["cases"][0].update(fix={"pr": 0, "merged": False}), "cases\\[0\\]\\.fix: needs pr"),
+        (lambda p: p.update(heads=[]), "heads: must be an object"),
+        (lambda p: p.update(review="bad"), "review: must be a list"),
+        (lambda p: p.update(changes=None), "changes: must be a list"),
+        (lambda p: p.update(cases=None), "cases: must be a list"),
     ],
 )
 def test_invalid_proposals_name_the_problem(mutate: Any, message: str) -> None:
@@ -272,6 +280,12 @@ def test_promoted_changes_fold_into_a_promotion_with_results_kept() -> None:
     assert (c["lifecycle"], c["promotion"], c["latest"]["status"]) == ("promoted", 0, "failed")
     assert report["promoted"] == ["pr12-signin"] and report["changes_removed"] == []
     assert plan["promotions"] == [{"date": "2026-10-02", "production_head": D, "changes": ["pr-12"]}]
+    # A later run must not re-report already-promoted pr-12 in changes_removed.
+    plan, later_report = merged(plan, integration_proposal(C, [], []))
+    assert later_report["changes_removed"] == ["pr-13"]
+    # And when pr-13 returns to scope, it is reported in changes_added again.
+    _, return_report = merged(plan, integration_proposal(C, changes[1:], [case("pr13-upload", change="pr-13")]))
+    assert return_report["changes_added"] == ["pr-13"] and return_report["reactivated"] == ["pr13-upload"]
 
 
 # --- summary ---------------------------------------------------------------------------------

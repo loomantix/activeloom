@@ -59,10 +59,16 @@ class Stop(Exception):
 # --- scope keys and paths -----------------------------------------------------
 
 
+def _pos_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def scope_key(kind: str, prs: list[int]) -> str:
+    if not isinstance(prs, list) or any(not _pos_int(n) for n in prs):
+        raise Invalid("a pr or prs scope needs positive PR numbers")
     if kind == "integration":
         return "integration"
-    if not prs or any(not isinstance(n, int) or n < 1 for n in prs):
+    if not prs:
         raise Invalid("a pr or prs scope needs positive PR numbers")
     if kind == "pr":
         if len(prs) != 1:
@@ -165,7 +171,11 @@ def validate_proposal(raw: Any) -> dict[str, Any]:
     target = raw.get("target")
     if target not in TARGETS:
         raise Invalid(f"target: must be one of {', '.join(TARGETS)}")
-    heads = raw.get("heads") or {}
+    heads = raw.get("heads")
+    if heads is None:
+        heads = {}
+    if not isinstance(heads, dict):
+        raise Invalid("heads: must be an object")
     heads = {
         "integration": _sha(heads.get("integration"), "heads.integration", optional=True),
         "production": _sha(heads.get("production"), "heads.production", optional=True),
@@ -173,16 +183,24 @@ def validate_proposal(raw: Any) -> dict[str, Any]:
     if scope["kind"] == "integration" and not heads["integration"]:
         raise Invalid("heads.integration: required for the integration scope")
 
+    review_raw = raw.get("review")
+    if review_raw is None:
+        review_raw = []
+    if not isinstance(review_raw, list):
+        raise Invalid("review: must be a list")
     review = []
-    for i, entry in enumerate(raw.get("review", [])):
-        if not isinstance(entry, dict) or not isinstance(entry.get("pr"), int):
+    for i, entry in enumerate(review_raw):
+        if not isinstance(entry, dict) or not _pos_int(entry.get("pr")):
             raise Invalid(f"review[{i}]: needs pr, head and converged")
         if not isinstance(entry.get("converged"), bool):
             raise Invalid(f"review[{i}].converged: must be true or false")
         review.append({"pr": entry["pr"], "head": _sha(entry.get("head"), f"review[{i}].head"), "converged": entry["converged"]})
 
+    changes_raw = raw.get("changes")
+    if not isinstance(changes_raw, list):
+        raise Invalid("changes: must be a list")
     changes: dict[str, dict[str, Any]] = {}
-    for i, change in enumerate(raw.get("changes", [])):
+    for i, change in enumerate(changes_raw):
         where = f"changes[{i}]"
         if not isinstance(change, dict) or not isinstance(change.get("ref"), str) or not CHANGE_RE.match(change["ref"]):
             raise Invalid(f"{where}.ref: must be pr-<n> or commit-<sha7>")
@@ -208,8 +226,11 @@ def validate_proposal(raw: Any) -> dict[str, Any]:
         if set(changes) != expected:
             raise Invalid(f"changes: a {scope['kind']} scope lists exactly {', '.join(sorted(expected))}")
 
+    cases_raw = raw.get("cases")
+    if not isinstance(cases_raw, list):
+        raise Invalid("cases: must be a list")
     cases: dict[str, dict[str, Any]] = {}
-    for i, case in enumerate(raw.get("cases", [])):
+    for i, case in enumerate(cases_raw):
         where = f"cases[{i}]"
         if not isinstance(case, dict) or not isinstance(case.get("id"), str) or not CASE_RE.match(case["id"]):
             raise Invalid(f"{where}.id: must be pr<n>-<slug> or commit-<sha7>-<slug>")
@@ -228,7 +249,7 @@ def validate_proposal(raw: Any) -> dict[str, Any]:
             raise Invalid(f"{where}.platform: must be one of {', '.join(PLATFORMS)}")
         fix = case.get("fix")
         if fix is not None:
-            if not isinstance(fix, dict) or not isinstance(fix.get("pr"), int) or not isinstance(fix.get("merged"), bool):
+            if not isinstance(fix, dict) or not _pos_int(fix.get("pr")) or not isinstance(fix.get("merged"), bool):
                 raise Invalid(f"{where}.fix: needs pr and merged")
             fix = {
                 "pr": fix["pr"],
@@ -322,6 +343,7 @@ def merge(existing: dict[str, Any] | None, proposal: dict[str, Any]) -> tuple[di
             )
     old_cases = {c["id"]: c for c in (existing or {}).get("cases", [])}
     old_changes = {c["ref"]: c for c in (existing or {}).get("changes", [])}
+    old_in_scope = {ref for ref, c in old_changes.items() if c.get("in_scope", True)}
     promotions = list((existing or {}).get("promotions", []))
     new_changes = {c["ref"]: c for c in proposal["changes"]}
 
@@ -338,8 +360,8 @@ def merge(existing: dict[str, Any] | None, proposal: dict[str, Any]) -> tuple[di
 
     report: dict[str, list[str]] = {
         "added": [], "revised": [], "retired": [], "promoted": [], "reactivated": [],
-        "changes_added": sorted(set(new_changes) - set(old_changes)),
-        "changes_removed": sorted(set(old_changes) - set(new_changes) - promoted_refs),
+        "changes_added": sorted(set(new_changes) - old_in_scope),
+        "changes_removed": sorted(old_in_scope - set(new_changes) - promoted_refs),
     }
     cases: list[dict[str, Any]] = []
     for case in proposal["cases"]:
