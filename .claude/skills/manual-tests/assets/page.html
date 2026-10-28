@@ -1,0 +1,915 @@
+<title>@@TITLE@@</title>
+<meta
+  name="claude:viewport-fit-sides"
+  content="cover"
+/>
+<style>
+  /*@@HOUSE_TOKENS@@*/
+
+  /* Layout: one reading column; a sticky tally, then cases grouped by what the tester should do next. */
+  :root {
+    --col: 54rem;
+    --pass: var(--success);
+    --fail: var(--danger);
+    --hold: var(--warning);
+    --skip: var(--text-muted);
+    --step: 0.875rem;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 var(--font-sans);
+  }
+  .wrap {
+    max-width: var(--col);
+    margin: 0 auto;
+    padding-block: 24px 64px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid;
+    gap: 20px;
+  }
+  h1,
+  h2,
+  h3 {
+    margin: 0;
+    text-wrap: balance;
+    line-height: 1.25;
+  }
+  h1 {
+    font-size: 1.5rem;
+  }
+  h2 {
+    font-size: 1.05rem;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  h2 .n {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  h3 {
+    font-size: 1rem;
+  }
+  p {
+    margin: 0;
+  }
+  code,
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+  .muted {
+    color: var(--text-muted);
+  }
+  .eyebrow {
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  header {
+    display: grid;
+    gap: 6px;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    color: var(--text-muted);
+    font-size: var(--step);
+  }
+  .banner {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--hold);
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: var(--step);
+  }
+  .banner.info {
+    border-left-color: var(--accent);
+  }
+  .env {
+    display: grid;
+    gap: 6px;
+  }
+  .env ol {
+    margin: 0;
+    padding-left: 1.3rem;
+  }
+  .tally {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 5;
+    background: var(--bg);
+    padding-block: 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px);
+    z-index: 10;
+    background: var(--bg);
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    padding: 2px 10px;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  .pill::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+  }
+  .s-passed::before {
+    background: var(--pass);
+  }
+  .s-failed::before {
+    background: var(--fail);
+  }
+  .s-blocked::before,
+  .s-stale::before,
+  .s-fix-pending::before {
+    background: var(--hold);
+  }
+  .s-skipped::before {
+    background: var(--skip);
+  }
+  .s-not-run::before {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+  }
+  section {
+    display: grid;
+    gap: 10px;
+  }
+  .lede {
+    font-size: var(--step);
+    color: var(--text-muted);
+  }
+  .case {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  .case.s-failed {
+    border-color: color-mix(in srgb, var(--fail) 55%, var(--border));
+  }
+  .case-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .case-head .ids {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+  .case ol {
+    margin: 0;
+    padding-left: 1.3rem;
+    display: grid;
+    gap: 2px;
+  }
+  .facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 12px;
+    font-size: var(--step);
+  }
+  .facts dt {
+    color: var(--text-muted);
+  }
+  .facts dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  form {
+    display: grid;
+    gap: 8px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+  fieldset {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  legend {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .choice {
+    position: relative;
+  }
+  .choice input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+  }
+  .choice span {
+    display: inline-block;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 4px 12px;
+    font-size: var(--step);
+    cursor: pointer;
+    background: var(--surface);
+  }
+  .choice input:checked + span {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .choice input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: end;
+  }
+  .row label {
+    display: grid;
+    gap: 2px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    flex: 1 1 14rem;
+    min-width: 0;
+  }
+  input[type='text'],
+  textarea {
+    font: inherit;
+    color: var(--text);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    width: 100%;
+  }
+  textarea {
+    min-height: 3.2rem;
+    resize: vertical;
+  }
+  input:focus-visible,
+  textarea:focus-visible,
+  button:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button {
+    font: inherit;
+    font-size: var(--step);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-contrast);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+  button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .msg {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    min-height: 1em;
+  }
+  .msg.err {
+    color: var(--danger);
+  }
+  details > summary {
+    cursor: pointer;
+    font-size: var(--step);
+    color: var(--text-muted);
+  }
+  .history {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+    font-size: 0.82rem;
+  }
+  .history li {
+    display: grid;
+    gap: 2px;
+    border-left: 2px solid var(--border);
+    padding-left: 8px;
+  }
+  .history .note {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text);
+  }
+  .fold {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+  }
+  .fold[open] {
+    display: grid;
+    gap: 10px;
+  }
+  .nomt {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: var(--step);
+    display: grid;
+    gap: 2px;
+  }
+  .empty {
+    font-size: var(--step);
+    color: var(--text-muted);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      transition: none !important;
+    }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Manual test plan</span>
+    <h1 id="h-title"></h1>
+    <div
+      class="meta"
+      id="h-meta"
+    ></div>
+  </header>
+  <div
+    id="banners"
+    class="env"
+  ></div>
+  <div
+    class="tally"
+    id="tally"
+    aria-live="polite"
+  ></div>
+  <main
+    id="groups"
+    class="env"
+  ></main>
+</div>
+
+<script
+  type="application/json"
+  id="plan-data"
+>
+  /*@@PLAN_JSON@@*/ null
+</script>
+<script>
+  (() => {
+    'use strict';
+    const PLAN = JSON.parse(document.getElementById('plan-data').textContent);
+    const STATUSES = ['passed', 'failed', 'blocked', 'skipped'];
+    const REF_RE = /^[A-Za-z0-9._:#-]{1,64}$/;
+    const GROUPS = [
+      [
+        'todo',
+        'To test',
+        'New or changed since the last result. Run these first.',
+      ],
+      [
+        'done',
+        'Tested at this build',
+        'Results recorded against the current build.',
+      ],
+      [
+        'carried',
+        'Carried over',
+        'Unchanged since they were tested at an earlier integration build. Re-run any you doubt.',
+      ],
+      [
+        'pending',
+        'Waiting on a fix',
+        'Known failures with a fix that has not merged. Retest once the build includes it.',
+      ],
+    ];
+    const sha7 = (s) => (s || '').slice(0, 7);
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const slug = (state) => 's-' + state.replace(/\s+/g, '-');
+    const changes = Object.fromEntries(PLAN.changes.map((c) => [c.ref, c]));
+    const results = new Map(); // case id -> submissions, oldest first
+    const forms = new Map();
+    let db = null;
+    let readOnly = false;
+
+    function testedHead(c) {
+      if (PLAN.scope.kind === 'integration') return PLAN.heads.integration;
+      return changes[c.change].head;
+    }
+
+    // Same rules as plan.py: a result counts only for the case revision and basis it was recorded at.
+    function liveState(c) {
+      const all = results.get(c.id) || [];
+      const fit = all.filter(
+        (r) => r.case_rev === c.rev && r.basis === c.basis,
+      );
+      const latest = fit.length ? fit[fit.length - 1] : null;
+      if (c.fix && !c.fix.merged)
+        return { state: 'fix pending', group: 'pending', latest, all };
+      if (latest) {
+        const carried =
+          PLAN.scope.kind === 'integration' &&
+          latest.tested_head !== PLAN.heads.integration;
+        return {
+          state: latest.status,
+          group: carried ? 'carried' : 'done',
+          latest,
+          all,
+        };
+      }
+      if (all.length || c.attempts)
+        return { state: 'stale', group: 'todo', latest: null, all };
+      return { state: 'not run', group: 'todo', latest: null, all };
+    }
+
+    function stateFromPlan(c) {
+      const fit =
+        c.latest && c.latest.rev === c.rev && c.latest.basis === c.basis;
+      return {
+        state: c.state,
+        group: c.group,
+        latest: fit ? { ...c.latest, case_rev: c.latest.rev } : null,
+        all: [],
+      };
+    }
+
+    function header() {
+      document.getElementById('h-title').textContent =
+        PLAN.repo + ' · ' + PLAN.scope.key;
+      const meta = document.getElementById('h-meta');
+      meta.replaceChildren();
+      const where =
+        PLAN.target === 'integration'
+          ? 'Integration environment at ' + sha7(PLAN.heads.integration)
+          : 'Local stack at the heads below';
+      meta.append(el('span', null, where));
+      for (const c of PLAN.changes.filter((x) => x.in_scope)) {
+        meta.append(el('span', 'mono', c.ref + ' @ ' + sha7(c.head)));
+      }
+      meta.append(
+        el(
+          'span',
+          null,
+          'Plan updated ' +
+            PLAN.updated_at.replace('T', ' ').replace('Z', ' UTC'),
+        ),
+      );
+
+      const banners = document.getElementById('banners');
+      banners.replaceChildren();
+      for (const r of PLAN.review || []) {
+        if (!r.converged)
+          banners.append(
+            el(
+              'div',
+              'banner',
+              'PR #' +
+                r.pr +
+                ' review has not converged at ' +
+                sha7(r.head) +
+                '. Its cases may change.',
+            ),
+          );
+      }
+      banners.append(envBlock('Where to test', PLAN.environment));
+      if (PLAN.install)
+        banners.append(envBlock('Install the build', PLAN.install));
+      banners.append(
+        el(
+          'div',
+          'banner info',
+          'Use synthetic data only. In the reference field, paste an opaque ID (a record or run ID), never names, emails or message text.',
+        ),
+      );
+      if (readOnly)
+        banners.append(
+          el(
+            'div',
+            'banner',
+            "This view can't save results. Open the page in Claude with Contributor access to record them.",
+          ),
+        );
+    }
+
+    function envBlock(label, env) {
+      const box = el('div', 'banner info env');
+      box.append(el('strong', null, label));
+      if (env.status !== 'documented') {
+        box.append(
+          el(
+            'p',
+            null,
+            "Not documented in the repository. Ask the repository's maintainers how to reach this build.",
+          ),
+        );
+        return box;
+      }
+      const ol = el('ol');
+      for (const s of env.steps) ol.append(el('li', null, s));
+      box.append(ol, el('p', 'muted', 'From ' + env.source));
+      return box;
+    }
+
+    function caseCard(c, st) {
+      const card = el('article', 'case ' + slug(st.state));
+      card.id = 'case-' + c.id;
+      const head = el('div', 'case-head');
+      head.append(el('h3', null, c.title));
+      const pill = el(
+        'span',
+        'pill ' + slug(st.state),
+        st.state === 'stale' ? 'stale, retest' : st.state,
+      );
+      head.append(pill);
+      const ids = el('div', 'ids');
+      ids.append(
+        el('span', 'mono', c.id),
+        el('span', null, 'rev ' + c.rev),
+        el('span', null, c.platform),
+      );
+      ids.append(
+        el(
+          'span',
+          'mono',
+          c.change + ' @ ' + sha7(changes[c.change] && changes[c.change].head),
+        ),
+      );
+      if (st.latest)
+        ids.append(
+          el(
+            'span',
+            null,
+            st.latest.status + ' at ' + sha7(st.latest.tested_head),
+          ),
+        );
+      if (st.state === 'stale') {
+        const last = st.all.length ? st.all[st.all.length - 1] : c.latest;
+        if (last)
+          ids.append(
+            el('span', null, 'stale: recorded at ' + sha7(last.tested_head)),
+          );
+      }
+      if (c.fix)
+        ids.append(
+          el(
+            'span',
+            null,
+            'fix #' + c.fix.pr + (c.fix.merged ? ' merged' : ' pending'),
+          ),
+        );
+      card.append(head, ids);
+
+      const steps = el('ol');
+      for (const s of c.steps) steps.append(el('li', null, s));
+      const facts = el('dl', 'facts');
+      facts.append(
+        el('dt', null, 'Passes when'),
+        el('dd', null, c.pass),
+        el('dt', null, 'If it fails'),
+        el('dd', null, c.on_failure),
+      );
+      card.append(steps, facts);
+
+      if (c.lifecycle === 'active' && !readOnly) card.append(resultForm(c));
+      if (st.all.length) card.append(history(st.all));
+      return card;
+    }
+
+    function resultForm(c) {
+      if (forms.has(c.id)) return forms.get(c.id);
+      const form = el('form');
+      const fs = el('fieldset');
+      fs.append(el('legend', null, 'Result'));
+      for (const s of STATUSES) {
+        const lab = el('label', 'choice');
+        const input = el('input');
+        input.type = 'radio';
+        input.name = 'status-' + c.id;
+        input.id = 'status-' + c.id + '-' + s;
+        input.value = s;
+        lab.append(input, el('span', null, s));
+        fs.append(lab);
+      }
+      const row = el('div', 'row');
+      const refLab = el('label', null, 'Reference (opaque ID)');
+      const ref = el('input');
+      ref.type = 'text';
+      ref.id = 'ref-' + c.id;
+      ref.maxLength = 64;
+      ref.autocomplete = 'off';
+      refLab.append(ref);
+      const noteLab = el('label', null, 'Note (what you saw)');
+      const note = el('textarea');
+      note.id = 'note-' + c.id;
+      note.maxLength = 1000;
+      noteLab.append(note);
+      row.append(refLab, noteLab);
+      const actions = el('div', 'row');
+      const btn = el('button', null, 'Save result');
+      btn.type = 'submit';
+      const msg = el('span', 'msg');
+      actions.append(btn, msg);
+      form.append(fs, row, actions);
+
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (btn.disabled) return;
+        const picked = form.querySelector('input[type=radio]:checked');
+        msg.className = 'msg err';
+        if (!picked) {
+          msg.textContent = 'Pick a result first.';
+          return;
+        }
+        const refValue = ref.value.trim();
+        if (refValue && !REF_RE.test(refValue)) {
+          msg.textContent =
+            'References are opaque IDs: letters, digits and . _ : # - only.';
+          return;
+        }
+        btn.disabled = true;
+        msg.className = 'msg';
+        msg.textContent = 'Saving…';
+        const body = {
+          case_id: c.id,
+          case_rev: c.rev,
+          basis: c.basis,
+          tested_head: testedHead(c),
+          status: picked.value,
+          ref: refValue || null,
+          note: note.value.trim() || null,
+          recorded_at: new Date().toISOString(),
+        };
+        try {
+          await save(body);
+          msg.textContent = 'Saved.';
+          form.reset();
+        } catch (e) {
+          msg.className = 'msg err';
+          const code = e && e.code;
+          if (code === 'invalid_argument' || code === 'not_granted') {
+            msg.textContent =
+              "Your access can't save results here. Ask the page's owner for Contributor access.";
+          } else if (code === 'quota_exceeded') {
+            msg.textContent =
+              "This page's result store is full. Tell the page's owner.";
+          } else {
+            msg.textContent = 'Not saved. Check your connection and try again.';
+          }
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      forms.set(c.id, form);
+      return form;
+    }
+
+    // Every submission is its own document with a fresh ID, so two saves never overwrite each other.
+    async function save(body) {
+      if (!db) throw { code: 'not_granted' };
+      try {
+        await db.collection('results').add(body);
+      } catch (e) {
+        if (e && e.code === 'unavailable') {
+          await new Promise((r) => setTimeout(r, 400 + Math.random() * 600));
+          await db.collection('results').add(body);
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    function history(all) {
+      const d = el('details');
+      d.dataset.key = 'history-' + all[0].case_id;
+      d.append(el('summary', null, 'History (' + all.length + ')'));
+      const ul = el('ul', 'history');
+      for (const r of [...all].reverse()) {
+        const li = el('li');
+        li.append(
+          el(
+            'span',
+            null,
+            r.status +
+              ' · rev ' +
+              r.case_rev +
+              ' · at ' +
+              sha7(r.tested_head) +
+              ' · ' +
+              (r.recorded_at || '').replace('T', ' ').slice(0, 16),
+          ),
+        );
+        if (r.ref) li.append(el('span', 'mono', r.ref));
+        if (r.note) li.append(el('span', 'note', r.note));
+        ul.append(li);
+      }
+      d.append(ul);
+      return d;
+    }
+
+    function render() {
+      const live = db !== null;
+      const states = new Map(
+        PLAN.cases.map((c) => [c.id, live ? liveState(c) : stateFromPlan(c)]),
+      );
+      const active = PLAN.cases.filter((c) => c.lifecycle === 'active');
+
+      const tally = document.getElementById('tally');
+      tally.replaceChildren();
+      const counts = {};
+      for (const c of active) {
+        const s = states.get(c.id).state;
+        counts[s] = (counts[s] || 0) + 1;
+      }
+      for (const s of [
+        'not run',
+        'stale',
+        'passed',
+        'failed',
+        'blocked',
+        'skipped',
+        'fix pending',
+      ]) {
+        if (counts[s])
+          tally.append(el('span', 'pill ' + slug(s), counts[s] + ' ' + s));
+      }
+      if (!active.length) tally.append(el('span', 'pill', 'No active cases'));
+
+      const groups = document.getElementById('groups');
+      const firstRender = !groups.hasChildNodes();
+      // Keep the actual forms so pending saves still update visible feedback.
+      const focused = document.activeElement && document.activeElement.id;
+      const openDetails = new Set(
+        [...groups.querySelectorAll('details[open][data-key]')].map(
+          (d) => d.dataset.key,
+        ),
+      );
+      groups.replaceChildren();
+      for (const [key, label, lede] of GROUPS) {
+        const list = active.filter((c) => states.get(c.id).group === key);
+        if (!list.length && key !== 'todo') continue;
+        const sec = el('section');
+        const h = el('h2', null, label + ' ');
+        h.append(el('span', 'n', String(list.length)));
+        sec.append(h, el('p', 'lede', lede));
+        if (!list.length)
+          sec.append(el('p', 'empty', 'Nothing left to test here.'));
+        for (const c of list) sec.append(caseCard(c, states.get(c.id)));
+        groups.append(sec);
+      }
+
+      const none = PLAN.changes.filter((c) => c.in_scope && !c.manual);
+      if (none.length) {
+        const sec = el('section');
+        sec.append(el('h2', null, 'No manual test needed'));
+        const ul = el('ul', 'nomt');
+        for (const c of none)
+          ul.append(el('li', null, c.ref + ' ' + c.title + ': ' + c.reason));
+        sec.append(ul);
+        groups.append(sec);
+      }
+
+      const promos = PLAN.promotions || [];
+      promos.forEach((p, i) => {
+        const list = PLAN.cases.filter(
+          (c) => c.lifecycle === 'promoted' && c.promotion === i,
+        );
+        const failed = list.filter(
+          (c) => states.get(c.id).state === 'failed',
+        ).length;
+        const d = el('details', 'fold');
+        d.dataset.key = 'promotion-' + i;
+        if (firstRender && i === promos.length - 1) d.open = true;
+        d.append(
+          el(
+            'summary',
+            null,
+            'Promoted ' +
+              p.date +
+              ' · production ' +
+              sha7(p.production_head) +
+              ' · ' +
+              list.length +
+              ' cases · ' +
+              failed +
+              ' failed',
+          ),
+        );
+        for (const c of list) d.append(caseCard(c, states.get(c.id)));
+        groups.append(d);
+      });
+
+      const retired = PLAN.cases.filter((c) => c.lifecycle === 'retired');
+      if (retired.length) {
+        const d = el('details', 'fold');
+        d.dataset.key = 'retired';
+        d.append(
+          el(
+            'summary',
+            null,
+            'Retired cases (' + retired.length + '). Their results are kept.',
+          ),
+        );
+        for (const c of retired) d.append(caseCard(c, states.get(c.id)));
+        groups.append(d);
+      }
+
+      for (const d of groups.querySelectorAll('details[data-key]'))
+        if (openDetails.has(d.dataset.key)) d.open = true;
+      if (focused && document.getElementById(focused))
+        document.getElementById(focused).focus();
+    }
+
+    function restart() {
+      readOnly = true;
+      header();
+      render();
+    }
+
+    render();
+    header();
+
+    if (window.claude && typeof window.claude.use === 'function') {
+      window.claude.use('db').then((namespace) => {
+        if (!namespace) {
+          restart();
+          return;
+        }
+        db = namespace;
+        db.collection('results').onSnapshot(
+          (snap) => {
+            results.clear();
+            for (const d of snap.docs) {
+              const r = d.data();
+              if (!r || typeof r.case_id !== 'string') continue;
+              if (!results.has(r.case_id)) results.set(r.case_id, []);
+              results.get(r.case_id).push(r);
+            }
+            for (const list of results.values())
+              list.sort((a, b) =>
+                String(a.recorded_at).localeCompare(String(b.recorded_at)),
+              );
+            render();
+          },
+          () => {
+            db = null;
+            restart();
+          },
+        );
+      }, restart);
+    } else {
+      restart();
+    }
+  })();
+</script>

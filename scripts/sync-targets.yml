@@ -248,6 +248,27 @@ harnesses:
         destination: .claude/references/house-tokens.css
         substitutions: []
 
+      # /manual-tests — a manual test plan as a portable plan file, rendered as
+      # an Artifact checklist whose database keeps every result. Claude-only,
+      # like /artifact, which it requires; `plan.py render` inlines
+      # house-tokens.css, so the four entries travel with the two above.
+      - source: .claude/skills/manual-tests/SKILL.md
+        destination: .claude/skills/manual-tests/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/manual-tests/scripts/plan.py
+        destination: .claude/skills/manual-tests/scripts/plan.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/manual-tests/scripts/plan.schema.json
+        destination: .claude/skills/manual-tests/scripts/plan.schema.json
+        substitutions: []
+
+      - source: .claude/skills/manual-tests/assets/page.html
+        destination: .claude/skills/manual-tests/assets/page.html
+        substitutions: []
+
       # /actions-usage-audit — read-only org Actions-minute cost analysis. Generic
       # by design; org-specific baselines live in a consumer-owned, non-synced
       # `.claude/actions-usage-audit.local.md` the skill reads if present.

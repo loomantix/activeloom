@@ -68,8 +68,9 @@ REPO_SECTIONS = (
     "production_lanes",
     "promotion",
     "telemetry",
+    "manual_tests",
 )
-USER_SECTIONS = ("schema_version", "worktree_root", "push_notifications", "engines")
+USER_SECTIONS = ("schema_version", "worktree_root", "push_notifications", "engines", "promotion")
 
 BRANCH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}(?<!/)$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -349,6 +350,10 @@ def validate_repo(config: Any) -> dict[str, Any]:
         store = None
     effective["telemetry"] = {"store": store}
 
+    manual = _section(config, "manual_tests", errors) or {}
+    _check_keys(manual, ("ux_globs",), "manual_tests", errors)
+    effective["manual_tests"] = {"ux_globs": _globs(manual.get("ux_globs", []), "manual_tests.ux_globs", errors)}
+
     if errors:
         raise ConfigError(errors)
     return effective
@@ -502,6 +507,13 @@ def classify_paths(gate_fix: dict[str, Any], paths: list[str]) -> dict[str, Any]
     return {"eligible": not reasons, "reasons": reasons, "files": files}
 
 
+def ux_paths(manual_tests: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    """Changed paths that match the repository's manual-test UX globs."""
+    patterns = [glob_to_regex(glob) for glob in manual_tests["ux_globs"]]
+    matches = [path for path in paths if any(p.match(path) for p in patterns)]
+    return {"ux_globs": list(manual_tests["ux_globs"]), "matches": matches, "match": bool(matches)}
+
+
 def changed_paths(repo_dir: Path, base: str, head: str) -> list[str]:
     for value in (base, head):
         if value.startswith("-"):
@@ -556,6 +568,15 @@ def validate_user(config: Any) -> dict[str, Any]:
         if duplicates:
             errors.append(f"{where}: flag passed more than once: {', '.join(duplicates)}")
         engines[engine] = {"launch_args": launch, "permission_off_args": permission}
+    promotion = config.get("promotion", {})
+    if not isinstance(promotion, dict):
+        errors.append("promotion: must be an object")
+        promotion = {}
+    _check_keys(promotion, ("offer_manual_tests",), "promotion", errors)
+    offer = promotion.get("offer_manual_tests", False)
+    if not isinstance(offer, bool):
+        errors.append("promotion.offer_manual_tests: must be true or false")
+        offer = False
     if errors:
         raise ConfigError(errors)
     return {
@@ -563,6 +584,7 @@ def validate_user(config: Any) -> dict[str, Any]:
         "worktree_root": str(Path(root).expanduser()),
         "push_notifications": push,
         "engines": engines,
+        "promotion": {"offer_manual_tests": offer},
     }
 
 
@@ -1355,6 +1377,13 @@ def main(argv: list[str] | None = None) -> int:
     gate.add_argument("--base", required=True)
     gate.add_argument("--head", required=True)
 
+    ux = commands.add_parser("ux-paths", help="changed paths matching manual_tests.ux_globs")
+    add_source(ux)
+    ux_from = ux.add_mutually_exclusive_group(required=True)
+    ux_from.add_argument("--head", help="compare with --base (merge base) in the repository")
+    ux_from.add_argument("--paths-file", type=Path, help="one changed path per line, e.g. from gh pr view --json files")
+    ux.add_argument("--base")
+
     user = commands.add_parser("user", help="effective per-user config")
     user.add_argument("--path", type=Path)
 
@@ -1434,6 +1463,20 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "gate-fix-paths":
             loaded = read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
             result = classify_paths(loaded["config"]["gate_fix"], changed_paths(args.repo_dir, args.base, args.head))
+            _emit({"source": loaded["source"], **result})
+        elif args.command == "ux-paths":
+            loaded = read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
+            if args.paths_file is not None:
+                try:
+                    lines = args.paths_file.read_text(encoding="utf-8").splitlines()
+                except OSError as exc:
+                    raise UsageError(f"cannot read {args.paths_file}: {exc}") from exc
+                paths = [line.strip() for line in lines if line.strip()]
+            elif args.base is None:
+                raise UsageError("--head needs --base")
+            else:
+                paths = changed_paths(args.repo_dir, args.base, args.head)
+            result = ux_paths(loaded["config"]["manual_tests"], paths)
             _emit({"source": loaded["source"], **result})
         elif args.command == "user":
             _emit(read_user(args.path or user_config_path()))

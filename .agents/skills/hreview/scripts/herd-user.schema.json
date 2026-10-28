@@ -42,6 +42,17 @@
         "codex": { "$ref": "#/$defs/engine" },
         "gemini": { "$ref": "#/$defs/engine" }
       }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "offer_manual_tests": {
+          "type": "boolean",
+          "default": false,
+          "description": "hpromote asks, once the integration branch is healthy, whether to go through the manual test plan before opening the promotion PR. Needs the manual-tests skill and Claude."
+        }
+      }
     }
   }
 }
