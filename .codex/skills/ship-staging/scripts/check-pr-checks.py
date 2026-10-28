@@ -16,15 +16,16 @@ def gh(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def pr_identity(repo: str, pr: str) -> dict[str, str]:
-    result = gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid,headRefName")
+    fields = ("headRefOid", "headRefName", "mergeable", "mergeStateStatus")
+    result = gh("pr", "view", pr, "--repo", repo, "--json", ",".join(fields))
     if result.returncode:
         raise ValueError("Could not read PR identity")
     data = json.loads(result.stdout)
     if not isinstance(data, dict) or not all(
-        isinstance(data.get(key), str) and data[key] for key in ("headRefOid", "headRefName")
+        isinstance(data.get(key), str) and data[key] for key in fields
     ):
         raise ValueError("Invalid PR identity response")
-    return {key: data[key] for key in ("headRefOid", "headRefName")}
+    return {key: data[key] for key in fields}
 
 
 def checks(repo: str, pr: str, branch: str, *, required: bool) -> list[dict[str, str]]:
@@ -52,7 +53,8 @@ def checks(repo: str, pr: str, branch: str, *, required: bool) -> list[dict[str,
         for item in data
     ):
         raise ValueError("Invalid checks response")
-    allowed = {"pass"} if required else {"pass", "skipping"}
+    # Skips remain provisional until verify reads same-head mergeability after CI.
+    allowed = {"pass", "skipping"}
     if any(item["bucket"] not in allowed for item in data):
         raise ValueError("Checks are not acceptable for merge")
     return data
@@ -66,8 +68,11 @@ def verify(repo: str, pr: str, head: str) -> dict[str, object]:
     available = checks(repo, pr, identity["headRefName"], required=False)
     if not available:
         raise ValueError("No available CI evidence; cannot verify checks")
-    if pr_identity(repo, pr) != identity:
+    final = pr_identity(repo, pr)
+    if any(final[key] != identity[key] for key in ("headRefOid", "headRefName")):
         raise ValueError("PR head changed while checking CI")
+    if final["mergeable"] != "MERGEABLE" or final["mergeStateStatus"] not in {"CLEAN", "HAS_HOOKS"}:
+        raise ValueError("PR is not mergeable with CLEAN or HAS_HOOKS state")
     return {"head": head, "required_count": len(required), "available_count": len(available)}
 
 
