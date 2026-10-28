@@ -3981,7 +3981,7 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
         "ordinary-git-error",
     ],
 )
-@pytest.mark.parametrize("diagnostic", ["reviewer", "null"])
+@pytest.mark.parametrize("diagnostic", ["reviewer", "null", "gitfile"])
 def test_legacy_git_failure_requires_terminal_controller_evidence(
     harness: Any, corruption: str, diagnostic: str
 ) -> None:
@@ -3993,6 +3993,10 @@ def test_legacy_git_failure_requires_terminal_controller_evidence(
         if diagnostic == "null"
         else "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
     )
+    if diagnostic == "gitfile":
+        worker.write_text(
+            "fatal: gitfile does not point to a valid repository: /missing/linked/.git\n"
+        )
     controller_log = harness.directory / "original-controller.log"
     terminal = (
         f"Starting gemini pass 2 at {HEAD}\n"
@@ -4031,8 +4035,8 @@ def test_legacy_git_failure_requires_terminal_controller_evidence(
         runner.legacy_failure(pending, worker)
 
 
-@pytest.fixture
-def moved_worktree_failure(tmp_path: Path) -> bytes:
+@pytest.fixture(params=["native", "gitfile"])
+def moved_worktree_failure(tmp_path: Path, request: pytest.FixtureRequest) -> bytes:
     """Capture Git's real failure after a primary clone moves, then repair it."""
     primary = tmp_path / "primary"
     linked = tmp_path / "linked"
@@ -4066,10 +4070,18 @@ def moved_worktree_failure(tmp_path: Path) -> bytes:
         env={**os.environ, "LC_ALL": "C"},
     )
     assert broken.returncode == 128
-    assert broken.stderr.startswith(b"fatal: not a git repository: ")
+    assert broken.stderr.startswith(
+        (
+            b"fatal: not a git repository: ",
+            b"fatal: gitfile does not point to a valid repository: ",
+        )
+    )
     git("-C", str(moved), "worktree", "repair", str(linked))
     assert git("-C", str(linked), "rev-parse", "HEAD").stdout == head
     assert git("-C", str(linked), "status", "--porcelain").stdout == b""
+    if request.param == "gitfile":
+        # Exercise Git 2.56's diagnostic even on hosts with an older Git.
+        return f"fatal: gitfile does not point to a valid repository: {linked}/.git\n".encode()
     return broken.stderr
 
 
