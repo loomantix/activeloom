@@ -778,8 +778,9 @@ Report the unresolved action only when deterministic recovery cannot complete.
 The ledger guides a review; routine metadata drift is not a new permission
 boundary. Existing authorization to complete an unfinished review also covers
 reconciling posted comments, refreshing an unchanged roster at the live head,
-finishing a saved result, and resuming an aborted run within its original budget.
-These operations do not consume another model pass. Never silently reset the
+finishing a saved result, and, where the installed controller supports it,
+resuming an aborted run within its original budget. These operations do not
+consume another model pass. Never silently reset the
 budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
 
 ### Helper version prerequisite
