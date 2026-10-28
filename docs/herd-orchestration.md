@@ -63,7 +63,8 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
     },
     "codex": { "launch_args": [], "permission_off_args": ["--approve-for-me"] },
     "gemini": { "launch_args": [], "permission_off_args": [] }
-  }
+  },
+  "promotion": { "offer_manual_tests": false }
 }
 ```
 
@@ -73,6 +74,7 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
 | `push_notifications`              | `true`  | Whether the driver also sends its harness's push notification (Claude Code has one) for events that need you. herdr's own notification is always shown.                                       |
 | `engines.<e>.launch_args`         | `[]`    | Added to every launch of that engine.                                                                                                                                                         |
 | `engines.<e>.permission_off_args` | `[]`    | Added to sessions that edit (review passes, builds, fixes); left out of read-only sessions such as the promotion risk review. Use the flag your CLI documents; the values above are examples. |
+| `promotion.offer_manual_tests`    | `false` | When `true`, `hpromote` offers a [manual test hold](#manual-test-plans) once the integration branch is healthy. A personal choice, so there is no repository switch.                          |
 
 Permission-off flags belong here, not in a shell alias. The skills can see an alias but not what a shell function adds, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver has to answer them. That is slow, and it can fail: the driver's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through.
 
@@ -161,7 +163,8 @@ A complete example for a fictional `acme/widgets` that works on `staging` and pr
     "preflight": [["pnpm", "typecheck"]],
     "deploy_workflows": ["Deploy"],
     "post_merge": []
-  }
+  },
+  "manual_tests": { "ux_globs": ["apps/web/src/**", "apps/mobile/**"] }
 }
 ```
 
@@ -189,6 +192,8 @@ Every command is an argv array, never a shell string: `["pnpm", "install"]`, not
 | `production_lanes`         | none                          | Token-heavy production work (videos, long documents) that `horch` may hand to a named engine and skill. It stops at a local artifact for your approval.                                                                                                                                                                                                                                                                                                                         |
 | `promotion`                | absent: `hpromote` refuses    | `production_branch` is required. `skill` defaults to the generic `promote`; name your own skill to override its step rules (keep `skill` explicit while older checkouts, which still require it, read this file). `risk_engine` defaults to the first engine in your deep review order that is not the driver's. Without a [promotion recipe](#the-promotion-recipe), `preflight`, `deploy_workflows` and `post_merge` become one.                                              |
 | `telemetry.store`          | absent: herd sets nothing     | `pr` or `issue`. Herd sets `LOOM_REVIEW_TELEMETRY_STORE` to it on every pane it opens, for every engine, so review metrics from herd sessions go where the repository says whichever harness runs them. It overrides a value the engine's own config or a synced `review-telemetry.json` would give. Read only by herd: a session you start yourself is unaffected. Helpers older than this key reject the file, so update the herd skills wherever they run before you set it. |
+
+| `manual_tests.ux_globs` | none | Paths whose changes need a person to test by hand. `horch` offers a [manual test plan](#manual-test-plans) when a converged PR touches one, and `manual-tests` uses them to decide which changes get cases. A PR body's `Manual checks` section counts with or without globs. |
 
 Validate a draft before you commit it:
 
@@ -254,6 +259,7 @@ It inventories every tab and session in the workspace, checks your instruction f
 - dispatches `hgrill`, `hloop` and `hpromote` when you ask;
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
 - hands production-lane work to the configured engine and queues the result for your approval;
+- offers a [manual test plan](#manual-test-plans) for a converged PR that touches a UX glob or declares manual checks, once per converged head;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
 
 Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one.
@@ -280,7 +286,17 @@ A dry run pins the integration and production SHAs and reports its verdict local
 
 What appears: a `P<mmdd>` tab of at most six panes, the driver on top and up to five worker slots below it. The driver reads your [promotion recipe](#the-promotion-recipe) and runs each phase's lanes in the slots, so every preflight command, CI watch and deploy watch runs in a pane you can see. It opens or adopts the promotion PR and runs the recipe's **read-only** risk review of the whole diff in its own slot. It verifies every blocker and major finding itself, posts one comment with dispositions, and for each confirmed blocker starts a fix session that opens a PR to the integration branch, gets it reviewed in a `review-<pr>` pane, and ships it through `horch`'s gate. When the integration branch moves, it reviews only the delta.
 
+With `promotion.offer_manual_tests` on, once the preflight lanes pass it asks whether to go through the [manual test plan](#manual-test-plans) first. On yes it builds or updates the integration plan in a worker slot, prints the link and a summary, and holds at `P<mmdd> ⏸ manual-tests` until you say `continue`. Results never block the promotion. If a fix later moves the head, it asks again only when the new head adds changes that would get cases.
+
 It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it runs the recipe's post-merge lanes: deploy watchers and checks side by side. It never rolls back on its own.
+
+#### Manual test plans
+
+`manual-tests` is a Claude Code skill (it publishes an Artifact, which only Claude Code can do) that `horch` and `hpromote` start in a Claude session when you accept their offer. You can also run it yourself: `/manual-tests 42`, `/manual-tests 42 43` for PRs tested together on your local stack, or `/manual-tests integration` for everything on the integration branch and not yet on production.
+
+It writes the plan as a portable file, `plan.json`, under `~/.cache/activeloom-herd/<owner>__<name>/manual-tests/<scope>/`, and publishes it as a private Artifact checklist: steps, what a pass looks like, where to look on failure, and a result per case that any tester with Contributor access saves to the page's shared database. Every save is its own record. Case IDs stay stable across updates; a changed case gets a new revision, and earlier results show as stale. The page keeps one URL per scope, and the URL is never posted to GitHub. Results are reported to you, never used as a gate.
+
+When no Claude engine is available in your review profile, or the skill is not installed, neither offer is made.
 
 #### The promotion recipe
 
