@@ -424,6 +424,8 @@ def darwin_protected_service(pid: int) -> bool:
             # App extensions such as widgets live in sealed system app bundles.
             executable.is_relative_to("/System/Applications")
             and any(part.endswith(".appex") for part in executable.parts)
+        ) or executable.match(
+            "/System/Library/ExtensionKit/Extensions/*.appex/Contents/MacOS/*"
         )
     )
 
