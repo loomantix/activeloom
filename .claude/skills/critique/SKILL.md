@@ -386,8 +386,8 @@ diff, and neither implies the other. A non-behavioral clarification may be a
 `minor` pass; a test change that prevents a false green remains `material`.
 Never restate a severity
 to reach a classification: the thread's severity is fixed evidence, and the
-classification is read off the diff. See "Severity is not classification" in the
-ledger reference.
+classification is read off the diff. See "Finding severity" in
+`REVIEW_WORKFLOW.md`.
 
 Every engine attestation remains exact to the head it reviewed. A later minor
 fix does not rewrite that evidence or claim the other engine reviewed the new
