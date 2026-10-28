@@ -3945,9 +3945,13 @@ def test_legacy_git_failure_requires_terminal_controller_evidence(
         runner.legacy_failure(pending, worker)
 
 
-@pytest.fixture
-def moved_worktree_failure(tmp_path: Path) -> bytes:
-    """Capture Git's real failure after a primary clone moves, then repair it."""
+@pytest.fixture(params=["/missing/primary/.git/worktrees/reviewer", "(null)"])
+def moved_worktree_failure(request: pytest.FixtureRequest) -> bytes:
+    """Pin the historical diagnostic recognized by the v1 recovery contract."""
+    return f"fatal: not a git repository: {request.param}\n".encode()
+
+
+def test_moved_worktree_can_be_repaired(tmp_path: Path) -> None:
     primary = tmp_path / "primary"
     linked = tmp_path / "linked"
     moved = tmp_path / "moved"
@@ -3973,6 +3977,7 @@ def moved_worktree_failure(tmp_path: Path) -> bytes:
     git("-C", str(primary), "commit", "--allow-empty", "-m", "synthetic surface")
     git("-C", str(primary), "worktree", "add", "--detach", str(linked))
     head = git("-C", str(linked), "rev-parse", "HEAD").stdout
+    gitdir = (linked / ".git").read_text().removeprefix("gitdir: ").strip()
     primary.rename(moved)
     broken = subprocess.run(
         ["git", "-C", str(linked), "rev-parse", "--show-toplevel"],
@@ -3980,11 +3985,14 @@ def moved_worktree_failure(tmp_path: Path) -> bytes:
         env={**os.environ, "LC_ALL": "C"},
     )
     assert broken.returncode == 128
-    assert broken.stderr.startswith(b"fatal: not a git repository: ")
+    assert broken.stderr in (
+        f"fatal: not a git repository: {gitdir}\n".encode(),
+        b"fatal: not a git repository: (null)\n",
+        f"fatal: gitfile does not point to a valid repository: {linked / '.git'}\n".encode(),
+    )
     git("-C", str(moved), "worktree", "repair", str(linked))
     assert git("-C", str(linked), "rev-parse", "HEAD").stdout == head
     assert git("-C", str(linked), "status", "--porcelain").stdout == b""
-    return broken.stderr
 
 
 def test_legacy_moved_worktree_recovery_keeps_completed_passes(
