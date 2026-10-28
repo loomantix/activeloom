@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import re
+import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -326,6 +327,10 @@ def test_plan_matches_the_portable_schema() -> None:
     plan, _ = merged(None, pr_proposal())
     plan, _ = plan_mod.apply_results(plan, [result("pr12-signin-redirect", 1, A, A, "passed", "2026-10-01T10:00:00Z")])
     jsonschema.Draft202012Validator(schema).validate(plan)
+
+
+def test_live_form_keeps_pending_save_and_feedback() -> None:
+    subprocess.run(["node", str(ROOT / "tests/fixtures/manual-tests-form.cjs"), str(SKILL / "assets/page.html")], check=True)
 
 
 # --- CLI -------------------------------------------------------------------------------------

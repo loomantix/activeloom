@@ -440,6 +440,7 @@
     const slug = (state) => 's-' + state.replace(/\s+/g, '-');
     const changes = Object.fromEntries(PLAN.changes.map((c) => [c.ref, c]));
     const results = new Map(); // case id -> submissions, oldest first
+    const forms = new Map();
     let db = null;
     let readOnly = false;
 
@@ -627,6 +628,7 @@
     }
 
     function resultForm(c) {
+      if (forms.has(c.id)) return forms.get(c.id);
       const form = el('form');
       const fs = el('fieldset');
       fs.append(el('legend', null, 'Result'));
@@ -663,6 +665,7 @@
 
       form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
+        if (btn.disabled) return;
         const picked = form.querySelector('input[type=radio]:checked');
         msg.className = 'msg err';
         if (!picked) {
@@ -708,6 +711,7 @@
           btn.disabled = false;
         }
       });
+      forms.set(c.id, form);
       return form;
     }
 
@@ -784,10 +788,7 @@
 
       const groups = document.getElementById('groups');
       const firstRender = !groups.hasChildNodes();
-      // A live update from another tester rebuilds the cards; keep what this tester has typed.
-      const kept = new Map();
-      for (const f of groups.querySelectorAll('input, textarea'))
-        kept.set(f.id, f.type === 'radio' ? f.checked : f.value);
+      // Keep the actual forms so pending saves still update visible feedback.
       const focused = document.activeElement && document.activeElement.id;
       const openDetails = new Set(
         [...groups.querySelectorAll('details[open][data-key]')].map(
@@ -864,12 +865,6 @@
         groups.append(d);
       }
 
-      for (const [id, v] of kept) {
-        const f = document.getElementById(id);
-        if (!f) continue;
-        if (f.type === 'radio') f.checked = v;
-        else f.value = v;
-      }
       for (const d of groups.querySelectorAll('details[data-key]'))
         if (openDetails.has(d.dataset.key)) d.open = true;
       if (focused && document.getElementById(focused))
