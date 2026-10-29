@@ -1516,6 +1516,27 @@ def test_existing_child_handback_reconciles_uncertain_body_without_duplicate_wri
     assert remote.mutations[-1] == (101, 'comment')
 
 
+def test_existing_child_handback_rejects_reverted_completed_child_before_parent(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, path, original, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    old_body = remote.issues[102]['body']
+    context = apply_mod.ExistingHandback(plan, str(path), [str(original)], _config(apply_mod), set())
+    apply_mod.apply_entry(plan['issues'][1], _config(apply_mod), existing_handback=context)
+    context.complete(102)
+    apply_mod.save_progress(apply_mod.progress_path(str(path)), {102})
+    remote.issues[102]['body'] = old_body
+    mutations = remote.mutations[:]
+
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == '#102: completed replacement body changed outside this exact approved handback\n'
+    assert remote.mutations == mutations
+    assert all(number == 102 for number, _ in mutations)
+    assert json.loads(Path(str(path) + '.existing-handback.json').read_text())['done'] == [102]
+
+
 def test_existing_child_handback_rejects_changed_plan_after_partial_publication(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

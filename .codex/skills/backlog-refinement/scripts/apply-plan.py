@@ -636,6 +636,8 @@ class ExistingHandback:
                 fail(f'#{number}: missing current body precondition')
             target = entry['body'].rstrip() + '\n' if entry.get('body') else None
             intended = number in self.state['started'] and self.config.rewrite_mode == 'edit'
+            if number in self.state['done'] and intended and target is not None and body != target:
+                fail(f'#{number}: completed replacement body changed outside this exact approved handback')
             if hashlib.sha256(body.encode()).hexdigest() != entry['expected_body_sha256'] and not (intended and body == target):
                 fail(f'#{number}: body changed outside this exact approved handback')
             if entry.get('existing_children'):
