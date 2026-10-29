@@ -2257,6 +2257,54 @@ def test_resume_after_a_published_fresh_base_merge_keeps_the_round(
     assert "round=3" not in comments
 
 
+def test_resume_after_an_amended_fresh_base_merge_restarts(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The merge carries a change of its own, so its tree is not the clean
+    # merge result and the round cannot be kept without reviewing it.
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e first-base.txt ] && [ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ]; '
+        "then exit 1; fi; printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_claude_hook_advancing_base_once(tmp_path),
+    )
+    env = {"REMOTE_PATH": str(consumer[1])}
+    first = _run(
+        consumer, ["--issues", "99"], issues=[_issue(99)], config=config,
+        extra_env=env, timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["phase"], state["round"], state["reviewEngine"]) == ("reviewing", 2, "codex")
+    worktree = Path(str(state["worktree"]))
+    (worktree / "unreviewed.txt").write_text("unreviewed\n", encoding="utf-8")
+    _run_git("add", "unreviewed.txt", cwd=worktree)
+    _run_git("commit", "--amend", "--no-edit", cwd=worktree)
+    assert len(_run_git("rev-list", "--parents", "-n", "1", "HEAD", cwd=worktree).stdout.split()) == 3
+    fail_marker.unlink()
+    _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=worktree)
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(99, assigned=True)],
+        config=config,
+        extra_env=env,
+        timeout=90,
+    )
+
+    output = resumed.stderr + resumed.stdout
+    assert "integrated a fresh base and stopped before Codex started" not in output
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=2" not in comments
+
+
 def test_base_advance_before_the_codex_hook_starts_keeps_the_round(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
