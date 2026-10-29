@@ -251,6 +251,8 @@ It touches only the chained issue and its children.
 
 What you type: `/horch ./push-notes.md` in a fresh session in the workspace you want orchestrated. The instruction file is yours and stays local: what this push covers, the order of work, PRs to hold back, and decisions you reserve. With no file, `horch` looks for its last handoff and otherwise asks you.
 
+`horch` first locates its invoking tab in Herdr's live inventory. It recovers stale inherited workspace or pane IDs using session identity or the matching conversation, then uses the resolved IDs for the run and the workspace label for handoff lookup. UI focus alone never selects the workspace. It asks you only when the live evidence cannot identify a unique tab; stale environment IDs alone do not require opening a new session.
+
 It inventories every tab and session in the workspace, checks your instruction file against GitHub, and then:
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
