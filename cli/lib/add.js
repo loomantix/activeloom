@@ -131,10 +131,31 @@ function assertNoPlaceholders(dir, label) {
  * @param {string[]} requested
  * @returns {{ids: string[], reason: string}}
  */
-function chooseHarnesses(facts, requested) {
-  return sharedChooseHarnesses(facts, requested, {
-    noEvidenceReason: 'no agent config found — defaulting to Claude Code',
-  });
+function chooseHarnesses(facts, requested, { interactive = false } = {}) {
+  return sharedChooseHarnesses(facts, requested, { allowEmpty: interactive });
+}
+
+/**
+ * Ask which harnesses to install for when detection found none.
+ *
+ * @param {{ids: string[], reason: string}} chosen
+ * @param {{ask: typeof ui.ask}} [prompts]
+ * @returns {Promise<{ids: string[], reason: string}>}
+ */
+async function askHarnesses(chosen, prompts = ui) {
+  if (chosen.ids.length > 0) return chosen;
+  const known = HARNESSES.map((h) => h.id);
+  const answer = await prompts.ask(
+    `No harness detected. Install for which? (${known.join(' / ')}) >`,
+  );
+  const ids = answer.split(/[\s,]+/).filter(Boolean);
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (ids.length === 0 || unknown.length > 0) {
+    throw new Error(
+      `no harness chosen. Pass --harness <${known.join('|')}> to choose one.`,
+    );
+  }
+  return { ids: [...new Set(ids)], reason: 'chosen interactively' };
 }
 
 /**
@@ -243,7 +264,10 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
  * @returns {Promise<number>} process exit code
  */
 async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
-  const chosen = chooseHarnesses(facts, harnesses);
+  const interactive = Boolean(process.stdin.isTTY);
+  const chosen = await askHarnesses(
+    chooseHarnesses(facts, harnesses, { interactive }),
+  );
 
   if (skills.length === 0) {
     ui.info(`Skills available for ${ui.bold(chosen.ids.join(', '))}:\n`);
