@@ -109,7 +109,7 @@ Each PR in the promotion was reviewed on its own. This pass looks for risk that 
 Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes on their slots at the same time (a dry run has no PR and runs no shell lanes). A recipe without a `risk_review` has no risk pass: record "risk review not configured", skip steps 1–5 below, and continue at step 6 once the other runnable lanes finish.
 
 1. Use the inspection worktree when the promotion head is still the head it was created at; otherwise create a new detached one at the promotion head under the user's `worktree_root`.
-2. Start the risk engine in the risk review's slot, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Trust the folder; the driver created it.
+2. Start the risk engine in the risk review's slot, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Answer its folder-trust prompt by herdr.md's folder-trust rule; this worktree meets it while it is clean and still at the pinned head.
 3. Prompt it with the following, filled in. In a dry run without a PR, replace `PR #<n>` with `dry run` and use the pinned integration head and production base:
 
    ```text

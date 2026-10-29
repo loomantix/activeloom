@@ -472,7 +472,7 @@ Each engine launches with its model and effort from your review profile and its 
 
 **A pane never starts (`agent_pane_busy`).** A new tab's shell takes a few seconds to draw its prompt. The skills retry five times; if your shell prompt is slow (heavy rc files), open the tab, let it settle, and rerun.
 
-**Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts only the primary checkout and worktrees it created, and dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
+**Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts the primary checkout, a same-repository pull request's worktree under `worktree_root` that is clean and at the PR's exact head, and a clean promotion worktree it created at a pinned commit. It blocks and asks you about anything else, including every fork head, because trusting a folder turns on that folder's checked-in engine settings. It dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
 
 **The Codex pane exits immediately.** Almost always a flag passed twice: a shell alias plus `permission_off_args`, or the same flag in both lists. The permissions preflight reports the alias; `type codex` shows it too. Remove the flag from the alias and keep it in `herd.json`.
 

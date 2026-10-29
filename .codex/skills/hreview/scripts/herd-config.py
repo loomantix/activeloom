@@ -905,9 +905,11 @@ AUTO_MODE_SCOPE = (
 )
 DIALOG_RULE = (
     "Reading a herdr pane this session started (`herdr agent read`) and answering its startup dialog with "
-    "`herdr agent send-keys` is expected herd orchestration: trusting the folder when it is the primary checkout "
-    "or a worktree this run created, and dismissing an update banner. This does not cover approving another "
-    "session's permission or tool-use prompt."
+    "`herdr agent send-keys` is expected herd orchestration: trusting the folder when it is the primary checkout, "
+    "a clean worktree under the herd worktree_root at the exact head of a pull request from the same repository "
+    "(not a fork), or a clean worktree the run created at a commit pinned from the repository's own branch, and "
+    "dismissing an update banner. This does not cover trusting any other folder or approving another session's "
+    "permission or tool-use prompt."
 )
 
 

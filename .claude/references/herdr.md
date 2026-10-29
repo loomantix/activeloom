@@ -108,7 +108,13 @@ For a Claude pane, also set the pane environment when splitting it: `--env ANTHR
 1. The pane must be at its shell prompt. A new tab's shell takes a few seconds to draw it, and `agent start` returns `agent_pane_busy` until then: retry up to 5 times, a few seconds apart. Before reusing a pane, end any earlier session in it and confirm with `herdr pane process-info --pane <id>` that the shell is in the foreground.
 2. `herdr agent start <name> --kind <kind> --pane <id> --timeout 120000 -- <model and effort args> <user args>`. Names are unique per workspace; the skills give the pattern.
 3. `agent_not_ready` means a startup dialog is up. Read it (`herdr agent read <name> --source visible --lines 60`) and answer:
-   - **Folder trust:** trust only the primary checkout or a worktree this run created.
+   - **Folder trust:** trusting a folder turns on its checked-in engine settings (`.claude/settings.json` and the like) in a session that holds your `gh` credentials. Answer it yourself, without asking, only when one of these holds:
+     - The folder is the repository's primary checkout.
+     - The folder is a pull request's worktree under the user's `worktree_root`, the PR comes from this repository (`gh pr view <n> --json isCrossRepository,headRefOid` reports `isCrossRepository` `false`), and the worktree is clean (`git status --porcelain` prints nothing) with `git rev-parse HEAD` equal to `headRefOid`.
+     - The folder is a worktree this run created under `worktree_root`, clean and detached at a commit it pinned from one of the repository's own branches on `origin` (a promotion's inspection worktree).
+
+     Anything else is a block: a fork head, a dirty worktree, a head that differs from the PR's, a path outside `worktree_root`, or a check you could not run. Leave the prompt unanswered, mark the tab `⚠`, tell the user which check failed, and wait for their answer. Never trust such a folder on your own.
+
    - **Update banner or prompt:** dismiss it (`herdr agent send-keys <name> esc`). Never run an update from a chain.
    - **Anything else:** if the skill's contract does not decide it, it is a block.
 
