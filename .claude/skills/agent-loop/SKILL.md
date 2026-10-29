@@ -497,6 +497,13 @@ base advanced since the checkpoint, the integrated head is no longer the head
 Codex reviewed, so the run restarts at Codex in the next round, or replays the
 final round from Codex when it is already at the cap.
 
+A round whose first review hook never started does not consume a round. If the
+base advances after a round's fresh-base merge is checkpointed but before Codex
+starts, the wrapper integrates it and reviews in the same round. A resumed run
+whose head moved past a Codex checkpoint only by that round's clean fresh-base
+merge, with no pass files for the round, resumes that round rather than the
+next.
+
 ### Parking a failed batch issue
 
 With `batch_on_issue_failure = park`, an ordered batch does not halt on an
