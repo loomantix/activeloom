@@ -103,13 +103,13 @@ with the issue worktree as the current directory.
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                          |
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                        |
 | `config_doctor`                                  | Run the compatibility preflight after settings are pinned and before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                           |
-| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                            |
+| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; remove the key from the config.                                                                                                                            |
 | `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                      |
 | `review_timeout_seconds`                         | Positive active-execution budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
 | `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves.                                                               |
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                      |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                      |
-| `worker_model`, `worker_fallback_model`          | Retired. The default worker's model and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                                              |
+| `worker_model`, `worker_fallback_model`          | Retired. The default worker's model and fallback come from the review profile; the doctor refuses a non-empty value, so remove the keys from the config.                                                              |
 | `worker_effort`                                  | Retired, like `worker_model`. The default worker's effort comes from the review profile.                                                                                                                           |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                        |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                            |
@@ -332,11 +332,9 @@ effort flag (`--model`, `--effort`, `-m`, `-c model=`,
 `-c model_reasoning_effort=`) names a literal that differs from the run's
 pinned settings, and warns when the literal matches. Flag-like text inside a
 quoted argument, such as the prompt, is not a flag. Run it standalone to check
-against the resolved review profile. `config-doctor.py --project-dir <repo>
---migrate` rewrites those literals in `claude_review_hook` and
-`codex_review_hook` to the variables above, turning a model flag into the
-`inherit`-safe form shown earlier, and removes the retired keys; every other
-line is kept, and a second run changes nothing.
+against the resolved review profile. The doctor never edits the config: edit
+the hooks to read the variables above, using the `inherit`-safe form shown
+earlier for a model flag, and delete the retired keys by hand.
 
 The default worker always runs on the pinned Claude worker settings. When
 `worker_hook` is set the wrapper runs that hook verbatim, and the hook reads
