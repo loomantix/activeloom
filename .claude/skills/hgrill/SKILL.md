@@ -77,6 +77,7 @@ Split one row below the driver's pane with one pane per engine, titled by engine
    - Interviewee: <persona>. Do not save an interviewee profile.
    - Earlier passes in this chain: <decision comment URLs, or "none">. Treat them as proposals to stress-test, not settled decisions. A newer decision does not settle the agenda; reopen any call you disagree with and put it in a round.
    - Children an earlier pass created: <issue numbers, or "none">. If you change a decision they carry, your handback updates their bodies too, so no child keeps a superseded spec.
+   - Existing excluded children use refinement's explicit existing_children/handback_parent plan, not a ready verdict or duplicate split. Keep the original split plan/private child recovery and pass --existing-child-plan. Preview current body hashes and full replacements; confirm this handback even in auto mode. Missing proof, a pending parent interview, assignment or drift blocks this pass without altering its lock or starting another engine.
    - End every message that waits for an answer with exactly one final line:
      HGRILL-WAIT: round <r>   (a question round)
      HGRILL-WAIT: summary     (the summary, awaiting confirmation)

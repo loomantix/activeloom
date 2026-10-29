@@ -144,6 +144,66 @@ The applier creates and links each child as a GitHub sub-issue, then applies its
 
 Done when every approved decision has a posted record and each plan entry has an applied result, or the user has a concrete partial-failure report. Do not hide a failed child creation behind a completed parent.
 
+### Existing children in a later pass
+
+Use a dedicated plan containing only coordination parents and owned children
+being updated. It does not create, adopt, close or ready a child. Example schema:
+
+```json
+{
+  "issues": [
+    {
+      "number": 101,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: epic"],
+      "remove_labels": [],
+      "comment": "Backlog refinement: settled coordination; child 102 remains excluded.",
+      "body": null,
+      "close_reason": null,
+      "decision_comment": "Confirmed contract; evidence remains owed by child 102.\n\n<!-- grill-decision kind: product-grill; outcome: settled; next: refine -->",
+      "existing_children": [102],
+      "expected_body_sha256": "<sha256 of current parent body>"
+    },
+    {
+      "number": 102,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: credential-gate"],
+      "remove_labels": [],
+      "comment": "Backlog refinement: revised evidence specification, still excluded.",
+      "body": "<complete approved replacement, retaining the exact child marker>",
+      "close_reason": null,
+      "handback_parent": 101,
+      "expected_body_sha256": "<sha256 of current child body>"
+    }
+  ]
+}
+```
+
+Keep the original split plan, its completed `<plan>.applied.json` and private
+`<plan>.children.json`. Pass its
+path with `--existing-child-plan <original-plan>` (repeat for separate splits).
+These artifacts are read without repair. The original plan digest, recorded
+child number/nonce, original completion and native parent link must match; a copied public marker
+is insufficient. Missing private proof is a block, never permission to fabricate
+a receipt or duplicate a child.
+
+Preview the exact new plan. This path always requires `--confirm-summary` and
+`--confirm-handback`, even with `grill-handback: auto`. Before any write, every
+participant must be OPEN, unassigned, still carry its proposed bail and have no
+pending interview or readiness label. Verify the parent's exact posted current
+settled/refine decision. Body hashes cover exact UTF-8 text; preserve all child
+markers in the replacement. Priority, assignment, exclusion and issue state stay
+unchanged. Unresolved parent questions require their genuine next interview.
+
+Children apply before parents. Private `<new-plan>.existing-handback.json` binds
+repository, exact plan, ownership proofs, rewrite mode, publication intent and
+completion. Re-read the whole scope before each mutation. Edit mode reconciles
+only an exact intended replacement after uncertain publication; suggest mode
+posts a reviewed-body suggestion without readiness claims. Readbacks precede
+completion. Retry the identical plan/path; changed plans or proofs need a new
+preview/progress identity. Report partial writes: GitHub operations are sequential,
+not an atomic transaction.
+
 ## Mode: `rca [run-window]` — close the learning loop
 
 Run after a `/agent-loop` run.

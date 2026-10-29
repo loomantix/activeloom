@@ -142,6 +142,15 @@ When engineering finds that an assumption does not hold, preserve the original p
 
 After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. When the product decisions are settled but unresolved Technical review questions remain, use `settled; next: grill`; engineering findings that invalidate a product assumption return only the affected product choices to `next: product-grill`. Use `provisional; next: product-grill` only while this product interview itself still needs evidence or input.
 
+For a later pass on a decomposed coordination parent, distinguish questions the
+parent still owes from work owned by its children. A genuinely settled parent
+can use `settled; next: refine` and retain its epic exclusion through refinement's
+explicit existing-child handback. Its excluded children can receive approved
+specification updates without becoming ready. Use original private split proof,
+matching native links and exact body hashes; always confirm the full existing-child
+preview, including in auto mode. Missing evidence, interviews or proof remain
+blocks, never invented readiness or a duplicate split.
+
 Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
 
 ```text
