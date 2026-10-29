@@ -78,6 +78,49 @@ def test_invalid_scope_does_not_consume_and_expired_intent_only_reconciles(
     assert helper.transition_transaction(SCOPE, record["id"], lambda *_: "existing") == "existing"
 
 
+def test_human_can_renew_expired_unused_transition(
+    helpers: tuple[ModuleType, ModuleType], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, helper = helpers
+    first = approve(helper)
+    later = helper._now() + timedelta(hours=5)
+    monkeypatch.setattr(helper, "_now", lambda: later)
+    renewed = approve(helper)
+    assert renewed["id"] != first["id"]
+    assert renewed["binding"]["created"] == helper._iso(later)
+    assert renewed["intent"] is None and renewed["used"] is None
+    with pytest.raises(helper.ApprovalError, match="ID"):
+        helper.transition_transaction(SCOPE, first["id"], lambda *_: None)
+    helper.transition_transaction(SCOPE, renewed["id"], lambda binding, reserve: reserve("c" * 64))
+    assert json.loads(Path(renewed["path"]).read_text())["used"]
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+def test_renewal_preserves_expired_pending_or_consumed_transition(
+    helpers: tuple[ModuleType, ModuleType], monkeypatch: pytest.MonkeyPatch, consumed: bool,
+) -> None:
+    _, helper = helpers
+    first = approve(helper)
+
+    def publish(binding: dict[str, Any], reserve: Any) -> None:
+        reserve("c" * 64)
+        if not consumed:
+            raise OSError("synthetic uncertain publication")
+
+    if consumed:
+        helper.transition_transaction(SCOPE, first["id"], publish)
+    else:
+        with pytest.raises(OSError):
+            helper.transition_transaction(SCOPE, first["id"], publish)
+    before = Path(first["path"]).read_bytes()
+    later = helper._now() + timedelta(hours=5)
+    monkeypatch.setattr(helper, "_now", lambda: later)
+    with pytest.raises(helper.ApprovalError, match="already exists"):
+        approve(helper)
+    assert Path(first["path"]).read_bytes() == before
+    assert helper.transition_transaction(SCOPE, first["id"], lambda *_: "existing") == "existing"
+
+
 @pytest.mark.parametrize("state", ["foreign-active", "foreign-ended", "foreign-transition"])
 def test_start_cannot_hide_foreign_history(helpers: tuple[ModuleType, ModuleType], monkeypatch: pytest.MonkeyPatch, state: str) -> None:
     controller, _ = helpers

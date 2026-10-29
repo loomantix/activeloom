@@ -1465,45 +1465,61 @@ def approve_transition(repo: str, pr: int, head: str, run_id: str, run_comment_i
                    run_id=run_id, run_comment_id=run_comment_id, from_actor=from_actor,
                    to_actor=to_actor, created=_iso(now), expires=_iso(now + timedelta(hours=ttl_hours)))
     with _approval_lock(target):
-        if target.exists():
-            raise ApprovalError("transition approval already exists; reconcile it instead of replacing it")
+        if target.exists() or target.is_symlink():
+            scope = {key: binding[key] for key in ("repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor")}
+            previous = _load_transition(target, scope, allow_expired=True)
+            if (previous["intent"] is not None or previous["used"] is not None or
+                _parse_moment(target, previous["binding"]["expires"]) > now):
+                raise ApprovalError("transition approval already exists; reconcile it instead of replacing it")
         record = dict(version=1, id=identifier, binding=binding, intent=None, used=None)
         _write_approval(target, record)
     return {"path": str(target), **record}
+
+
+def _load_transition(target: Path, scope: dict[str, Any], approval_id: str | None = None,
+                     *, allow_expired: bool = False) -> dict[str, Any]:
+    """Validate a saved approval before consumption or human-authorized renewal."""
+    try:
+        info = target.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ApprovalError("unsafe transition approval")
+        record = json.loads(target.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalError("transition approval unavailable") from exc
+    if (not isinstance(record, dict) or set(record) != {"version", "id", "binding", "intent", "used"} or
+        record.get("version") != 1 or not isinstance(record.get("id"), str) or
+        not APPROVAL_ID_RE.fullmatch(record["id"]) or
+        (approval_id is not None and record["id"] != approval_id)):
+        raise ApprovalError("transition approval ID or schema mismatch")
+    binding = record.get("binding")
+    binding_keys = {"version", "approval_id", "repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor", "created", "expires"}
+    if (not isinstance(binding, dict) or set(binding) != binding_keys or binding.get("version") != 1 or
+        any(binding.get(key) != value for key, value in scope.items()) or binding.get("approval_id") != record["id"]):
+        raise ApprovalError("transition approval scope mismatch")
+    if record.get("used") is not None:
+        _parse_moment(target, record["used"])
+        if record.get("intent") is None:
+            raise ApprovalError("consumed transition has no publication intent")
+    created = _parse_moment(target, binding.get("created"))
+    expires = _parse_moment(target, binding.get("expires"))
+    if created > _now() or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+        raise ApprovalError("invalid transition approval lifetime")
+    if expires <= _now() and not record.get("intent") and not allow_expired:
+        raise ApprovalError("transition approval expired")
+    intent = record.get("intent")
+    if intent is not None and (not isinstance(intent, str) or not re.fullmatch(r"[0-9a-f]{64}", intent)):
+        raise ApprovalError("malformed transition intent")
+    return record
 
 
 def transition_transaction(scope: dict[str, Any], approval_id: str, operation: Any) -> Any:
     """Reserve once before publication; uncertain or consumed attempts only reconcile."""
     target = _transition_target(scope["repo"], scope["pr"], scope["head"], scope["run_comment_id"])
     with _approval_lock(target):
-        try:
-            info = target.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-                raise ApprovalError("unsafe transition approval")
-            record = json.loads(target.read_text())
-        except (OSError, ValueError) as exc:
-            raise ApprovalError("transition approval unavailable") from exc
-        if (not isinstance(record, dict) or set(record) != {"version", "id", "binding", "intent", "used"} or
-            record.get("version") != 1 or record.get("id") != approval_id or not APPROVAL_ID_RE.fullmatch(approval_id)):
-            raise ApprovalError("transition approval ID or schema mismatch")
-        binding = record.get("binding")
-        binding_keys = {"version", "approval_id", "repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor", "created", "expires"}
-        if (not isinstance(binding, dict) or set(binding) != binding_keys or binding.get("version") != 1 or
-            any(binding.get(key) != value for key, value in scope.items()) or binding.get("approval_id") != approval_id):
-            raise ApprovalError("transition approval scope mismatch")
-        if record.get("used") is not None:
-            _parse_moment(target, record["used"])
-            if record.get("intent") is None:
-                raise ApprovalError("consumed transition has no publication intent")
-        created = _parse_moment(target, binding.get("created"))
-        expires = _parse_moment(target, binding.get("expires"))
-        if created > _now() or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
-            raise ApprovalError("invalid transition approval lifetime")
-        if expires <= _now() and not record.get("intent"):
-            raise ApprovalError("transition approval expired")
-        intent = record.get("intent")
-        if intent is not None and (not isinstance(intent, str) or not re.fullmatch(r"[0-9a-f]{64}", intent)):
-            raise ApprovalError("malformed transition intent")
+        record = _load_transition(target, scope, approval_id)
+        binding = record["binding"]
+        expires = _parse_moment(target, binding["expires"])
+        intent = record["intent"]
 
         def reserve(identifier: str) -> None:
             if record.get("used") or expires <= _now():
