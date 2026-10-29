@@ -182,6 +182,11 @@ whose head moved past a Gemini checkpoint only by that round's clean fresh-base
 merge, with no pass files for the round, resumes that round rather than the
 next.
 
+GitHub moves a PR's head shortly after a push, not with it. After publishing a
+fresh-base merge, the wrapper reads the PR head up to five times, two seconds
+apart, before it stops as `uncertain-mutation`. Any other change to the PR stops
+it at once.
+
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
 push or call ordinary `gh`; review hooks run only after draft PR creation and

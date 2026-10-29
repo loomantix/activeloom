@@ -212,6 +212,8 @@ REVIEW_PASS_MIN_SECONDS=1
 REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
+PR_HEAD_SYNC_ATTEMPTS=5
+PR_HEAD_SYNC_DELAY_SECONDS=2
 DEPENDENCY_GATE=ready
 BRANCH_PREFIX=agent-loop
 WORKTREE_ROOT="${TMPDIR:-/tmp}/agent-loop-worktrees"
@@ -2443,10 +2445,17 @@ attest_pr_state() {
     IFS=$'\t' read -r state draft head_branch head_sha base_branch base_sha <<< "$row"
     if [ "$state" != OPEN ] || [ "$draft" != "$expected_draft" ] || \
        [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
-       [ "$base_branch" != "$BASE_BRANCH" ] || \
-       { [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; }; then
+       [ "$base_branch" != "$BASE_BRANCH" ]; then
         echo "PR identity, state, head, or base branch changed $phase" >&2
         return 1
+    fi
+    if [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; then
+        if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
+            echo "PR identity, state, head, or base branch changed $phase" >&2
+            return 1
+        fi
+        echo "PR head is $head_sha, not $expected_sha, $phase" >&2
+        return 3
     fi
     if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
         echo "PR base advanced or diverged $phase" >&2
@@ -2479,12 +2488,23 @@ attest_review_head() {
 }
 
 push_review_head() {
-    local phase="$1" expected_base="$2" sha
+    local phase="$1" expected_base="$2" sha attempt=1 status output
     require_issue_branch_head || return 1
     sha="$(git rev-parse HEAD)" || return 1
     git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
-    attest_pr_head "$sha" "$expected_base" "$phase"
+    # GitHub moves a PR's head shortly after a push, not with it, so a head
+    # that has not caught up yet is read again before the push counts as lost.
+    while :; do
+        status=0
+        output="$(attest_pr_head "$sha" "$expected_base" "$phase" 2>&1)" || status=$?
+        if [ "$status" -ne 3 ] || [ "$attempt" -ge "$PR_HEAD_SYNC_ATTEMPTS" ]; then
+            [ -z "$output" ] || printf '%s\n' "$output" >&2
+            return "$status"
+        fi
+        attempt=$((attempt + 1))
+        sleep "$PR_HEAD_SYNC_DELAY_SECONDS"
+    done
 }
 
 fetch_local_review_threads() {

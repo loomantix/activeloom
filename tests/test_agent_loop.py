@@ -245,6 +245,24 @@ def advance_base_at_merged_checkpoint():
         subprocess.run(['/usr/bin/git', '-C', str(clone), 'commit', '-m', 'chore: advance base'], check=True, capture_output=True)
         subprocess.run(['/usr/bin/git', '-C', str(clone), 'push', 'origin', 'main'], check=True, capture_output=True)
         return
+def lagging_pr_head(remote_head):
+    # GitHub moves a PR's head shortly after a push: report a pushed merge's
+    # first parent for the first few reads.
+    lag = int(os.environ.get('AGENT_PR_HEAD_LAG_READS', '0'))
+    if not lag:
+        return remote_head
+    parents = subprocess.run(
+        ['git', 'rev-list', '--parents', '-n', '1', remote_head],
+        capture_output=True, text=True,
+    ).stdout.split()
+    if len(parents) != 3:
+        return remote_head
+    reads_file = state / 'pr-head-lag-reads'
+    reads = int(reads_file.read_text()) if reads_file.exists() else 0
+    if reads >= lag:
+        return remote_head
+    reads_file.write_text(str(reads + 1))
+    return parents[1]
 if args[:2] == ['api', 'user']:
     actor_file = state / 'gh-actor'
     actor = actor_file.read_text().strip() if actor_file.exists() else 'tester'
@@ -336,9 +354,14 @@ elif args[:2] == ['pr', 'view']:
                 'false' if (state / 'pr-ready').exists() else 'true',
             ),
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
-            os.environ.get('AGENT_PR_HEAD_OID', remote_head),
+            os.environ.get('AGENT_PR_HEAD_OID', lagging_pr_head(remote_head)),
             os.environ.get('AGENT_PR_BASE_REF_NAME', base_name),
-            os.environ.get('AGENT_PR_BASE_OID', base_head),
+            (
+                os.environ['AGENT_PR_BASE_OID_WHEN_HEAD_LAGS']
+                if (state / 'pr-head-lag-reads').exists()
+                and 'AGENT_PR_BASE_OID_WHEN_HEAD_LAGS' in os.environ
+                else os.environ.get('AGENT_PR_BASE_OID', base_head)
+            ),
         ]))
     elif 'headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
@@ -2331,6 +2354,121 @@ def test_base_advance_before_the_codex_hook_starts_keeps_the_round(
     comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
     assert "local-review-pass:v3 engine=claude round=2" in comments
     assert "round=3" not in comments
+
+
+def test_fresh_base_push_waits_for_the_pr_head_to_catch_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "101"],
+        issues=[_issue(101)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1]), "AGENT_PR_HEAD_LAG_READS": "2"},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "2"
+    assert "PR head is" not in result.stderr
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_fresh_base_push_stops_when_the_pr_head_never_catches_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "102"],
+        issues=[_issue(102)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1]), "AGENT_PR_HEAD_LAG_READS": "99"},
+        timeout=90,
+    )
+
+    assert result.returncode != 0
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "5"
+    assert result.stderr.count("PR head is") == 1
+    assert "Could not publish fresh-base integration before review round 2" in result.stdout + result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_fresh_base_push_stops_immediately_when_base_advances_during_head_lag(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "103"],
+        issues=[_issue(103)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={
+            "REMOTE_PATH": str(consumer[1]),
+            "AGENT_PR_HEAD_LAG_READS": "99",
+            "AGENT_PR_BASE_OID_WHEN_HEAD_LAGS": "0" * 40,
+        },
+        timeout=90,
+    )
+
+    assert result.returncode != 0
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "1"
+    assert "PR identity, state, head, or base branch changed" in result.stderr
+    assert "PR head is" not in result.stderr
+
+
+def test_resume_stops_when_the_pr_head_and_base_both_moved(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A base advance must not carry a resume past a PR head that no longer
+    # matches the worktree.
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e first-base.txt ] && [ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ]; '
+        "then exit 1; fi; printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_claude_hook_advancing_base_once(tmp_path),
+    )
+    env = {"REMOTE_PATH": str(consumer[1])}
+    first = _run(
+        consumer, ["--issues", "104"], issues=[_issue(104)], config=config,
+        extra_env=env, timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    branch_ref = "refs/heads/" + json.loads(state_file.read_text(encoding="utf-8"))["branch"]
+    fail_marker.unlink()
+    updater = tmp_path / "advance-base-second.sh"
+    _advance_base_script(updater, "second-base")
+    subprocess.run(
+        [str(updater)],
+        check=True,
+        env={**os.environ, "AGENT_STATE_DIR": str(consumer[3]), **env},
+    )
+    published = _run_git("ls-remote", str(consumer[1]), branch_ref).stdout
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(104, assigned=True)],
+        config=config,
+        extra_env={**env, "AGENT_PR_HEAD_OID": "0" * 40},
+        timeout=90,
+    )
+
+    output = resumed.stderr + resumed.stdout
+    assert resumed.returncode != 0
+    assert "Draft PR state does not match the recovery checkpoint." in output
+    assert "Base advanced since the checkpoint" not in output
+    assert _run_git("ls-remote", str(consumer[1]), branch_ref).stdout == published
 
 
 _STRANDING_CLAUDE_HOOK = (
