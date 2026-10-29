@@ -2417,8 +2417,58 @@ def test_fresh_base_push_stops_immediately_when_base_advances_during_head_lag(
 
     assert result.returncode != 0
     assert (consumer[3] / "pr-head-lag-reads").read_text() == "1"
-    assert "PR base advanced or diverged" in result.stderr
+    assert "PR identity, state, head, or base branch changed" in result.stderr
     assert "PR head is" not in result.stderr
+
+
+def test_resume_stops_when_the_pr_head_and_base_both_moved(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A base advance must not carry a resume past a PR head that no longer
+    # matches the worktree.
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e first-base.txt ] && [ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ]; '
+        "then exit 1; fi; printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_claude_hook_advancing_base_once(tmp_path),
+    )
+    env = {"REMOTE_PATH": str(consumer[1])}
+    first = _run(
+        consumer, ["--issues", "104"], issues=[_issue(104)], config=config,
+        extra_env=env, timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    branch_ref = "refs/heads/" + json.loads(state_file.read_text(encoding="utf-8"))["branch"]
+    fail_marker.unlink()
+    updater = tmp_path / "advance-base-second.sh"
+    _advance_base_script(updater, "second-base")
+    subprocess.run(
+        [str(updater)],
+        check=True,
+        env={**os.environ, "AGENT_STATE_DIR": str(consumer[3]), **env},
+    )
+    published = _run_git("ls-remote", str(consumer[1]), branch_ref).stdout
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(104, assigned=True)],
+        config=config,
+        extra_env={**env, "AGENT_PR_HEAD_OID": "0" * 40},
+        timeout=90,
+    )
+
+    output = resumed.stderr + resumed.stdout
+    assert resumed.returncode != 0
+    assert "Draft PR state does not match the recovery checkpoint." in output
+    assert "Base advanced since the checkpoint" not in output
+    assert _run_git("ls-remote", str(consumer[1]), branch_ref).stdout == published
 
 
 _STRANDING_CLAUDE_HOOK = (

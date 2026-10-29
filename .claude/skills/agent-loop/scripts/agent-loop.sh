@@ -2980,13 +2980,17 @@ attest_pr_state() {
         echo "PR identity, state, head, or base branch changed $phase" >&2
         return 1
     fi
+    if [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; then
+        if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
+            echo "PR identity, state, head, or base branch changed $phase" >&2
+            return 1
+        fi
+        echo "PR head is $head_sha, not $expected_sha, $phase" >&2
+        return 3
+    fi
     if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
         echo "PR base advanced or diverged $phase" >&2
         return 2
-    fi
-    if [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; then
-        echo "PR head is $head_sha, not $expected_sha, $phase" >&2
-        return 3
     fi
 }
 
