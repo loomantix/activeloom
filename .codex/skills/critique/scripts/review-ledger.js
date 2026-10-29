@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.13.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.13.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16437,13 +16437,13 @@ function verifyBlockingNotDeferred(repo, matched) {
   for (const records of grouped.values()) {
     records.sort((a, b) => a[0] - b[0]);
     const [, finding, disposition] = records[records.length - 1];
-    if (finding.severity === "blocking" && disposition.outcome !== "fixed") {
-      fail("blocking local-review findings must be fixed");
+    if (finding.severity === "blocking" && disposition.outcome === "deferred") {
+      fail("blocking local-review findings cannot be deferred");
     }
     const priorUnfixedBlockers = [];
     for (let index = 0; index < records.length - 1; index++) {
       const [, priorFinding, priorDisposition] = records[index];
-      if (priorFinding.severity === "blocking" && priorDisposition.outcome !== "fixed") {
+      if (priorFinding.severity === "blocking" && priorDisposition.outcome === "deferred") {
         priorUnfixedBlockers.push(index);
       }
     }
@@ -17094,8 +17094,8 @@ function dispose(params) {
     );
   }
   const finding = matches[0];
-  if (finding.severity === "blocking" && params.outcome !== "fixed") {
-    fail("blocking local-review findings must be fixed");
+  if (finding.severity === "blocking" && params.outcome === "deferred") {
+    fail("blocking local-review findings cannot be deferred");
   }
   const dispMatches = comments.filter((row) => {
     const match = matchDisposition(String(row.body ?? ""));

@@ -505,50 +505,71 @@ describe('ledger operations and workflow verification', () => {
     expect(mock.reviewComments).toHaveLength(0);
   });
 
-  it('disposes a finding and marks thread resolved', () => {
-    const threadId = 'PRRT_kwDO123';
-    const commentId = 100;
-    mock.threads = [
-      {
-        id: threadId,
-        isResolved: false,
-        repository: { nameWithOwner: 'loomantix/platform-oss' },
-        pullRequest: { number: 10 },
-        comments: {
-          nodes: [
-            {
-              id: commentId,
-              databaseId: commentId,
-              author: { login: mock.actor },
-              body: '<!-- local-review:v3 engine=gemini round=1 head=1111111111111111111111111111111111111111 fingerprint=fp-1 occurrence=1 severity=minor lens=code-reviewer content-sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae -->\nfoo',
-            },
-          ],
-          pageInfo: { hasNextPage: false },
+  it.each([
+    { severity: 'minor', outcome: 'fixed' as const },
+    { severity: 'blocking', outcome: 'dismissed' as const },
+    { severity: 'blocking', outcome: 'deferred' as const },
+  ])(
+    'disposes a $severity finding as $outcome and resolves its thread',
+    ({ severity, outcome }) => {
+      const threadId = 'PRRT_kwDO123';
+      const commentId = 100;
+      mock.threads = [
+        {
+          id: threadId,
+          isResolved: false,
+          repository: { nameWithOwner: 'loomantix/platform-oss' },
+          pullRequest: { number: 10 },
+          comments: {
+            nodes: [
+              {
+                id: commentId,
+                databaseId: commentId,
+                author: { login: mock.actor },
+                body: `<!-- local-review:v3 engine=gemini round=1 head=1111111111111111111111111111111111111111 fingerprint=fp-1 occurrence=1 severity=${severity} lens=code-reviewer content-sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae -->\nfoo`,
+              },
+            ],
+            pageInfo: { hasNextPage: false },
+          },
         },
-      },
-    ];
-    mock.reviewComments = [...mock.threads[0]!.comments.nodes] as Array<
-      Record<string, unknown>
-    >;
+      ];
+      mock.reviewComments = [...mock.threads[0]!.comments.nodes] as Array<
+        Record<string, unknown>
+      >;
 
-    const res = dispose({
-      repo: 'loomantix/platform-oss',
-      pr: 10,
-      head: headSha,
-      engine: 'gemini',
-      round: 1,
-      fingerprint: 'fp-1',
-      occurrence: 1,
-      outcome: 'fixed',
-      commentId,
-      threadId,
-      content: 'Fixed by adding null check.',
-    });
+      const run = () =>
+        dispose({
+          repo: 'loomantix/platform-oss',
+          pr: 10,
+          head: headSha,
+          engine: 'gemini',
+          round: 1,
+          fingerprint: 'fp-1',
+          occurrence: 1,
+          outcome,
+          commentId,
+          threadId,
+          content:
+            outcome === 'fixed'
+              ? 'Fixed by adding null check.'
+              : 'The existing caller rejects null before reaching this function.',
+        });
 
-    expect(res.verified).toBe(true);
-    expect(res.resolved).toBe(true);
-    expect(mock.threads[0]!.isResolved).toBe(true);
-  });
+      if (outcome === 'deferred') {
+        expect(run).toThrowError(
+          /blocking local-review findings cannot be deferred/,
+        );
+        expect(mock.threads[0]!.isResolved).toBe(false);
+        expect(mock.reviewComments).toHaveLength(1);
+        return;
+      }
+
+      const res = run();
+      expect(res.verified).toBe(true);
+      expect(res.resolved).toBe(true);
+      expect(mock.threads[0]!.isResolved).toBe(true);
+    },
+  );
 
   const reconcileFindingComment = (
     commentId: number,

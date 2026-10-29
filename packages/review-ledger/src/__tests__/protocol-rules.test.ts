@@ -14,6 +14,7 @@ import {
   sameRoundDispositions,
   threadProtocolRecords,
   verifyLedger,
+  verifyBlockingNotDeferred,
   verifyThreadDispositions,
 } from '../index.js';
 import {
@@ -474,6 +475,36 @@ describe('finding and disposition pairing', () => {
     expect(evidence).toEqual([['fp1', true, false, true]]);
   });
 
+  it('does not treat a dismissed blocker as same-round fix evidence', () => {
+    expect(() =>
+      sameRoundDispositions(
+        { engine: 'claude', round: 1, repo: 'loomantix/platform-oss' },
+        [[finding('fp1', 1, 'blocking'), disposition('fp1', 1, 'dismissed')]],
+        { [HEAD]: 0 },
+      ),
+    ).toThrowError(/blocking local-review findings must be fixed/);
+  });
+
+  it('does not carry a dismissed blocker into a later occurrence', () => {
+    expect(() =>
+      verifyBlockingNotDeferred(undefined, [
+        [finding('fp1', 1, 'blocking'), disposition('fp1', 1, 'dismissed')],
+        [finding('fp1', 2, 'minor'), disposition('fp1', 2, 'deferred')],
+      ]),
+    ).not.toThrow();
+  });
+
+  it('still requires a fix to clear a historical blocking deferral', () => {
+    expect(() =>
+      verifyBlockingNotDeferred(undefined, [
+        [finding('fp1', 1, 'blocking'), disposition('fp1', 1, 'deferred')],
+        [finding('fp1', 2, 'blocking'), disposition('fp1', 2, 'dismissed')],
+      ]),
+    ).toThrowError(
+      /an unfixed blocker must be cleared by a later fixed occurrence/,
+    );
+  });
+
   it('validates but excludes findings from before the observed transition', () => {
     const priorHead = 'c'.repeat(40);
     const historicalFinding = { ...finding('fp1'), head: priorHead };
@@ -552,10 +583,10 @@ describe('complete thread verification', () => {
     ]);
     expect(() =>
       verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+    ).toThrowError(/blocking local-review findings cannot be deferred/);
   });
 
-  it('rejects a blocking finding that was dismissed', () => {
+  it('accepts a blocking finding dismissed with evidence', () => {
     const fc = 'the finding\n';
     const dc = 'not a defect after all\n';
     const node = thread([
@@ -570,7 +601,7 @@ describe('complete thread verification', () => {
     ]);
     expect(() =>
       verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+    ).not.toThrow();
   });
 
   it('rejects one fingerprint split across two threads', () => {

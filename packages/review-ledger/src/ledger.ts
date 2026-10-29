@@ -385,7 +385,7 @@ export function verifyHistoricalThreads(repo: string, pr: number): void {
 }
 
 /**
- * Require the latest blocking occurrence to be fixed.
+ * Require the latest blocking occurrence to be fixed or dismissed.
  *
  * A fingerprint's occurrences are a sequential history of one root cause, so
  * the highest occurrence is its current state. When a later occurrence clears
@@ -409,8 +409,8 @@ export function verifyBlockingNotDeferred(
   for (const records of grouped.values()) {
     records.sort((a, b) => a[0] - b[0]);
     const [, finding, disposition] = records[records.length - 1]!;
-    if (finding.severity === 'blocking' && disposition.outcome !== 'fixed') {
-      fail('blocking local-review findings must be fixed');
+    if (finding.severity === 'blocking' && disposition.outcome === 'deferred') {
+      fail('blocking local-review findings cannot be deferred');
     }
 
     const priorUnfixedBlockers: number[] = [];
@@ -418,7 +418,7 @@ export function verifyBlockingNotDeferred(
       const [, priorFinding, priorDisposition] = records[index]!;
       if (
         priorFinding.severity === 'blocking' &&
-        priorDisposition.outcome !== 'fixed'
+        priorDisposition.outcome === 'deferred'
       ) {
         priorUnfixedBlockers.push(index);
       }
@@ -1377,8 +1377,8 @@ export function dispose(params: DisposeParams): DisposeResult {
   }
 
   const finding = matches[0]!;
-  if (finding.severity === 'blocking' && params.outcome !== 'fixed') {
-    fail('blocking local-review findings must be fixed');
+  if (finding.severity === 'blocking' && params.outcome === 'deferred') {
+    fail('blocking local-review findings cannot be deferred');
   }
 
   // Consistency check
