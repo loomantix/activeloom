@@ -662,6 +662,11 @@ A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
 rather than a licence for another round. Say which, and stop.
 
+A round spent only on integrating the base is neither. When an engine already
+attested the PR's diff against its base clean, and the current diff against the
+current base is byte-identical, that engine runs the round as the convergence
+round instead of stopping.
+
 ### Escalate and de-escalate on evidence
 
 Resolve the initial classification, including the bounded-repair exception,

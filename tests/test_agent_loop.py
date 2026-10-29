@@ -218,6 +218,33 @@ def advance_base_once():
     subprocess.run(['/usr/bin/git', '-C', str(clone), 'commit', '-m', 'chore: advance base'], check=True, capture_output=True)
     subprocess.run(['/usr/bin/git', '-C', str(clone), 'push', 'origin', 'main'], check=True, capture_output=True)
     advance_marker.touch()
+def advance_base_at_merged_checkpoint():
+    # Moves the base once, after a round's fresh-base merge is checkpointed
+    # for Codex and before its review hook starts.
+    log_root = os.environ.get('AGENT_ADVANCE_BASE_AT_MERGED_CHECKPOINT')
+    marker = state / 'base-advanced-at-checkpoint'
+    if not log_root or marker.exists():
+        return
+    for run_state in pathlib.Path(log_root).glob('*/run-state.json'):
+        checkpoint = json.loads(run_state.read_text())
+        if checkpoint.get('phase') != 'reviewing' or checkpoint.get('reviewEngine') != 'codex':
+            continue
+        parents = subprocess.run(
+            ['/usr/bin/git', '-C', checkpoint['worktree'], 'rev-list', '--parents', '-n', '1', checkpoint['headSha']],
+            capture_output=True, text=True,
+        ).stdout.split()
+        if len(parents) != 3:
+            continue
+        marker.touch()
+        clone = state / 'checkpoint-base-clone'
+        subprocess.run(['/usr/bin/git', 'clone', os.environ['REMOTE_PATH'], str(clone)], check=True, capture_output=True)
+        subprocess.run(['/usr/bin/git', '-C', str(clone), 'config', 'user.name', 'Test'], check=True)
+        subprocess.run(['/usr/bin/git', '-C', str(clone), 'config', 'user.email', 'test@example.invalid'], check=True)
+        (clone / 'checkpoint-base.txt').write_text('checkpoint\n')
+        subprocess.run(['/usr/bin/git', '-C', str(clone), 'add', 'checkpoint-base.txt'], check=True)
+        subprocess.run(['/usr/bin/git', '-C', str(clone), 'commit', '-m', 'chore: advance base'], check=True, capture_output=True)
+        subprocess.run(['/usr/bin/git', '-C', str(clone), 'push', 'origin', 'main'], check=True, capture_output=True)
+        return
 if args[:2] == ['api', 'user']:
     actor_file = state / 'gh-actor'
     actor = actor_file.read_text().strip() if actor_file.exists() else 'tester'
@@ -286,6 +313,7 @@ elif args[:2] == ['pr', 'view']:
             base_head = base_oid_file.read_text().strip()
         print(os.environ.get('AGENT_PR_BASE_OID', base_head))
     elif 'state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid' in joined:
+        advance_base_at_merged_checkpoint()
         branch = (state / 'pr-branch').read_text()
         remote_head = subprocess.run(
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
@@ -2151,6 +2179,158 @@ def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
     comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
     assert "local-review-pass:v3 engine=codex round=2" in comments
     assert "local-review-pass:v3 engine=claude round=2" in comments
+
+
+def _advance_base_script(path: Path, name: str) -> None:
+    _write_executable(
+        path,
+        f"""#!/usr/bin/env bash
+set -e
+clone="$AGENT_STATE_DIR/base-clone-{name}"
+/usr/bin/git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
+/usr/bin/git -C "$clone" config user.name Test
+/usr/bin/git -C "$clone" config user.email test@example.invalid
+printf '{name}\\n' > "$clone/{name}.txt"
+/usr/bin/git -C "$clone" add {name}.txt
+/usr/bin/git -C "$clone" commit -m 'chore: advance base' >/dev/null
+/usr/bin/git -C "$clone" push origin main >/dev/null 2>&1
+""",
+    )
+
+
+def _claude_hook_advancing_base_once(tmp_path: Path) -> str:
+    updater = tmp_path / "advance-base-first.sh"
+    _advance_base_script(updater, "first-base")
+    return (
+        'if [ ! -e "$AGENT_STATE_DIR/first-advance" ]; then '
+        f'touch "$AGENT_STATE_DIR/first-advance"; {updater}; fi; '
+        + _clean_v3_hook("claude")
+    )
+
+
+def test_resume_after_a_published_fresh_base_merge_keeps_the_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Round 2 merges the advanced base, publishes it, and stops before Codex
+    # starts; that round reviewed nothing, so the resume must not skip it.
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e first-base.txt ] && [ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ]; '
+        "then exit 1; fi; printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_claude_hook_advancing_base_once(tmp_path),
+    )
+    env = {"REMOTE_PATH": str(consumer[1])}
+    first = _run(
+        consumer, ["--issues", "99"], issues=[_issue(99)], config=config,
+        extra_env=env, timeout=60,
+    )
+    assert first.returncode != 0
+    assert "Fresh-base validation failed before review round 2" in first.stderr + first.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["phase"], state["round"], state["reviewEngine"]) == ("reviewing", 2, "codex")
+    worktree = Path(str(state["worktree"]))
+    merged = _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
+    assert merged != state["headSha"]
+    fail_marker.unlink()
+    _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=worktree)
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(99, assigned=True)],
+        config=config,
+        extra_env=env,
+        timeout=90,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "integrated a fresh base and stopped before Codex started" in resumed.stdout
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=2" in comments
+    assert "local-review-pass:v3 engine=claude round=2" in comments
+    assert "round=3" not in comments
+
+
+def test_resume_after_an_amended_fresh_base_merge_restarts(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The merge carries a change of its own, so its tree is not the clean
+    # merge result and the round cannot be kept without reviewing it.
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e first-base.txt ] && [ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ]; '
+        "then exit 1; fi; printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_claude_hook_advancing_base_once(tmp_path),
+    )
+    env = {"REMOTE_PATH": str(consumer[1])}
+    first = _run(
+        consumer, ["--issues", "99"], issues=[_issue(99)], config=config,
+        extra_env=env, timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["phase"], state["round"], state["reviewEngine"]) == ("reviewing", 2, "codex")
+    worktree = Path(str(state["worktree"]))
+    (worktree / "unreviewed.txt").write_text("unreviewed\n", encoding="utf-8")
+    _run_git("add", "unreviewed.txt", cwd=worktree)
+    _run_git("commit", "--amend", "--no-edit", cwd=worktree)
+    assert len(_run_git("rev-list", "--parents", "-n", "1", "HEAD", cwd=worktree).stdout.split()) == 3
+    fail_marker.unlink()
+    _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=worktree)
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(99, assigned=True)],
+        config=config,
+        extra_env=env,
+        timeout=90,
+    )
+
+    output = resumed.stderr + resumed.stdout
+    assert "integrated a fresh base and stopped before Codex started" not in output
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=2" not in comments
+
+
+def test_base_advance_before_the_codex_hook_starts_keeps_the_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Round 2 merges the base advanced in round 1; the base moves again after
+    # that merge is checkpointed, before Codex reviews anything.
+    result = _run(
+        consumer,
+        ["--issues", "100"],
+        issues=[_issue(100)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={
+            "REMOTE_PATH": str(consumer[1]),
+            "AGENT_ADVANCE_BASE_AT_MERGED_CHECKPOINT": str(tmp_path / "logs"),
+        },
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "base-advanced-at-checkpoint").exists()
+    assert "PR base advanced before Codex review started; integrate it in the same round" in result.stdout
+    assert "convergence round 3/4" not in result.stdout
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=claude round=2" in comments
+    assert "round=3" not in comments
 
 
 _STRANDING_CLAUDE_HOOK = (
