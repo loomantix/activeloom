@@ -17,12 +17,21 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
 
-pytestmark = pytest.mark.regression
+
+pytestmark = [pytest.mark.regression, pytest.mark.usefixtures("offline_github")]
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".codex/skills/critique/scripts"
@@ -4794,6 +4803,19 @@ def test_runner_does_not_enrich_when_extraction_is_off(
     assert telemetry_harness.enrichments == []
 
 
+@pytest.mark.parametrize("directory", [None, 7, [], {}])
+def test_telemetry_directory_rejects_nonstring_checkpoint_path(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, directory: Any,
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+
+    def unexpected_read(boundary: Any) -> bool:
+        raise AssertionError("malformed path must be rejected before reading evidence")
+
+    monkeypatch.setattr(runner, "telemetry_intact", unexpected_read)
+    assert runner.telemetry_directory({"telemetry": {"key": "key", "directory": directory}}) is None
+
+
 def test_runner_records_duration_without_session_usage(
     telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6174,7 +6196,8 @@ def test_recovery_diagnosis_does_not_modify_artifacts(abort_harness: Any) -> Non
 
 @pytest.mark.parametrize('conflict', [None, 'digest', 'run'])
 def test_recovery_reads_authenticated_run_with_original_parser(
-    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, conflict: str | None
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, conflict: str | None,
+    tmp_path: Path,
 ) -> None:
     h = abort_harness
     runner = h.recovery_runner
@@ -6194,19 +6217,28 @@ def test_recovery_reads_authenticated_run_with_original_parser(
         # The checkpoint's run is not the latest authenticated run.
         runner.state['run_id'] = 'f' * 64
         runner.persist()
-    original_run = subprocess.run
-    def run(argv: list[str], **kwargs: Any) -> Any:
-        if argv[0] == 'gh':
-            result = 'test-actor' if 'user' in argv else json.dumps([rows])
-            return subprocess.CompletedProcess(argv, 0, stdout=result, stderr='')
-        return original_run(argv, **kwargs)
-    monkeypatch.setattr(subprocess, 'run', run)
+    remote = ControllerRemote(controller, monkeypatch, tmp_path / 'remote', actor='test-actor')
+    remote.rows = rows
+    remote.sync()
+    original_command = h.module.command
+    real_command = load('review-chain-runner').command
+    monkeypatch.setattr(h.module, 'command', lambda argv: real_command(argv)
+                        if argv[0] == 'node' else original_command(argv))
+    original_helper = runner.helper
+    monkeypatch.setattr(runner, 'helper', lambda name, *parts:
+                        h.module.Runner.helper(runner, name, *parts)
+                        if parts[0] == 'lifecycle-state' else original_helper(name, *parts))
     before = runner.recovery_files()
+    pins = dict(runner.state['control_hashes'])
     if conflict == 'digest':
+        # Preserve the original parser assertion, then require the earlier
+        # lifecycle gate to reject the same tampered evidence too.
         with pytest.raises(RuntimeError, match='digest'):
+            controller._run_records(rows)
+        with pytest.raises(h.module.Blocked):
             h.module.Runner.recovery_ledger(runner, HEAD)
     elif conflict == 'run':
-        with pytest.raises(h.module.Blocked, match='authenticated active run differs'):
+        with pytest.raises(h.module.Blocked, match='PR-wide lifecycle no longer authorizes this pinned run'):
             h.module.Runner.recovery_ledger(runner, HEAD)
     else:
         actual = h.module.Runner.recovery_ledger(runner, HEAD)
@@ -6214,6 +6246,7 @@ def test_recovery_reads_authenticated_run_with_original_parser(
         assert actual['status'] == 'next'
         assert actual['started_at'] == '2026-01-01T00:00:00Z'
     assert runner.recovery_files() == before
+    assert runner.state['control_hashes'] == pins
 
 
 def test_restart_aborted_repeat_resumes_same_successor(
@@ -6309,9 +6342,10 @@ def test_restart_refuses_damaged_aborted_archive(
         assert not (directory / 'state.json').exists()
 
 
+@pytest.mark.parametrize("failure_stage", ["lifecycle", "controller"])
 def test_recovery_cli_reports_blocked_instead_of_traceback(
     abort_harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], failure_stage: str,
 ) -> None:
     h = abort_harness
     runner = h.recovery_runner
@@ -6324,6 +6358,29 @@ def test_recovery_cli_reports_blocked_instead_of_traceback(
     assert h.module.main(['--repo', h.args.repo, '--pr', '1', f'--abort-run={run_id}',
                           '--evidence-sha256', 'a' * 64]) == 2
     assert 'no review checkpoint exists' in capsys.readouterr().err
+    parser = load('local-review-handoff')
+    content = '<!-- local-review-plan:v1 mode=chain engines=codex,claude,codex,claude -->\n\nSynthetic authorization.'
+    identifier = parser._run_digest(tier='deep', max_rounds=4, base=BASE,
+                                    start_head=HEAD, supersedes=None, content=content)
+    runner.state['run_id'] = identifier
+    runner.persist()
+    remote = ControllerRemote(parser, monkeypatch, tmp_path / 'remote', actor='test-actor')
+    remote.rows = [{'id': 1, 'body': f'<!-- local-review-run:v1 id={identifier} tier=deep max-rounds=4 base={BASE} start-head={HEAD} supersedes=none content-sha256={identifier} -->\n{content}'}]
+    remote.sync()
+    real_command = load('review-chain-runner').command
+    current_command = h.module.command
+    monkeypatch.setattr(h.module, 'command', lambda argv: real_command(argv)
+                        if argv[0] == 'node' else current_command(argv))
+    original_helper = runner.helper
+    def lifecycle_helper(name: str, *parts: str) -> dict[str, Any]:
+        if parts[0] != 'lifecycle-state':
+            result: dict[str, Any] = original_helper(name, *parts)
+            return result
+        if failure_stage == 'lifecycle':
+            raise RuntimeError('GitHub operation failed: secret detail')
+        result = h.module.Runner.helper(runner, name, *parts)
+        return result
+    monkeypatch.setattr(runner, 'helper', lifecycle_helper)
     controller = runner.control / 'local-review-handoff.py'
     def gh_failure(repo: str, pr: int) -> None:
         raise RuntimeError('GitHub operation failed: secret detail')
@@ -6336,8 +6393,13 @@ def test_recovery_cli_reports_blocked_instead_of_traceback(
         module.failing = gh_failure
         return module
     monkeypatch.setattr(h.module, 'ModuleType', seeded)
-    with pytest.raises(h.module.Blocked, match='GitHub operation failed$'):
+    before = runner.recovery_files()
+    pins = dict(runner.state['control_hashes'])
+    with pytest.raises(h.module.Blocked, match='GitHub operation failed$') as error:
         h.module.Runner.recovery_ledger(runner, HEAD)
+    assert 'secret detail' not in str(error.value)
+    assert runner.recovery_files() == before
+    assert runner.state['control_hashes'] == pins
 
 
 def test_recovery_cli_binds_abort_to_the_diagnosed_run(

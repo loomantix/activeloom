@@ -8,11 +8,20 @@ import multiprocessing
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.usefixtures("offline_github")
 spec = importlib.util.spec_from_file_location("transaction_herd", ROOT / "prompts/skills/hreview/scripts/herd-config.py")
 assert spec and spec.loader
 herd = importlib.util.module_from_spec(spec)
@@ -154,25 +163,23 @@ def test_controller_recovers_uncertain_publication(
     assert controller_spec and controller_spec.loader
     controller = importlib.util.module_from_spec(controller_spec)
     controller_spec.loader.exec_module(controller)
+    remote = ControllerRemote(controller, monkeypatch, tmp_path)
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit synthetic restart authorization.")
     rows: list[dict[str, Any]] = []
     publications: list[str] = []
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
-    monkeypatch.setattr(controller, "_run_records", lambda _: rows)
-    monkeypatch.setattr(controller, "_run_end", lambda *_: None)
-    monkeypatch.setattr(controller, "_verify_reviewable_head", lambda *_: None)
+    remote.rows = rows
+    monkeypatch.setattr(controller, "_verify_signed_pr_history", lambda *_: None)
     monkeypatch.setattr(controller, "_scope_signals", lambda *_: {
         "behaviour_commits": 0, "missing_patch_files": [],
     })
 
-    def publish(repo: str, pr: int, marker: str, body: str) -> None:
+    def publish(repo: str, pr: int, marker: str, body: str, *, lifecycle_write: bool = False) -> None:
+        assert lifecycle_write
         record = json.loads(Path(approval["path"]).read_text())
         run_id = record["intent"]["run_id"]
         publications.append(run_id)
-        rows.append({"comment_id": 20, "run_id": run_id, "tier": "lean",
-                     "base": "f" * 40, "start_head": HEAD,
-                     "content": body.split("\n", 1)[1]})
+        rows.append({"id": 20, "body": body})
         raise OSError("response lost after publication")
 
     monkeypatch.setattr(controller, "_post_issue_comment", publish)

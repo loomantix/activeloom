@@ -61,6 +61,16 @@ Every new session gets its own tab, labelled the way the workspace already does 
 
 Before starting one, read `python3 -I $H run-state --repo $repo --pr <n>`. A failed read is a block: start no herder for that PR. With `restart_required` true, the PR's latest run has ended, and a new run needs the user's own approval:
 
+Check `transition_required` first. A foreign active or ended run is never `none`:
+stop and report its actor, comment identity and run identity. Use the protocol's
+[Cross-actor lifecycle](../../references/local-review-ledger.md#cross-actor-lifecycle)
+only after the user's exact transition approval. Do not terminalize another
+actor's run, overwrite pins, or launch a replacement chain. State `transitioned`
+still requires a separate restart approval and scope decision; it conveys no
+coverage or additional rounds. Pass the verified transition identity to hreview
+as context, never as an invented restart authorization. Keep watchers and shipping
+on this same PR-wide lifecycle decision.
+
 - **Recorded approval:** `python3 -I $C check-restart --repo $repo --pr <n> --head <head>`, `<head>` being the PR's full current head SHA (`gh pr view <n> --json headRefOid`), exits 0, and when `scope_decision_required` is true the record's `scope_decision` is `keep`. Start the herder as usual; it claims the approval itself. Do not mention a restart in its prompt.
 - **None** (exit 4, or a record without the required scope decision): start no herder, even when the instruction file or the user's message to this session names the restart. Alert as in Problems, giving the run's outcome and the user's two ways forward: type into a fresh session in a new tab of this workspace
 

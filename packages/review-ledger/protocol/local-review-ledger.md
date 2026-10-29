@@ -76,6 +76,52 @@ The authenticated relay actor owns the roster chain, and every local engine in
 the relay must use that same pinned actor. `read-roster` returns the effective
 declaration and the chain that produced it.
 
+### Cross-actor lifecycle
+
+Lifecycle discovery is PR-wide; findings, dispositions, attestations and coverage
+remain actor-owned. `review-ledger lifecycle-state --repo <repo> --pr <n>`
+partitions run/supersession chains by actor before resolving ownership. Run v1
+digests alone are not repository/PR/actor-qualified identities. Complete pagination
+and immutable GitHub edit metadata are required. Conflicting active chains,
+edited markers or competing transitions block rather than selecting the newest.
+
+An explicit ownership transition is a separate record by the new authenticated
+actor. It preserves the old run, its terminal status (if any), findings and pins.
+It never forges an old-actor end, marks convergence, grants a fresh budget, imports
+foreign coverage, changes the author engine or modifies a running relay's pins.
+Late old-owner findings remain historical context; a competing successor blocks.
+
+The user creates a one-shot approval in their own terminal:
+
+```text
+python3 -I <herd-config.py> approve-transition --repo <repo> --pr <n> --head <full-head> --run-id <old-run-digest> --run-comment-id <old-comment-id> --from-actor <old-login> --to-actor <new-login>
+```
+
+It prints the complete confirmation phrase and stores a private expiring record.
+Agents must not answer that prompt or manufacture the record. The approved worker
+uses `local-review-handoff.py transition-run` with those same scope arguments and
+`--approval-id <id>`. The new login must equal the live authenticated actor.
+The command rechecks head/lifecycle before and after publication and reserves a
+deterministic intent before writing. Retry uncertain publication with the identical
+saved command. Expired or consumed approvals can reconcile existing publication
+only; they cannot authorize another transition. Conflicts remain explicit blocks.
+
+After verified transition, obtain a separate explicit restart authorization and
+scope decision. `start-run --restart --owner-transition-id <transition-digest>
+--scope-decision keep` also needs the ordinary authorization file, tier, head,
+base and engine-plan arguments, and the existing restart approval mechanism when
+using a recorded approval. Transition authority is not restart authority.
+The new run binds the transition in its hashed authorization content, keeps the
+normal caps, and declares a fresh actor-owned roster. `next-pass`, pass/fix
+authorization, finish, handoff/recovery, runner resume and shipping coverage all
+use the same lifecycle guard. Earlier results cannot resurrect abandoned ownership.
+
+Distribute the controller, ledger bundle, skills and protocol together. A pinned
+older runner that lacks the lifecycle command must stop; do not replace its
+control hashes to make it resume. A new implementation cannot prevent an older
+client from attempting a write, but a current client rejects conflicting history
+and never counts that client's late foreign evidence as its own coverage.
+
 ### Re-declaring the roster
 
 Rosters supersede rather than replace. Posting a roster over an existing one

@@ -200,7 +200,8 @@ engine in a fresh terminal.
    existing run is unaffected.
 
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
-   on the same PR requires the current run to be ended and a new, explicit user
+   on the same PR requires the current run to be ended (or explicitly abandoned
+   through the protocol's governed cross-actor transition) and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.
    For an alternating chain, select each pass with `next-pass` as described
    below. With the bundled ledger 1.4, attestation identities
@@ -208,6 +209,13 @@ engine in a fresh terminal.
    1 without colliding with historical rounds. `authorize-pass` reports equal
    `round` and `run_round` values and enforces the two/four-round cap. Preserve
    earlier attestations; do not restart an active run to evade its remaining cap.
+
+   Actor-filtered `none` is not a lifecycle decision. Use the common PR-wide
+   `run-state`/`lifecycle-state` inventory. A foreign run requires an exact
+   user-approved ownership transition, followed by separate restart and scope
+   approvals, a fresh roster and fresh actor-owned coverage. Never forge an
+   old-actor terminal marker or import its attestations. See the ledger protocol's
+   **Cross-actor lifecycle** section.
 
    Before upgrading an in-flight review from an older controller, finalize its
    saved results with its original pinned helper. Never renumber a sealed result.

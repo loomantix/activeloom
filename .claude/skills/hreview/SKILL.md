@@ -67,7 +67,9 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
    `python3 -I $P check` exiting non-zero for anything other than worker-only keys is a block.
 
 8. Author: `--author` if given; otherwise the engine named by the PR commits' `Co-Authored-By` trailers. If they name none or more than one engine, and no `--author` was given, notify and stop that PR: ask for `--author`.
-9. Run — find the latest `local-review-run:v1` marker in the PR's issue comments.
+9. Run — read `python3 -I $H run-state --repo $repo --pr <n>` for the common PR-wide lifecycle. Never infer `none` from actor-filtered comments. A failed inventory blocks the run.
+   - **Foreign active/ended or foreign transition:** stop. Follow the protocol's [Cross-actor lifecycle](../../references/local-review-ledger.md#cross-actor-lifecycle). A general takeover request is not a terminal marker or a restart approval. Never use `finish-run` to impersonate the old actor, change authentication, edit old evidence or write an approval yourself. The user must approve the exact repository, PR, current head, old actor, old run comment ID and digest, and new actor. An authorized worker can consume that separate approval with `transition-run`; uncertain publication retries the identical saved command.
+   - **Transitioned:** the old run is abandoned by a distinct authenticated actor, not ended by its original author and not converged. Require a separate explicit restart and scope decision. Follow the Ended authorization procedure below, adding `--owner-transition-id <id>` from the verified lifecycle receipt and `--scope-decision keep` to the fresh startup. A split happens first and invalidates the old head binding. Preserve original history and pinned settings; declare a fresh roster and collect fresh actor-owned coverage. Do not reuse foreign attestations or alter the author engine because ownership changed.
    - **None:** resolve the tier and trigger per the workflow's "What sets the tier" (bounded-repair exception included). Write `<scratch>/authorization.txt`: one public-safe paragraph — repository, PR, tier, mode `live chain (hreview)`, authorized: local review passes in this run only; not authorized: merge, deployment, restart. No names, no quoted user words. Then
      `python3 -I $H start-run --repo $repo --pr <n> --head <head> --base <merge-base sha> --tier <tier> --trigger <trigger|none> --cycle <order> --authorization-file <file>`.
      A scope-checkpoint refusal (`--scope-decision` required) is a block.
@@ -87,7 +89,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
        ════════════════════════════════════════════════════════════
        ```
 
-     With no ended run, `--restart` changes nothing.
+     With no ended or explicitly transitioned run, `--restart` changes nothing.
 
 10. Roster: `node $L read-roster --repo $repo --pr <n>`. Absent → `post-roster --head <head> --author <author> --reviewers <order minus author> --content-file <scratch file>`. Present but different → block.
 

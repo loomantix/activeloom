@@ -14,6 +14,7 @@ import { classifyRangeEffect } from './effect.js';
 import { fail, LedgerError } from './errors.js';
 import {
   assertActor,
+  assertLiveActor,
   assertThreadScope,
   compareIsForward,
   currentActor,
@@ -940,7 +941,7 @@ export function checkBlockedRound(
  * and publishes the result after the caller's validation gates.
  */
 export function recoverResult(params: RecoverResultParams): LedgerResult {
-  const actor = assertActor(params.actor);
+  const actor = assertLiveActor(assertActor(params.actor));
   verifyHead(params.repo, params.pr, params.head);
   const candidate = readResultRecovery(params, actor);
   const threads = reviewThreads(params.repo, params.pr);
@@ -957,6 +958,7 @@ export function recoverResult(params: RecoverResultParams): LedgerResult {
     fail('result recovery classification changed during finalization');
   }
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   writeResultFile(params.resultFile, { ...candidate });
   return {
     ...candidate,
@@ -1461,13 +1463,15 @@ export function reply(params: ReplyParams): {
   } else {
     body = readLegacyBody(params.bodyFile ?? '-', DISPOSITION_V1, params.body);
   }
+  const actor = assertLiveActor(assertActor());
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   if (content !== undefined) {
     const thread = reviewThreads(params.repo, params.pr).find(
       (candidate) =>
         candidate.comments.nodes[0]?.databaseId === params.commentId,
     );
-    const actor = currentActor();
+    assertLiveActor(actor);
     if (
       !thread?.comments.nodes.some((row) => {
         if ((row.author ?? row.user)?.login !== actor) return false;
@@ -1483,6 +1487,7 @@ export function reply(params: ReplyParams): {
       );
     }
   }
+  assertLiveActor(actor);
   const response = jsonOutput(
     [
       'api',
@@ -1493,8 +1498,9 @@ export function reply(params: ReplyParams): {
     { body },
   );
   const commentId = getPostedCommentId(response);
-  verifyComment(params.repo, commentId, body);
+  verifyComment(params.repo, commentId, body, actor);
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   return { comment_id: commentId, verified: true };
 }
 

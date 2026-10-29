@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetGitHubRunner, setGitHubRunner } from '../github.js';
@@ -30,14 +30,141 @@ function thread(bodies: string[], resolved = true): GitHubReviewThreadNode {
 }
 
 beforeEach(() => {
+  resetGitHubRunner();
   setGitHubRunner({
-    runGh: () => JSON.stringify({ login: 'reviewer' }),
+    runGh: (args) => {
+      if (args[0] === 'api' && args[1] === 'user') {
+        return JSON.stringify({ login: 'reviewer' });
+      }
+      throw new Error(`Unexpected legacy parser operation: ${args.join(' ')}`);
+    },
     runGit: () => '',
   });
 });
 afterEach(() => resetGitHubRunner());
 
 describe('structured legacy disposition repair', () => {
+  it.each([
+    'preflight',
+    'inventory',
+    'threads',
+    'post',
+    'readback',
+    'final-head',
+    'readback-author',
+  ])(
+    'rejects operation actor drift at %s without fabricating success',
+    (stage) => {
+      const directory = mkdtempSync(join(tmpdir(), 'legacy-reply-drift-'));
+      const contentFile = join(directory, 'reply.md');
+      writeFileSync(contentFile, 'Verified correction.\n');
+      let actor = 'reviewer';
+      let heads = 0;
+      const mutations: Array<{ body: string; author: string }> = [];
+      const record = thread([finding()]);
+      const originalThread = JSON.stringify(record);
+      setGitHubRunner({
+        runGh: (args, payload) => {
+          if (args[0] === 'api' && args[1] === 'user') {
+            return JSON.stringify({ login: actor });
+          }
+          if (args[0] === 'pr' && args[1] === 'view') {
+            heads += 1;
+            if (
+              stage === 'preflight' ||
+              (stage === 'final-head' && heads === 2)
+            )
+              actor = 'different-actor';
+            return HEAD;
+          }
+          if (
+            args.includes('repos/example/repo/issues/1/comments?per_page=100')
+          ) {
+            if (stage === 'inventory') actor = 'different-actor';
+            return JSON.stringify([[]]);
+          }
+          if (
+            args.includes('graphql') &&
+            args.some((arg) => arg.includes('reviewThreads(first:100'))
+          ) {
+            if (stage === 'threads') actor = 'different-actor';
+            return JSON.stringify([
+              {
+                data: {
+                  repository: {
+                    pullRequest: {
+                      reviewThreads: {
+                        nodes: [record],
+                        pageInfo: { hasNextPage: false },
+                      },
+                    },
+                  },
+                },
+              },
+            ]);
+          }
+          if (
+            args.includes('POST') &&
+            args.includes('repos/example/repo/pulls/1/comments/1/replies')
+          ) {
+            const body = (payload as { body: string }).body;
+            mutations.push({ body, author: actor });
+            if (stage === 'post') actor = 'different-actor';
+            return JSON.stringify({ id: 99 });
+          }
+          if (args.includes('repos/example/repo/pulls/comments/99')) {
+            if (stage === 'readback') actor = 'different-actor';
+            return JSON.stringify({
+              id: 99,
+              body: mutations[0]?.body,
+              user: {
+                login:
+                  stage === 'readback-author'
+                    ? 'different-actor'
+                    : mutations[0]?.author,
+              },
+            });
+          }
+          throw new Error(
+            `Unexpected legacy drift operation: ${args.join(' ')}`,
+          );
+        },
+      });
+      try {
+        expect(() =>
+          reply({
+            repo: 'example/repo',
+            pr: 1,
+            head: HEAD,
+            commentId: 1,
+            engine: 'codex',
+            round: 4,
+            fingerprint: 'example',
+            outcome: 'fixed',
+            contentFile,
+          }),
+        ).toThrow(
+          stage === 'readback-author'
+            ? /could not verify review comment/
+            : /authenticated GitHub actor changed/,
+        );
+        if (['preflight', 'inventory', 'threads'].includes(stage)) {
+          expect(mutations).toEqual([]);
+        } else {
+          expect(mutations).toEqual([
+            {
+              body: `<!-- local-review-disposition:v1 engine=codex round=4 head=${HEAD} fingerprint=example outcome=fixed -->\nVerified correction.\n`,
+              author: 'reviewer',
+            },
+          ]);
+        }
+        expect(JSON.stringify(record)).toBe(originalThread);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([true, false])('requires a matching owned finding: %s', (matches) => {
     const contentFile = join(
       mkdtempSync(join(tmpdir(), 'legacy-reply-')),
@@ -51,11 +178,21 @@ describe('structured legacy disposition repair', () => {
     const record = thread(['Original review discussion.', finding()]);
     let posted: { body: string } | undefined;
     setGitHubRunner({
-      currentActor: () => 'reviewer',
       runGit: () => '',
       runGh: (args, payload) => {
-        if (args.includes('view')) return HEAD;
-        if (args.includes('graphql'))
+        if (args[0] === 'api' && args[1] === 'user') {
+          return JSON.stringify({ login: 'reviewer' });
+        }
+        if (args[0] === 'pr' && args[1] === 'view') return HEAD;
+        if (
+          args.includes('repos/example/repo/issues/1/comments?per_page=100')
+        ) {
+          return JSON.stringify([[]]);
+        }
+        if (
+          args.includes('graphql') &&
+          args.some((arg) => arg.includes('reviewThreads(first:100'))
+        )
           return JSON.stringify([
             {
               data: {
@@ -70,15 +207,21 @@ describe('structured legacy disposition repair', () => {
               },
             },
           ]);
-        if (args.includes('POST')) {
+        if (
+          args.includes('POST') &&
+          args.includes('repos/example/repo/pulls/1/comments/1/replies')
+        ) {
           posted = payload as { body: string };
           return JSON.stringify({ id: 99 });
         }
-        return JSON.stringify({
-          id: 99,
-          body: posted?.body,
-          user: { login: 'reviewer' },
-        });
+        if (args.includes('repos/example/repo/pulls/comments/99')) {
+          return JSON.stringify({
+            id: 99,
+            body: posted?.body,
+            user: { login: 'reviewer' },
+          });
+        }
+        throw new Error(`Unexpected legacy reply operation: ${args.join(' ')}`);
       },
     });
     const run = () =>

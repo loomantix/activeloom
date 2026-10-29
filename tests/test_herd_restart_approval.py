@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.usefixtures("offline_github")
 REPO = "acme/widgets"
 HEAD = "c" * 40
 

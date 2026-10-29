@@ -1440,6 +1440,87 @@ def _private_dir(path: Path) -> None:
     path.chmod(0o700)
 
 
+def _transition_target(repo: str, pr: int, head: str, run_comment_id: int) -> Path:
+    _approval_target(repo, pr, head)
+    if run_comment_id < 1:
+        raise UsageError("--run-comment-id must be positive")
+    return approvals_dir(repo) / f"transition-{pr}-{run_comment_id}-{head}.json"
+
+
+def approve_transition(repo: str, pr: int, head: str, run_id: str, run_comment_id: int,
+                       from_actor: str, to_actor: str, ttl_hours: int, confirm: str) -> dict[str, Any]:
+    """Record only a human-approved ownership transition, never restart authority."""
+    target = _transition_target(repo, pr, head, run_comment_id)
+    login = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?"
+    if not re.fullmatch(r"[0-9a-f]{64}", run_id) or not all(re.fullmatch(login, value) for value in (from_actor, to_actor)) or from_actor == to_actor:
+        raise UsageError("invalid transition run or actors")
+    if not 1 <= ttl_hours <= APPROVAL_MAX_TTL_HOURS:
+        raise UsageError("transition TTL out of range")
+    expected = f"transition {pr} {run_comment_id} {from_actor} to {to_actor} at {head}"
+    if confirm.strip() != expected:
+        raise UsageError("transition confirmation did not match; nothing written")
+    now = _now()
+    identifier = secrets.token_hex(8)
+    binding = dict(version=1, approval_id=identifier, repo=repo, pr=pr, head=head,
+                   run_id=run_id, run_comment_id=run_comment_id, from_actor=from_actor,
+                   to_actor=to_actor, created=_iso(now), expires=_iso(now + timedelta(hours=ttl_hours)))
+    with _approval_lock(target):
+        if target.exists():
+            raise ApprovalError("transition approval already exists; reconcile it instead of replacing it")
+        record = dict(version=1, id=identifier, binding=binding, intent=None, used=None)
+        _write_approval(target, record)
+    return {"path": str(target), **record}
+
+
+def transition_transaction(scope: dict[str, Any], approval_id: str, operation: Any) -> Any:
+    """Reserve once before publication; uncertain or consumed attempts only reconcile."""
+    target = _transition_target(scope["repo"], scope["pr"], scope["head"], scope["run_comment_id"])
+    with _approval_lock(target):
+        try:
+            info = target.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise ApprovalError("unsafe transition approval")
+            record = json.loads(target.read_text())
+        except (OSError, ValueError) as exc:
+            raise ApprovalError("transition approval unavailable") from exc
+        if (not isinstance(record, dict) or set(record) != {"version", "id", "binding", "intent", "used"} or
+            record.get("version") != 1 or record.get("id") != approval_id or not APPROVAL_ID_RE.fullmatch(approval_id)):
+            raise ApprovalError("transition approval ID or schema mismatch")
+        binding = record.get("binding")
+        binding_keys = {"version", "approval_id", "repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor", "created", "expires"}
+        if (not isinstance(binding, dict) or set(binding) != binding_keys or binding.get("version") != 1 or
+            any(binding.get(key) != value for key, value in scope.items()) or binding.get("approval_id") != approval_id):
+            raise ApprovalError("transition approval scope mismatch")
+        if record.get("used") is not None:
+            _parse_moment(target, record["used"])
+            if record.get("intent") is None:
+                raise ApprovalError("consumed transition has no publication intent")
+        created = _parse_moment(target, binding.get("created"))
+        expires = _parse_moment(target, binding.get("expires"))
+        if created > _now() or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+            raise ApprovalError("invalid transition approval lifetime")
+        if expires <= _now() and not record.get("intent"):
+            raise ApprovalError("transition approval expired")
+        intent = record.get("intent")
+        if intent is not None and (not isinstance(intent, str) or not re.fullmatch(r"[0-9a-f]{64}", intent)):
+            raise ApprovalError("malformed transition intent")
+
+        def reserve(identifier: str) -> None:
+            if record.get("used") or expires <= _now():
+                raise ApprovalError("consumed or expired transition may only reconcile an existing marker")
+            if intent is not None and intent != identifier:
+                raise ApprovalError("transition intent changed")
+            record["intent"] = identifier
+            _write_approval(target, record)
+
+        result = operation(binding, reserve)
+        if record.get("intent") is None:
+            raise ApprovalError("transition was not reserved")
+        record["used"] = record.get("used") or _iso(_now())
+        _write_approval(target, record)
+        return result
+
+
 # --- command line -------------------------------------------------------------------
 
 
@@ -1541,8 +1622,23 @@ def main(argv: list[str] | None = None) -> int:
     approve.add_argument("--deep", action="store_true", help="the restart is a Deep review (trigger 6)")
     approve.add_argument("--scope-decision", choices=("keep", "split"))
 
+    transition = commands.add_parser("approve-transition", help="human-only: approve exact cross-actor abandonment, not a restart")
+    for field in ("repo", "head", "run-id", "from-actor", "to-actor"):
+        transition.add_argument(f"--{field}", required=True)
+    transition.add_argument("--pr", type=int, required=True)
+    transition.add_argument("--run-comment-id", type=int, required=True)
+    transition.add_argument("--ttl-hours", type=int, default=4)
+
     args = parser.parse_args(argv)
     try:
+        if args.command == "approve-transition":
+            if not sys.stdin.isatty():
+                raise UsageError("approve-transition requires the user's interactive terminal; nothing written")
+            expected = f"transition {args.pr} {args.run_comment_id} {args.from_actor} to {args.to_actor} at {args.head}"
+            print(f"Authorize abandonment/ownership transition only for {args.repo}; no restart or coverage is granted. Type '{expected}': ", end="", file=sys.stderr, flush=True)
+            _emit(approve_transition(args.repo, args.pr, args.head, args.run_id, args.run_comment_id,
+                                     args.from_actor, args.to_actor, args.ttl_hours, sys.stdin.readline()))
+            return 0
         if args.command == "validate":
             path = Path(args.file)
             try:

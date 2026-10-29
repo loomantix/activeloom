@@ -16,6 +16,7 @@ import {
   getIssueComments,
   getPostedCommentId,
   jsonOutput,
+  readLifecycle,
   verifyHead,
   verifyIssueComment,
 } from './github.js';
@@ -347,7 +348,11 @@ export function readRoster(params: {
   actor?: string | undefined;
 }): RosterReport {
   assertActor(params.actor);
-  return resolveRoster(getIssueComments(params.repo, params.pr));
+  const roster = resolveRoster(getIssueComments(params.repo, params.pr));
+  const run = readLifecycle(params.repo, params.pr).run;
+  return run?.ownerTransition && (roster.commentId ?? 0) <= run.commentId
+    ? resolveRoster([])
+    : roster;
 }
 
 function reconcileConcurrentRoster(
@@ -385,9 +390,14 @@ export function postRoster(params: PostRosterParams): PostRosterResult {
 
   const rows = getIssueComments(params.repo, params.pr);
   const existing = resolveRoster(rows);
+  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const needsFreshRoster = Boolean(
+    currentRun?.ownerTransition &&
+    (existing.commentId ?? 0) <= currentRun.commentId,
+  );
 
   const replayCandidate =
-    existing.present && existing.version === 2
+    existing.present && existing.version === 2 && !needsFreshRoster
       ? buildRosterBody({
           author: params.author,
           reviewers: params.reviewers,
@@ -525,11 +535,13 @@ function matchAttestationMarker(
 export function attestationsAtHead(
   rows: Array<Record<string, unknown>>,
   head: string,
+  minimumCommentId = 0,
 ): AttestationAtHead[] {
   const found: AttestationAtHead[] = [];
   const identities = new Map<string, string>();
   const runs = reviewRuns(rows);
   for (const row of rows) {
+    if (Number(row['id']) <= minimumCommentId) continue;
     const body = String(row['body'] ?? '');
     const pass = matchAttestationMarker(body, PASS_V3_RE);
     const complete = matchAttestationMarker(body, COMPLETE_V3_RE);
@@ -570,8 +582,16 @@ export function coverage(params: CoverageParams): CoverageResult {
   assertActor(params.actor);
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
-  const roster = resolveRoster(rows);
-  const attested = attestationsAtHead(rows, params.head);
+  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const minimumCommentId = currentRun?.ownerTransition
+    ? currentRun.commentId
+    : 0;
+  const resolvedRoster = resolveRoster(rows);
+  const roster =
+    minimumCommentId && (resolvedRoster.commentId ?? 0) <= minimumCommentId
+      ? resolveRoster([])
+      : resolvedRoster;
+  const attested = attestationsAtHead(rows, params.head, minimumCommentId);
 
   const attestedEngines = [
     ...new Set(attested.map((row) => row.engine)),
