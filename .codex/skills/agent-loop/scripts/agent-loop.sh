@@ -2505,7 +2505,8 @@ run_review_pass() {
     attest_review_head "before $engine review round $round" \
         "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
     if [ "$boundary_status" -eq 2 ]; then
-        return 2
+        # The base advanced before the hook started, so nothing was reviewed.
+        return 4
     elif [ "$boundary_status" -ne 0 ]; then
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
@@ -2972,7 +2973,18 @@ run_review_convergence() {
                 "configured Codex review hook" "Configured Codex review hook" \
                 "Configured Codex review hook" \
                 "the configured Codex review hook" || pass_status=$?
-            if [ "$pass_status" -eq 2 ]; then
+            if [ "$pass_status" -eq 4 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "before review round $round (Codex boundary)" || return 1
+                echo "   PR base advanced before Codex review started; integrate it in the same round"
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint review round $round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -eq 2 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
                     "during review round $round (Codex boundary)" || return 1
                 echo "   PR base advanced during Codex review; restart at Codex on the next round"
@@ -3013,7 +3025,7 @@ run_review_convergence() {
                 "configured Claude review hook" "Claude review hook" "Claude review" \
                 "Claude review" || pass_status=$?
             # claude-cli-invocations:end
-            if [ "$pass_status" -eq 2 ]; then
+            if [ "$pass_status" -eq 2 ] || [ "$pass_status" -eq 4 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
                     "during review round $round (Claude boundary)" || return 1
                 echo "   PR base advanced during Claude review; restart at Codex on the next round"
@@ -3580,6 +3592,22 @@ finalize_pr() {
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 
+# Whether a first-leg review checkpoint was followed only by its round's
+# fresh-base merge. That checkpoint is rewritten after the merge and before the
+# hook starts, so a head exactly one clean base merge past it, with no pass
+# files for the round, means the round stopped before reviewing anything. It
+# resumes without using up another round.
+round_moved_only_by_base_merge() {
+    local engine="$1" round="$2" state_head="$3" current_head="$4"
+    local parent merged_base extra merged_tree
+    compgen -G "$AGENT_LOOP_LOG_DIR/$engine-review-round-${round}[.-]*" >/dev/null && return 1
+    read -r _ parent merged_base extra < <(git rev-list --parents -n 1 "$current_head")
+    [ "$parent" = "$state_head" ] && [ -n "$merged_base" ] && [ -z "$extra" ] || return 1
+    git merge-base --is-ancestor "$merged_base" "$AGENT_LOOP_REVIEW_BASE" || return 1
+    merged_tree="$(git merge-tree --write-tree "$state_head" "$merged_base" 2>/dev/null)" || return 1
+    [ "$merged_tree" = "$(git rev-parse "$current_head^{tree}")" ]
+}
+
 resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
@@ -3733,7 +3761,11 @@ resume_review_run() {
             return 1
         fi
     fi
-    if [ "$state_phase" = reviewing ] && \
+    if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
+       [ "$current_head" != "$state_head" ] && \
+       round_moved_only_by_base_merge codex "$state_round" "$state_head" "$current_head"; then
+        echo "   Review round $state_round integrated a fresh base and stopped before Codex started; resuming it without consuming another round"
+    elif [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
         restart_after_interrupted_pass=true
     fi

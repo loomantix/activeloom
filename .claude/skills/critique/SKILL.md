@@ -99,7 +99,11 @@ The stance follows the tier's schedule, not the round ordinal alone:
   convergence mode.**
 - **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
   convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
-  converging; report which and stop rather than opening it.
+  converging; report which and stop rather than opening it. The exception is a
+  round spent only on integrating the base: when Claude's latest
+  `local-review-pass:v3` marker names `base=B head=H` and `git diff B H` is
+  byte-identical to `git diff` from the recorded PR base to the recorded head,
+  the change has already converged. Run the round as the convergence round.
 - **The first round after an escalation is adversarial whatever its ordinal**,
   per the workflow doc's escalation rule.
 

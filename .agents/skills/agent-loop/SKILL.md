@@ -175,6 +175,13 @@ again and spends the round budget; the slipped round is never attested. A
 published change with no fixed same-round finding, an incomplete ledger, or any
 other refusal still stops.
 
+A round whose first review hook never started does not consume a round. If the
+base advances after a round's fresh-base merge is checkpointed but before Gemini
+starts, the wrapper integrates it and reviews in the same round. A resumed run
+whose head moved past a Gemini checkpoint only by that round's clean fresh-base
+merge, with no pass files for the round, resumes that round rather than the
+next.
+
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
 push or call ordinary `gh`; review hooks run only after draft PR creation and

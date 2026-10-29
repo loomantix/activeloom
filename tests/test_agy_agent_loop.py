@@ -1628,3 +1628,55 @@ def test_v3_blocked_slip_does_not_hide_an_unrelated_blocker(
     assert "Claude review blocked in round 1: review lane did not finish" in result.stderr
     assert "recovered: blocked-round" not in result.stdout
     assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resume_after_a_published_fresh_base_merge_keeps_the_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Round 2 merges the base advanced during round 1, publishes it, and stops
+    # before Gemini starts; that round reviewed nothing, so resume keeps it.
+    clean = _config_v3(tmp_path).split("claude_review_hook = ", 1)[1].split("\n", 1)[0]
+    advance = (
+        'if [ ! -e "$AGENT_STATE_DIR/first-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/first-advance"; '
+        'clone="$AGENT_STATE_DIR/base-clone"; '
+        '/usr/bin/git clone -q "$(git remote get-url origin)" "$clone"; '
+        "/usr/bin/git -C \"$clone\" -c user.name=Test -c user.email=test@example.invalid "
+        "commit -q --allow-empty -m 'chore: advance base'; "
+        '/usr/bin/git -C "$clone" push -q origin main; fi; '
+    )
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/first-advance" ] && '
+        '[ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ] && '
+        '[ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]; then exit 1; fi; '
+        "printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path, claude_review_hook=advance + clean, validation_hook=validation
+    )
+    first = _run(consumer, ["--issues", "51"], issues=[_issue(51)], config=config, timeout=60)
+    assert first.returncode != 0
+    assert "Fresh-base validation failed before review round 2" in first.stderr + first.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert (state["phase"], state["round"], state["reviewEngine"]) == ("reviewing", 2, "gemini")
+    worktree = Path(str(state["worktree"]))
+    fail_marker.unlink()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"HEAD:refs/heads/{state['branch']}"],
+        cwd=worktree, check=True,
+    )
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(51, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "integrated a fresh base and stopped before Gemini started" in resumed.stdout
+    assert "Local review convergence round 2/" in resumed.stdout
+    assert "Local review convergence round 3/" not in resumed.stdout
