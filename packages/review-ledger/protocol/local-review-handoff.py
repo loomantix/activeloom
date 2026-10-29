@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import re
 import subprocess
@@ -648,6 +651,42 @@ def _run_state(args: argparse.Namespace) -> None:
 
 
 def _start_run(args: argparse.Namespace) -> None:
+    approval_id = getattr(args, "restart_approval_id", None)
+    if approval_id is None:
+        _start_run_checked(args)
+        return
+    if not args.restart or getattr(args, "restart_from_run", None):
+        _fail("--restart-approval-id requires --restart without --restart-from-run")
+    path = Path(__file__).resolve().parents[2] / "hreview/scripts/herd-config.py"
+    spec = importlib.util.spec_from_file_location("restart_approval", path)
+    if spec is None or spec.loader is None:
+        _fail("restart approval helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    fields = {key: value for key, value in vars(args).items() if key != "handler"}
+    fields["authorization_file"] = _read_context(args.authorization_file)
+    fingerprint = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+    def operation(record: dict[str, Any], reserve: Any) -> str:
+        if record["deep"] and args.tier != "deep":
+            _fail("approval requires Deep review")
+        if record["scope_decision"] != getattr(args, "scope_decision", None):
+            _fail("scope decision differs from the restart approval")
+        args.restart_reserve = reserve
+        args.restart_intent = record.get("intent")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _start_run_checked(args)
+        return output.getvalue()
+
+    try:
+        output = helper.restart_transaction(args.repo, args.pr, args.head, approval_id, fingerprint, operation)
+    except helper.ApprovalError as exc:
+        _fail(str(exc))
+    print(output, end="")
+
+
+def _start_run_checked(args: argparse.Namespace) -> None:
     rows = _issue_comments(args.repo, args.pr)
     records = _run_records(rows)
     previous = records[-1] if records else None
@@ -721,7 +760,7 @@ def _start_run(args: argparse.Namespace) -> None:
     if (
         previous is not None
         and previous_end is None
-        and (not args.restart or replay_restart)
+        and (not args.restart or replay_restart or getattr(args, "restart_intent", None))
         and previous["tier"] == args.tier
         and previous["base"] == args.base
         and previous["start_head"] == args.head
@@ -746,6 +785,9 @@ def _start_run(args: argparse.Namespace) -> None:
                 replay_content[:at] + scope_match.group(0) + replay_content[at:]
             )
         if previous["content"] == replay_content:
+            intent = getattr(args, "restart_intent", None)
+            if intent is not None and intent["run_id"] != previous["run_id"]:
+                _fail("active run differs from reserved restart")
             _verify_reviewable_head(args.repo, args.pr, args.head)
             print(
                 json.dumps(
@@ -805,6 +847,9 @@ def _start_run(args: argparse.Namespace) -> None:
     )
     body = f"{marker}\n{content}"
     _verify_reviewable_head(args.repo, args.pr, args.head)
+    reserve = getattr(args, "restart_reserve", None)
+    if reserve is not None:
+        reserve(run_id)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
     _verify_reviewable_head(args.repo, args.pr, args.head)
     print(
@@ -1562,6 +1607,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--trigger", type=_trigger)
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
+    start.add_argument("--restart-approval-id", help="transactionally consume this user-recorded approval")
     start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")
     plan = start.add_mutually_exclusive_group()
     plan.add_argument("--sequence", help="legacy alias for --cycle")
