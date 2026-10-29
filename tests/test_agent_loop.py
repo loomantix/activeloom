@@ -356,7 +356,12 @@ elif args[:2] == ['pr', 'view']:
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
             os.environ.get('AGENT_PR_HEAD_OID', lagging_pr_head(remote_head)),
             os.environ.get('AGENT_PR_BASE_REF_NAME', base_name),
-            os.environ.get('AGENT_PR_BASE_OID', base_head),
+            (
+                os.environ['AGENT_PR_BASE_OID_WHEN_HEAD_LAGS']
+                if (state / 'pr-head-lag-reads').exists()
+                and 'AGENT_PR_BASE_OID_WHEN_HEAD_LAGS' in os.environ
+                else os.environ.get('AGENT_PR_BASE_OID', base_head)
+            ),
         ]))
     elif 'headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
@@ -2390,6 +2395,30 @@ def test_fresh_base_push_stops_when_the_pr_head_never_catches_up(
     assert result.stderr.count("PR head is") == 1
     assert "Could not publish fresh-base integration before review round 2" in result.stdout + result.stderr
     assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_fresh_base_push_stops_immediately_when_base_advances_during_head_lag(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "103"],
+        issues=[_issue(103)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={
+            "REMOTE_PATH": str(consumer[1]),
+            "AGENT_PR_HEAD_LAG_READS": "99",
+            "AGENT_PR_BASE_OID_WHEN_HEAD_LAGS": "0" * 40,
+        },
+        timeout=90,
+    )
+
+    assert result.returncode != 0
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "1"
+    assert "PR base advanced or diverged" in result.stderr
+    assert "PR head is" not in result.stderr
 
 
 _STRANDING_CLAUDE_HOOK = (
