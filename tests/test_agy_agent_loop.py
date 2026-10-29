@@ -210,11 +210,13 @@ def lagging_pr_head(remote_head):
     # GitHub moves a PR's head shortly after a push: report a pushed merge's
     # first parent for the first few reads.
     lag = int(os.environ.get('AGENT_PR_HEAD_LAG_READS', '0'))
+    if not lag:
+        return remote_head
     parents = subprocess.run(
         ['git', 'rev-list', '--parents', '-n', '1', remote_head],
         capture_output=True, text=True,
     ).stdout.split()
-    if not lag or len(parents) != 3:
+    if len(parents) != 3:
         return remote_head
     reads_file = state / 'pr-head-lag-reads'
     reads = int(reads_file.read_text()) if reads_file.exists() else 0
