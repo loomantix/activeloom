@@ -221,6 +221,15 @@ files directly instead of depending on mutable development trees or global
 skill symlinks. Consumer instructions and review addenda still come from the
 review worktree; model and effort are the run's pinned profile settings.
 
+Launches outside the runner, such as `/hreview` or a direct
+`run-agy-review.sh` call, nominate no surface. The launcher then builds the same
+kind of standalone checkout at its pin once, under
+`<git-common-dir>/activeloom-review/agy-surface/<sha>`, and reuses it. Agy's
+skill discovery is never consulted, because it finds the review worktree's own
+`.agents` copy. That checkout faces the same remote, commit, and cleanliness
+checks; when one refuses it, `--repair-surface` preserves it beside the
+original and rebuilds it.
+
 The managed Gemini checkout is a standalone Git repository, not a linked
 worktree of a developer's upstream clone. Moving that clone cannot invalidate
 the installation's Git metadata. For other linked worktrees, run

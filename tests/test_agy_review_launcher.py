@@ -67,13 +67,16 @@ def _trusted_environment(
 ) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
+    git_common = tmp_path / "git-common"
+    git_common.mkdir(exist_ok=True)
     fake_git = bin_dir / "git"
     # These stdlib-only stand-ins do not need site or subprocess coverage setup.
     # The real review helpers still run with their normal instrumentation.
     fake_git.write_text(
         "#!/usr/bin/env -S python3 -S\n"
-        "import os, pathlib, sys\n"
+        "import json, os, pathlib, shutil, sys\n"
         "args = sys.argv[1:]\n"
+        f"git_common = {str(git_common)!r}\n"
         f"local_head = {local_head!r}\n"
         f"remote_head = {remote_head!r}\n"
         f"surface_remote = {surface_remote!r}\n"
@@ -93,8 +96,17 @@ def _trusted_environment(
         "    if options_file:\n"
         "        with open(options_file, 'a', encoding='utf-8') as handle:\n"
         "            handle.write(' '.join(global_options) + '\\n')\n"
+        "def record_build(step):\n"
+        "    log = os.environ.get('AGY_GIT_BUILD_LOG')\n"
+        "    if log:\n"
+        "        with open(log, 'a', encoding='utf-8') as handle:\n"
+        "            handle.write(json.dumps([target, args, global_options]) + '\\n')\n"
+        "    if os.environ.get('AGY_TEST_BUILD_FAILS') == step:\n"
+        "        raise SystemExit('fatal: simulated ' + step + ' failure')\n"
         "if target is None:\n"
-        "    if args == ['rev-parse', 'HEAD']:\n"
+        "    if args == ['rev-parse', '--git-common-dir']:\n"
+        "        print(git_common)\n"
+        "    elif args == ['rev-parse', 'HEAD']:\n"
         "        print(local_head)\n"
         "    elif args == ['ls-remote', '--exit-code', 'origin', 'refs/heads/feature']:\n"
         "        print(remote_head + '\\trefs/heads/feature')\n"
@@ -103,6 +115,18 @@ def _trusted_environment(
         "            print(' M README.md')\n"
         "    else:\n"
         "        raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n"
+        # The managed-surface build: a fresh repository, the canonical
+        # remote, a shallow fetch of the pin, and a detached checkout that
+        # lays down the fixture surface.
+        "elif args == ['init', '-q']:\n"
+        "    record_build('init')\n"
+        "elif args[:3] == ['remote', 'add', 'origin']:\n"
+        "    record_build('remote')\n"
+        "elif args[:1] == ['fetch']:\n"
+        "    record_build('fetch')\n"
+        "elif args[:1] == ['checkout']:\n"
+        "    record_build('checkout')\n"
+        "    shutil.copytree(os.environ['AGY_TEST_SURFACE_SOURCE'], pathlib.Path(target) / '.agents')\n"
         "elif args == ['rev-parse', '--show-toplevel']:\n"
         "    print(pathlib.Path(target).parent)\n"
         "elif args == ['remote', 'get-url', 'origin']:\n"
@@ -147,6 +171,9 @@ def _trusted_environment(
         # The settings a review-chain run pins; profile-file resolution has its own tests.
         "ACTIVELOOM_REVIEW_MODEL": "gemini-3.7-flash-high",
         "ACTIVELOOM_REVIEW_EFFORT": "high",
+        # The runner always nominates a surface; _fake_agy builds it here.
+        # The managed-surface tests remove it to take the unnominated path.
+        "ACTIVELOOM_REVIEW_SURFACE": str(tmp_path / "agy-surface" / ".agents"),
     }
 
 
@@ -176,8 +203,6 @@ def _fake_agy(
     *,
     review_status: str = "SUCCESS",
     review_payload: str | None = None,
-    skills_payload: str | None = None,
-    skills_exit_code: str = "0",
     stale: bool = False,
     ledger_version: str = LEDGER_VERSION,
     deep_contract: str = (
@@ -189,11 +214,9 @@ def _fake_agy(
     deep_skill = surface / "skills" / skill_parent / "SKILL.md"
     deep_skill.parent.mkdir(parents=True)
     deep_skill.write_text(deep_contract, encoding="utf-8")
-    display_skill = deep_skill
     if stale:
         canonical_skill_dir = surface / "skills/deepcritique"
         canonical_skill_dir.symlink_to(deep_skill.parent, target_is_directory=True)
-        display_skill = canonical_skill_dir / "SKILL.md"
     for path, content in _surface_files(surface, ledger_version=ledger_version).items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -206,16 +229,10 @@ def _fake_agy(
         "import json, os, sys\n"
         "args = sys.argv[1:]\n"
         "prompt = args[-1]\n"
+        # Skill discovery would resolve the review worktree's own .agents
+        # copy, so the launcher must never ask for it.
         "if prompt == '/skills':\n"
-        f"    skills_exit = int(os.environ.get('AGY_SKILLS_TEST_EXIT_CODE', {skills_exit_code!r}))\n"
-        + (
-            f"    sys.stdout.write({skills_payload!r})\n"
-            if skills_payload is not None
-            else "    print(json.dumps({'status': 'SUCCESS', 'command': {'data': {'skills': [\n"
-            f"        {{'name': 'deepcritique', 'path': {str(display_skill)!r}}}\n"
-            "    ]}}}))\n"
-        )
-        + "    raise SystemExit(skills_exit)\n"
+        "    raise SystemExit('the launcher must not use Agy skill discovery')\n"
         "else:\n"
         "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n"
         "        json.dump({'argv': args, 'env': {\n"
@@ -295,7 +312,7 @@ def test_launcher_executes_the_pinned_model_effort_and_permission_contract(tmp_p
     ]
     assert len(argv) == 15
     assert argv[13] == "--print"
-    assert argv[14].startswith("/deepcritique 123\n")
+    assert argv[14].startswith(f"Read {surface}/skills/deepcritique/SKILL.md and follow it")
     assert "Continue review on PR #123" in argv[14]
     assert "Use gemini as the active local-review engine identity" in argv[14]
     assert f"relay surface is {surface}" in argv[14]
@@ -416,99 +433,6 @@ def test_launcher_rejects_stale_backup_skill_before_review(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "stale or unexpected deepcritique skill" in result.stderr
-    assert not argv_file.exists()
-
-
-def test_launcher_names_the_swept_surface_behind_a_dangling_skill_link(
-    tmp_path: Path,
-) -> None:
-    # Worktree cleanup removing the pinned surface leaves every installed skill
-    # link dangling at once. The bare ENOENT that produced named neither the
-    # link nor the pin, so the failure read as a launcher bug for a whole
-    # session. Assert the message carries what it takes to restore the surface.
-    missing_surface = tmp_path / "swept-surface" / ".agents"
-    link = tmp_path / "installed-skills" / "deepcritique"
-    link.parent.mkdir(parents=True)
-    link.symlink_to(missing_surface / "skills/deepcritique", target_is_directory=True)
-    payload = json.dumps(
-        {
-            "status": "SUCCESS",
-            "command": {"data": {"skills": [
-                {"name": "deepcritique", "path": str(link / "SKILL.md")}
-            ]}},
-        }
-    )
-    argv_file = tmp_path / "argv.json"
-    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload)
-    environment = {
-        **_trusted_environment(tmp_path),
-        "AGY_ARGV_FILE": str(argv_file),
-        "AGY_REVIEW_CLI": str(fake_agy),
-    }
-
-    result = _run(environment)
-
-    assert result.returncode == 1
-    assert "cannot be resolved" in result.stderr
-    assert str(link) in result.stderr
-    assert str(missing_surface / "skills/deepcritique") in result.stderr
-    assert AGY_SURFACE_SHA in result.stderr
-    assert "git worktree add" in result.stderr
-    assert not argv_file.exists()
-
-
-def test_launcher_explains_a_surface_that_offers_no_deepcritique_skill(
-    tmp_path: Path,
-) -> None:
-    # The installer prunes dangling links it owns, so a swept surface can also
-    # present as the skill simply being absent rather than unresolvable.
-    payload = json.dumps(
-        {
-            "status": "SUCCESS",
-            "command": {"data": {"skills": [
-                {"name": "critique", "path": str(tmp_path / "gone/skills/critique/SKILL.md")}
-            ]}},
-        }
-    )
-    argv_file = tmp_path / "argv.json"
-    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload)
-    environment = {
-        **_trusted_environment(tmp_path),
-        "AGY_ARGV_FILE": str(argv_file),
-        "AGY_REVIEW_CLI": str(fake_agy),
-    }
-
-    result = _run(environment)
-
-    assert result.returncode == 1
-    assert "must resolve exactly one deepcritique skill" in result.stderr
-    assert AGY_SURFACE_SHA in result.stderr
-    assert "git worktree add" in result.stderr
-    assert not argv_file.exists()
-
-
-def test_launcher_rejects_ambiguous_skill_resolution(tmp_path: Path) -> None:
-    argv_file = tmp_path / "argv.json"
-    fake_agy, surface = _fake_agy(tmp_path)
-    source = fake_agy.read_text(encoding="utf-8")
-    duplicate = str(surface / "skills/deepcritique/SKILL.md")
-    fake_agy.write_text(
-        source.replace(
-            "    ]}}}))\n",
-            f"        , {{'name': 'deepcritique', 'path': {duplicate!r}}}\n    ]}}}}}}))\n",
-        ),
-        encoding="utf-8",
-    )
-    environment = {
-        **_trusted_environment(tmp_path),
-        "AGY_ARGV_FILE": str(argv_file),
-        "AGY_REVIEW_CLI": str(fake_agy),
-    }
-
-    result = _run(environment)
-
-    assert result.returncode == 1
-    assert "exactly one deepcritique skill" in result.stderr
     assert not argv_file.exists()
 
 
@@ -753,6 +677,222 @@ def test_preflight_accepts_real_pinned_surface(tmp_path: Path, harness: str) -> 
     assert not argv_file.exists()
 
 
+# --------------------------------------------------------------------------
+# managed relay surface: every caller outside the review-chain runner
+# --------------------------------------------------------------------------
+
+
+def _managed_checkout(tmp_path: Path) -> Path:
+    return tmp_path / "git-common/activeloom-review/agy-surface" / AGY_SURFACE_SHA
+
+
+def _managed_launch(
+    tmp_path: Path, harness: str, **trusted: str
+) -> tuple[list[str], dict[str, str], Path, Path]:
+    fake_agy, fixture = _fake_agy(tmp_path)
+    argv_file = tmp_path / "argv.json"
+    build_log = tmp_path / "build.log"
+    scripts = tmp_path / "launcher"
+    scripts.mkdir()
+    launcher = scripts / "run-agy-review.sh"
+    launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
+    launcher.chmod(0o755)
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((ROOT / ".codex/skills/critique/scripts" / name).read_bytes())
+    (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
+    (scripts / "local-review-handoff.py").write_text(
+        '"""Run admission is outside these surface tests."""\n', encoding="utf-8"
+    )
+    command = _command()
+    command[0] = str(launcher)
+    environment = {
+        **_trusted_environment(tmp_path, **trusted),
+        "AGY_REVIEW_CLI": str(fake_agy),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_GIT_BUILD_LOG": str(build_log),
+        "AGY_TEST_SURFACE_SOURCE": str(fixture),
+    }
+    del environment["ACTIVELOOM_REVIEW_SURFACE"]
+    return command, environment, argv_file, build_log
+
+
+def _launch(command: list[str], environment: dict[str, str], *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [*command, *extra], env=environment, cwd=ROOT, capture_output=True, text=True
+    )
+
+
+def _build_steps(build_log: Path) -> list[list[str]]:
+    if not build_log.exists():
+        return []
+    return [json.loads(line)[1] for line in build_log.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_builds_and_nominates_the_managed_surface(tmp_path: Path, harness: str) -> None:
+    # Nothing nominates a surface outside the runner. The launcher must build
+    # the canonical checkout at the pin itself, never ask Agy's discovery
+    # (which resolves the consumer's own .agents copy), and hand that
+    # checkout to the reviewer.
+    command, environment, argv_file, build_log = _managed_launch(tmp_path, harness)
+
+    result = _launch(command, environment)
+
+    assert result.returncode == 0, result.stderr
+    surface = _managed_checkout(tmp_path) / ".agents"
+    argv = json.loads(argv_file.read_text(encoding="utf-8"))["argv"]
+    assert argv[argv.index("--add-dir") + 1] == str(surface)
+    assert argv[-1].startswith(f"Read {surface}/skills/deepcritique/SKILL.md and follow it")
+    assert _build_steps(build_log) == [
+        ["init", "-q"],
+        ["remote", "add", "origin", "https://github.com/loomantix/activeloom.git"],
+        ["fetch", "-q", "--no-tags", "--depth=1", "origin", AGY_SURFACE_SHA],
+        ["checkout", "-q", "--detach", AGY_SURFACE_SHA],
+    ]
+    for line in build_log.read_text(encoding="utf-8").splitlines():
+        options = json.loads(line)[2]
+        assert "core.hooksPath=/dev/null" in options
+        assert "core.fsmonitor=" in options
+    # The build is staged and renamed into place, so nothing else remains.
+    assert [p.name for p in _managed_checkout(tmp_path).parent.iterdir()] == [AGY_SURFACE_SHA]
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_reuses_the_managed_surface(tmp_path: Path, harness: str) -> None:
+    command, environment, _, build_log = _managed_launch(tmp_path, harness)
+
+    for _ in range(2):
+        result = _launch(command, environment, "--preflight-only")
+        assert result.returncode == 0, result.stderr
+
+    assert _build_steps(build_log).count(["init", "-q"]) == 1
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+@pytest.mark.parametrize(
+    ("trusted", "expected"),
+    [
+        ({"surface_remote": "https://github.com/example/consumer.git"}, "untrusted Git remote"),
+        ({"surface_remote": "https://github.com/attacker/activeloom.git"}, "untrusted Git remote"),
+        ({"surface_head": "c" * 40}, f"not at the pinned activeloom commit {AGY_SURFACE_SHA}"),
+    ],
+)
+def test_managed_surface_still_faces_every_provenance_check(
+    tmp_path: Path, harness: str, trusted: dict[str, str], expected: str
+) -> None:
+    # Building the checkout grants it no trust: a managed checkout whose
+    # remote or commit differs from the pin is refused like any other.
+    command, environment, argv_file, _ = _managed_launch(tmp_path, harness, **trusted)
+
+    result = _launch(command, environment)
+
+    assert result.returncode == 1
+    assert expected in result.stderr
+    assert str(_managed_checkout(tmp_path)) in result.stderr
+    assert "--repair-surface" in result.stderr
+    assert not argv_file.exists()
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_refuses_a_dirty_managed_surface(tmp_path: Path, harness: str) -> None:
+    command, environment, argv_file, _ = _managed_launch(tmp_path, harness)
+
+    result = _launch(command, {**environment, "AGY_TEST_SURFACE_DIRTY": "1"})
+
+    assert result.returncode == 1
+    assert "surface checkout must be clean" in result.stderr
+    assert "--repair-surface" in result.stderr
+    assert not argv_file.exists()
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_repair_surface_preserves_and_rebuilds_the_managed_checkout(
+    tmp_path: Path, harness: str
+) -> None:
+    command, environment, _, build_log = _managed_launch(tmp_path, harness)
+    assert _launch(command, environment, "--preflight-only").returncode == 0
+    checkout = _managed_checkout(tmp_path)
+    (checkout / "evidence.txt").write_text("left by a previous pass\n", encoding="utf-8")
+
+    result = _launch(command, environment, "--preflight-only", "--repair-surface")
+
+    assert result.returncode == 0, result.stderr
+    assert not (checkout / "evidence.txt").exists()
+    preserved = [p for p in checkout.parent.iterdir() if ".preserved." in p.name]
+    assert len(preserved) == 1
+    assert (preserved[0] / AGY_SURFACE_SHA / "evidence.txt").is_file()
+    assert str(preserved[0]) in result.stderr
+    assert _build_steps(build_log).count(["init", "-q"]) == 2
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+@pytest.mark.parametrize("step", ["fetch", "checkout"])
+def test_failed_managed_build_leaves_nothing_behind(tmp_path: Path, harness: str, step: str) -> None:
+    command, environment, argv_file, _ = _managed_launch(tmp_path, harness)
+
+    result = _launch(command, {**environment, "AGY_TEST_BUILD_FAILS": step})
+
+    assert result.returncode == 1
+    assert "cannot build the managed relay surface" in result.stderr
+    assert "network access" in result.stderr
+    assert list(_managed_checkout(tmp_path).parent.iterdir()) == []
+    assert not argv_file.exists()
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_launcher_refuses_a_symlinked_managed_surface(tmp_path: Path, harness: str) -> None:
+    command, environment, argv_file, build_log = _managed_launch(tmp_path, harness)
+    checkout = _managed_checkout(tmp_path)
+    checkout.parent.mkdir(parents=True)
+    checkout.symlink_to(tmp_path / "agy-surface", target_is_directory=True)
+
+    result = _launch(command, environment)
+
+    assert result.returncode == 1
+    assert "managed relay surface cannot be a symlink" in result.stderr
+    assert _build_steps(build_log) == []
+    assert not argv_file.exists()
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+@pytest.mark.parametrize(
+    ("remote", "accepted"),
+    [
+        ("https://github.com/loomantix/activeloom.git", True),
+        ("https://github.com/example/consumer.git", False),
+    ],
+)
+def test_preflight_uses_a_real_managed_surface_without_nomination(
+    tmp_path: Path, harness: str, remote: str, accepted: bool
+) -> None:
+    # The reported failure: a consumer worktree, no nominated surface and no
+    # hand-made trusted worktree. Once the managed checkout exists, preflight
+    # passes on real Git; a checkout with the consumer's remote is refused.
+    real_git = shutil.which("git")
+    assert real_git
+    checkout = _managed_checkout(tmp_path)
+    checkout.parent.mkdir(parents=True)
+    subprocess.run([real_git, "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(checkout)], check=True)
+    subprocess.run([real_git, "-C", str(checkout), "checkout", "-q", "--detach", AGY_SURFACE_SHA], check=True)
+    subprocess.run([real_git, "-C", str(checkout), "remote", "set-url", "origin", remote], check=True)
+    command, environment, argv_file, build_log = _managed_launch(tmp_path, harness)
+    fake_git = tmp_path / "bin/git"
+    source = fake_git.read_text().replace(
+        "args = sys.argv[1:]\n",
+        f"args = sys.argv[1:]\nif '-C' in args:\n    os.execv({real_git!r}, [{real_git!r}, *args])\n",
+        1,
+    )
+    fake_git.write_text(source)
+
+    result = _launch(command, environment, "--preflight-only")
+
+    assert (result.returncode == 0) is accepted, result.stderr
+    if not accepted:
+        assert "untrusted Git remote" in result.stderr
+    assert not build_log.exists()
+    assert not argv_file.exists()
+
+
 @pytest.mark.parametrize("harness", [".claude", ".codex"])
 @pytest.mark.parametrize(
     ("remote", "accepted"),
@@ -938,31 +1078,6 @@ def test_launcher_failure_directs_the_caller_to_the_ledger(
     assert "synthetic tool timeout" in result.stderr
     assert "round complete" not in result.stderr
     assert result.stdout == ""
-
-
-@pytest.mark.parametrize(
-    ("payload", "exit_code", "expected"),
-    [
-        (json.dumps({"status": "ERROR", "error": "auth failure"}), "1", "skill preflight did not succeed (exit 1): ERROR"),
-        (json.dumps({"status": "CANCELED"}), "0", "skill preflight did not succeed (exit 0): CANCELED"),
-        ("{bad json", "0", "skill preflight returned invalid JSON (exit 0)"),
-        (json.dumps(["not", "dict"]), "0", "skill preflight returned non-dict JSON (exit 0)"),
-    ],
-)
-def test_launcher_requires_successful_skill_preflight(
-    tmp_path: Path, payload: str, exit_code: str, expected: str
-) -> None:
-    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload, skills_exit_code=exit_code)
-    environment = {
-        **_trusted_environment(tmp_path),
-        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
-        "AGY_REVIEW_CLI": str(fake_agy),
-    }
-
-    result = _run(environment)
-
-    assert result.returncode == 1
-    assert expected in result.stderr
 
 
 # --------------------------------------------------------------------------
@@ -1352,7 +1467,7 @@ def test_review_workflow_documents_the_auto_relay_contract() -> None:
 def test_managed_installation_preflight_ignores_global_skill_links(
     tmp_path: Path, dirty: bool
 ) -> None:
-    fake_agy, surface = _fake_agy(tmp_path, skills_payload="invalid global discovery")
+    fake_agy, surface = _fake_agy(tmp_path)
     marker = tmp_path / "launch.json"
     argv_file = tmp_path / "argv.json"
     result = subprocess.run(

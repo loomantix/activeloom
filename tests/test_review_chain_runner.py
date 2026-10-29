@@ -3981,7 +3981,7 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
         "ordinary-git-error",
     ],
 )
-@pytest.mark.parametrize("diagnostic", ["reviewer", "null"])
+@pytest.mark.parametrize("diagnostic", ["reviewer", "null", "gitfile"])
 def test_legacy_git_failure_requires_terminal_controller_evidence(
     harness: Any, corruption: str, diagnostic: str
 ) -> None:
@@ -3993,6 +3993,10 @@ def test_legacy_git_failure_requires_terminal_controller_evidence(
         if diagnostic == "null"
         else "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
     )
+    if diagnostic == "gitfile":
+        worker.write_text(
+            "fatal: gitfile does not point to a valid repository: /missing/linked/.git\n"
+        )
     controller_log = harness.directory / "original-controller.log"
     terminal = (
         f"Starting gemini pass 2 at {HEAD}\n"
@@ -4031,9 +4035,11 @@ def test_legacy_git_failure_requires_terminal_controller_evidence(
         runner.legacy_failure(pending, worker)
 
 
-@pytest.fixture(params=["/missing/primary/.git/worktrees/reviewer", "(null)"])
+@pytest.fixture(params=["/missing/primary/.git/worktrees/reviewer", "(null)", "gitfile"])
 def moved_worktree_failure(request: pytest.FixtureRequest) -> bytes:
     """Pin the historical diagnostic recognized by the v1 recovery contract."""
+    if request.param == "gitfile":
+        return b"fatal: gitfile does not point to a valid repository: /missing/linked/.git\n"
     return f"fatal: not a git repository: {request.param}\n".encode()
 
 
