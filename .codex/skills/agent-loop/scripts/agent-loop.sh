@@ -3600,7 +3600,7 @@ finalize_pr() {
 round_moved_only_by_base_merge() {
     local engine="$1" round="$2" state_head="$3" current_head="$4"
     local parent merged_base extra merged_tree
-    compgen -G "$AGENT_LOOP_LOG_DIR/$engine-review-round-$round[.-]*" >/dev/null && return 1
+    compgen -G "$AGENT_LOOP_LOG_DIR/$engine-review-round-${round}[.-]*" >/dev/null && return 1
     read -r _ parent merged_base extra < <(git rev-list --parents -n 1 "$current_head")
     [ "$parent" = "$state_head" ] && [ -n "$merged_base" ] && [ -z "$extra" ] || return 1
     git merge-base --is-ancestor "$merged_base" "$AGENT_LOOP_REVIEW_BASE" || return 1
