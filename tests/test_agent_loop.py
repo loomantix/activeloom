@@ -245,6 +245,22 @@ def advance_base_at_merged_checkpoint():
         subprocess.run(['/usr/bin/git', '-C', str(clone), 'commit', '-m', 'chore: advance base'], check=True, capture_output=True)
         subprocess.run(['/usr/bin/git', '-C', str(clone), 'push', 'origin', 'main'], check=True, capture_output=True)
         return
+def lagging_pr_head(remote_head):
+    # GitHub moves a PR's head shortly after a push: report a pushed merge's
+    # first parent for the first few reads.
+    lag = int(os.environ.get('AGENT_PR_HEAD_LAG_READS', '0'))
+    parents = subprocess.run(
+        ['git', 'rev-list', '--parents', '-n', '1', remote_head],
+        capture_output=True, text=True,
+    ).stdout.split()
+    if not lag or len(parents) != 3:
+        return remote_head
+    reads_file = state / 'pr-head-lag-reads'
+    reads = int(reads_file.read_text()) if reads_file.exists() else 0
+    if reads >= lag:
+        return remote_head
+    reads_file.write_text(str(reads + 1))
+    return parents[1]
 if args[:2] == ['api', 'user']:
     actor_file = state / 'gh-actor'
     actor = actor_file.read_text().strip() if actor_file.exists() else 'tester'
@@ -336,7 +352,7 @@ elif args[:2] == ['pr', 'view']:
                 'false' if (state / 'pr-ready').exists() else 'true',
             ),
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
-            os.environ.get('AGENT_PR_HEAD_OID', remote_head),
+            os.environ.get('AGENT_PR_HEAD_OID', lagging_pr_head(remote_head)),
             os.environ.get('AGENT_PR_BASE_REF_NAME', base_name),
             os.environ.get('AGENT_PR_BASE_OID', base_head),
         ]))
@@ -2331,6 +2347,47 @@ def test_base_advance_before_the_codex_hook_starts_keeps_the_round(
     comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
     assert "local-review-pass:v3 engine=claude round=2" in comments
     assert "round=3" not in comments
+
+
+def test_fresh_base_push_waits_for_the_pr_head_to_catch_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "101"],
+        issues=[_issue(101)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1]), "AGENT_PR_HEAD_LAG_READS": "2"},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "2"
+    assert "PR head is" not in result.stderr
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_fresh_base_push_stops_when_the_pr_head_never_catches_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "102"],
+        issues=[_issue(102)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_claude_hook_advancing_base_once(tmp_path)
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1]), "AGENT_PR_HEAD_LAG_READS": "99"},
+        timeout=90,
+    )
+
+    assert result.returncode != 0
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "5"
+    assert result.stderr.count("PR head is") == 1
+    assert "Could not publish fresh-base integration before review round 2" in result.stdout + result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 _STRANDING_CLAUDE_HOOK = (

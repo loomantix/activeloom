@@ -504,6 +504,11 @@ whose head moved past a Codex checkpoint only by that round's clean fresh-base
 merge, with no pass files for the round, resumes that round rather than the
 next.
 
+GitHub moves a PR's head shortly after a push, not with it. After publishing a
+fresh-base merge, the wrapper reads the PR head up to five times, two seconds
+apart, before it stops as `uncertain-mutation`. Any other change to the PR stops
+it at once.
+
 ### Parking a failed batch issue
 
 With `batch_on_issue_failure = park`, an ordered batch does not halt on an

@@ -205,6 +205,23 @@ with (state / 'gh.log').open('a') as handle:
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
 
 
+
+def lagging_pr_head(remote_head):
+    # GitHub moves a PR's head shortly after a push: report a pushed merge's
+    # first parent for the first few reads.
+    lag = int(os.environ.get('AGENT_PR_HEAD_LAG_READS', '0'))
+    parents = subprocess.run(
+        ['git', 'rev-list', '--parents', '-n', '1', remote_head],
+        capture_output=True, text=True,
+    ).stdout.split()
+    if not lag or len(parents) != 3:
+        return remote_head
+    reads_file = state / 'pr-head-lag-reads'
+    reads = int(reads_file.read_text()) if reads_file.exists() else 0
+    if reads >= lag:
+        return remote_head
+    reads_file.write_text(str(reads + 1))
+    return parents[1]
 def endpoint_pr_number(pattern):
     # A batch opens one PR per issue, so the stub cannot serve a single
     # hardcoded number: the ledger binds every attestation to (repo, PR), and
@@ -293,7 +310,7 @@ elif args[:2] == ['pr', 'view']:
         head = (
             raced_head.read_text()
             if raced_head.exists()
-            else os.environ.get('AGENT_PR_HEAD_OID', remote_head)
+            else os.environ.get('AGENT_PR_HEAD_OID', lagging_pr_head(remote_head))
         )
         base_branch = os.environ.get('AGENT_PR_BASE_REF_NAME', 'main')
         base_head = subprocess.run(
@@ -1680,3 +1697,30 @@ def test_resume_after_a_published_fresh_base_merge_keeps_the_round(
     assert "integrated a fresh base and stopped before Gemini started" in resumed.stdout
     assert "Local review convergence round 2/" in resumed.stdout
     assert "Local review convergence round 3/" not in resumed.stdout
+
+
+def test_fresh_base_push_waits_for_the_pr_head_to_catch_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    clean = _config_v3(tmp_path).split("claude_review_hook = ", 1)[1].split("\n", 1)[0]
+    advance = (
+        'if [ ! -e "$AGENT_STATE_DIR/first-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/first-advance"; '
+        'clone="$AGENT_STATE_DIR/base-clone"; '
+        '/usr/bin/git clone -q "$(git remote get-url origin)" "$clone"; '
+        "/usr/bin/git -C \"$clone\" -c user.name=Test -c user.email=test@example.invalid "
+        "commit -q --allow-empty -m 'chore: advance base'; "
+        '/usr/bin/git -C "$clone" push -q origin main; fi; '
+    )
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config_v3(tmp_path, claude_review_hook=advance + clean),
+        extra_env={"AGENT_PR_HEAD_LAG_READS": "2"},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "2"
+    assert "PR head is" not in result.stderr
