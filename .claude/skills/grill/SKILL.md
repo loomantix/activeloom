@@ -73,7 +73,7 @@ Then summarize: the decisions made, the alternatives rejected and why, and anyth
 
 ## Record and hand back
 
-After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. When the technical decisions are settled but an engineering constraint reopens product intent, use `settled; next: product-grill` for only the affected choices. Use `provisional; next: grill` only while this technical interview itself still needs evidence or input.
+After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. When the technical decisions are settled but an engineering constraint reopens product intent, use `settled; next: product-grill` for only the affected choices. Use `provisional; next: grill` only while this technical interview itself still needs evidence or input. A settled decomposed coordination parent updates its existing ready or excluded children through refinement's explicit `--existing-child-plan` handback rather than a duplicate split.
 
 Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
 

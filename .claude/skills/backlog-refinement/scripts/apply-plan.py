@@ -239,12 +239,16 @@ def validate_existing_children(plan: dict[str, Any]) -> list[str]:
             if entry.get('decision_comment') is not None or not isinstance(entry.get('body'), str) or not entry['body'].strip():
                 errors.append(f'#{number}: existing child needs its exact replacement body, not a separate decision')
         add = entry.get('add_labels', [])
-        expected = ['agent-bail: epic'] if children is not None else [x for x in add if x.startswith(BAIL_PREFIX)]
-        if (entry.get('verdict') != 'exclude' or entry.get('children') or entry.get('close_reason') is not None
+        verdict = entry.get('verdict')
+        expected = (['agent-bail: epic'] if children is not None
+                    else [READY] if verdict == 'ready'
+                    else [x for x in add if x.startswith(BAIL_PREFIX)])
+        if ((verdict != 'exclude' if children is not None else verdict not in ('ready', 'exclude'))
+                or entry.get('children') or entry.get('close_reason') is not None
                 or entry.get('remove_labels') or len(expected) != 1
                 or set(add) - {REFINED, *expected} or not set(expected) <= set(add)
-                or (children is None and expected[0] in GRILL_CLASS_BAILS | {STALE})):
-            errors.append(f'#{number}: existing handback preserves its exclusion, with no new interview, priority or close')
+                or (children is None and verdict == 'exclude' and expected[0] in GRILL_CLASS_BAILS | {STALE})):
+            errors.append(f'#{number}: existing handback preserves its ready or excluded state, with no new interview, priority or close')
         if not isinstance(entry.get('expected_body_sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', entry['expected_body_sha256']):
             errors.append(f'#{number}: existing handback needs the reviewed current body SHA256')
     if len(bound) != len(entries):
@@ -628,9 +632,12 @@ class ExistingHandback:
             labels = {x['name'] for x in issue.get('labels', [])}
             bails = {x for x in labels if x.startswith(BAIL_PREFIX)}
             expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX)}
+            is_ready = entry['verdict'] == 'ready'
             if (issue.get('state') != 'OPEN' or issue.get('assignees') or bails != expected
-                    or REFINED not in labels or READY in labels or any(x.startswith(NEEDS_PREFIX) for x in labels)):
-                fail(f'#{number}: existing handback requires OPEN, unassigned, unchanged exclusion and no pending interview')
+                    or REFINED not in labels or (READY in labels) != is_ready
+                    or (is_ready and BLOCKED in labels)
+                    or any(x.startswith(NEEDS_PREFIX) for x in labels)):
+                fail(f'#{number}: existing handback requires OPEN, unassigned, unchanged ready or excluded state and no pending interview')
             body = issue.get('body')
             if not isinstance(body, str):
                 fail(f'#{number}: missing current body precondition')
@@ -677,10 +684,13 @@ class ExistingHandback:
         if entry['comment'].strip() not in comments:
             fail(f'#{number}: refinement comment readback did not match')
         if entry.get('body'):
+            prefix = ('Suggested agent-ready body (rewrite mode: suggest):\n\n'
+                      if entry['verdict'] == 'ready'
+                      else 'Suggested reviewed body (still excluded; rewrite mode: suggest):\n\n')
             if self.config.rewrite_mode == 'edit':
                 if issue.get('body') != entry['body'].rstrip() + '\n':
                     fail(f'#{number}: replacement body readback did not match')
-            elif ('Suggested reviewed body (still excluded; rewrite mode: suggest):\n\n' + entry['body']).strip() not in comments:
+            elif (prefix + entry['body']).strip() not in comments:
                 fail(f'#{number}: excluded body suggestion readback did not match')
         if number not in self.state['done']:
             self.state['done'].append(number)
@@ -775,8 +785,9 @@ def apply_entry(
     body = entry.get("body")
     if body:
         if config.rewrite_mode == "suggest":
-            prefix = ('Suggested reviewed body (still excluded; rewrite mode: suggest):\n\n' if bound
-                      else 'Suggested agent-ready body (rewrite mode: suggest):\n\n')
+            prefix = ('Suggested agent-ready body (rewrite mode: suggest):\n\n'
+                      if entry['verdict'] == 'ready'
+                      else 'Suggested reviewed body (still excluded; rewrite mode: suggest):\n\n')
             suggestion = prefix + body
             if suggestion.strip() not in existing:
                 if existing_handback is not None:

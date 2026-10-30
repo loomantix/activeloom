@@ -145,8 +145,9 @@ After the user confirms the summary, choose `settled`, `provisional`, `dont-buil
 For a later pass on a decomposed coordination parent, distinguish questions the
 parent still owes from work owned by its children. A genuinely settled parent
 can use `settled; next: refine` and retain its epic exclusion through refinement's
-explicit existing-child handback. Its excluded children can receive approved
-specification updates without becoming ready. Use original private split proof,
+explicit existing-child handback. Its existing ready or excluded children can
+receive approved specification updates while preserving their current
+ready/exclusion state. Use original private split proof,
 matching native links and exact body hashes; always confirm the full existing-child
 preview, including in auto mode. Missing evidence, interviews or proof remain
 blocks, never invented readiness or a duplicate split.
