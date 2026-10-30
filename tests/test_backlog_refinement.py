@@ -1356,10 +1356,13 @@ class ExistingChildRemote:
 def _existing_child_setup(
     mod: ModuleType, monkeypatch: pytest.MonkeyPatch, directory: Path,
     *, mode: str = 'edit', auto: str = 'ask', flags: tuple[str, ...] = ('--confirm-summary', '--confirm-handback'),
+    child_verdict: str = 'exclude',
 ) -> tuple[dict[str, Any], Path, Path, ExistingChildRemote]:
     """Bind a new plan to a previous private split receipt and native link."""
     original = directory / 'original.json'
-    original_assessment = _entry(add_labels=['agent-bail: credential-gate'])
+    child_labels = ['dev: agent'] if child_verdict == 'ready' else ['agent-bail: credential-gate']
+    original_assessment = _entry(verdict=child_verdict, add_labels=child_labels,
+                                 body='Old child specification.' if child_verdict == 'ready' else None)
     original_assessment.pop('number')
     split = {'issues': [_entry(number=101, add_labels=['agent-bail: epic'],
                               decision_comment=_decision('split', kind='product-grill'),
@@ -1375,7 +1378,7 @@ def _existing_child_setup(
     bodies = {101: 'Coordination contract.\n', 102: 'Old evidence specification.\n\n' + marker + '\n'}
     parent = _entry(number=101, add_labels=['agent-bail: epic'], decision_comment=_decision(kind='product-grill'),
                     existing_children=[102], expected_body_sha256=hashlib.sha256(bodies[101].encode()).hexdigest())
-    child = _entry(number=102, add_labels=['agent-bail: credential-gate'], handback_parent=101,
+    child = _entry(number=102, verdict=child_verdict, add_labels=child_labels, handback_parent=101,
                    body='Revised evidence specification; approval still owed.\n\n' + marker + '\n',
                    expected_body_sha256=hashlib.sha256(bodies[102].encode()).hexdigest())
     plan = {'issues': [parent, child]}
@@ -1393,11 +1396,14 @@ def _existing_child_setup(
     return plan, path, original, remote
 
 
+@pytest.mark.parametrize('child_verdict', ['exclude', 'ready'])
 @pytest.mark.parametrize('mode', ['edit', 'suggest'])
 def test_existing_child_handback_preserves_exclusion_and_retries_exactly(
-    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, child_verdict: str
 ) -> None:
-    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, mode=mode)
+    plan, path, _, remote = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path, mode=mode, child_verdict=child_verdict
+    )
     old_body = remote.issues[102]['body']
     old_labels = {n: issue['labels'][:] for n, issue in remote.issues.items()}
     assert apply_mod.main() == 0
@@ -1406,7 +1412,10 @@ def test_existing_child_handback_preserves_exclusion_and_retries_exactly(
     assert all(i['state'] == 'OPEN' and not i['assignees'] for i in remote.issues.values())
     assert remote.mutations[-1] == (101, 'comment')
     assert all(n == 102 for n, _ in remote.mutations[:-1])
-    assert 'agent-ready' not in json.dumps(remote.issues[102]['comments'])
+    if child_verdict == 'exclude':
+        assert 'agent-ready' not in json.dumps(remote.issues[102]['comments'])
+    elif mode == 'suggest':
+        assert 'Suggested agent-ready body' in json.dumps(remote.issues[102]['comments'])
     mutations = remote.mutations[:]
     assert apply_mod.main() == 0
     assert remote.mutations == mutations
@@ -1418,6 +1427,7 @@ def test_existing_child_handback_preserves_exclusion_and_retries_exactly(
     {'existing_children': [101]}, {'existing_children': [103]}, {'handback_parent': 102},
     {'expected_body_sha256': 'not-a-hash'}, {'decision_comment': None},
     {'add_labels': ['agent-bail: epic', 'needs: grill']},
+    {'verdict': 'ready', 'add_labels': ['dev: agent']},
     {'decision_comment': _decision(next_step='grill')},
 ])
 def test_existing_child_handback_rejects_malformed_parent_bindings(
@@ -1430,7 +1440,9 @@ def test_existing_child_handback_rejects_malformed_parent_bindings(
 
 @pytest.mark.parametrize('change', [
     {'handback_parent': 999}, {'handback_parent': True}, {'handback_parent': 102},
-    {'body': ''}, {'expected_body_sha256': None}, {'verdict': 'ready', 'add_labels': ['dev: agent']},
+    {'body': ''}, {'expected_body_sha256': None},
+    {'verdict': 'ready', 'add_labels': ['dev: agent', 'priority: low']},
+    {'verdict': 'exclude', 'add_labels': ['agent-bail: spec-gap']},
     {'add_labels': ['agent-bail: credential-gate', 'priority: low']},
     {'remove_labels': ['priority: high']}, {'decision_comment': _decision()},
 ])
@@ -1444,11 +1456,15 @@ def test_existing_child_handback_rejects_unbound_or_promoted_children(
 
 @pytest.mark.parametrize('fault', ['closed-parent', 'closed-child', 'assigned', 'unlinked', 'forged-marker',
                                       'body-drift', 'newer-decision', 'pending-interview', 'missing-proof',
-                                      'other-interview-decision', 'other-interview-question', 'unfinished-split', 'bad-proof'])
+                                      'other-interview-decision', 'other-interview-question', 'unfinished-split',
+                                      'bad-proof', 'promoted-child', 'demoted-child', 'blocked-ready-child'])
 def test_existing_child_handback_preflights_every_entry_before_any_write(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fault: str
 ) -> None:
-    plan, path, original, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    child_verdict = 'ready' if fault in ('demoted-child', 'blocked-ready-child') else 'exclude'
+    plan, path, original, remote = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path, child_verdict=child_verdict
+    )
     if fault.startswith('closed-'):
         remote.issues[101 if fault == 'closed-parent' else 102]['state'] = 'CLOSED'
     elif fault == 'assigned':
@@ -1476,6 +1492,14 @@ def test_existing_child_handback_preflights_every_entry_before_any_write(
         Path(str(original) + '.children.json').unlink()
     elif fault == 'unfinished-split':
         Path(str(original) + '.applied.json').write_text('[]')
+    elif fault == 'promoted-child':
+        plan['issues'][1].update({'verdict': 'ready', 'add_labels': ['dev: agent']})
+        path.write_text(json.dumps(plan))
+    elif fault == 'demoted-child':
+        plan['issues'][1].update({'verdict': 'exclude', 'add_labels': ['agent-bail: credential-gate']})
+        path.write_text(json.dumps(plan))
+    elif fault == 'blocked-ready-child':
+        remote.issues[102]['labels'].append({'name': 'status: blocked'})
     else:
         original.write_text(json.dumps({'issues': []}))
     with pytest.raises(SystemExit):

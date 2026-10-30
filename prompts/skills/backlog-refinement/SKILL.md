@@ -146,7 +146,7 @@ Done when every approved decision has a posted record and each plan entry has an
 ### Existing children in a later pass
 
 Use a dedicated plan containing only coordination parents and owned children
-being updated. It does not create, adopt, close or ready a child. Example schema:
+being updated. It does not create, adopt, close or change a child's ready/exclusion state. Example schema (each child preserves its existing `ready` + `["dev: agent"]` or `exclude` + non-interview bail verdict):
 
 ```json
 {
@@ -188,18 +188,19 @@ a receipt or duplicate a child.
 
 Preview the exact new plan. This path always requires `--confirm-summary` and
 `--confirm-handback`, even with `grill-handback: auto`. Before any write, every
-participant must be OPEN, unassigned, still carry its proposed bail and have no
-pending interview or readiness label. Verify the parent's exact posted current
-settled/refine decision. Body hashes cover exact UTF-8 text; preserve all child
-markers in the replacement. Priority, assignment, exclusion and issue state stay
-unchanged. Unresolved parent questions require their genuine next interview.
+participant must be OPEN, unassigned, still carry its current ready or non-interview
+bail state and have no pending interview label. Verify the parent's exact posted
+current settled/refine decision. Body hashes cover exact UTF-8 text; preserve all
+child markers in the replacement. Priority, assignment, ready/exclusion state and
+issue state stay unchanged. Unresolved parent questions require their genuine next
+interview.
 
 Children apply before parents. Private `<new-plan>.existing-handback.json` binds
 repository, exact plan, ownership proofs, rewrite mode, publication intent and
 completion. Re-read the whole scope before each mutation. Edit mode reconciles
 only an exact intended replacement after uncertain publication; suggest mode
-posts a reviewed-body suggestion without readiness claims. Readbacks precede
-completion. Retry the identical plan/path; changed plans or proofs need a new
+posts a body suggestion matching the child's existing ready or excluded verdict.
+Readbacks precede completion. Retry the identical plan/path; changed plans or proofs need a new
 preview/progress identity. Report partial writes: GitHub operations are sequential,
 not an atomic transaction.
 

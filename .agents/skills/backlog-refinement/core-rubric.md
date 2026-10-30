@@ -85,8 +85,9 @@ The local `<!-- grill-handback: ask -->` default requires one combined handback 
 A later pass can retain a **settled decomposed coordination parent** as
 `exclude` + `agent-bail: epic`, `settled; next: refine`, with explicit
 `existing_children` and matching `handback_parent` entries. It creates no children
-and grants no readiness. Children retain their current non-interview exclusions
-while their superseded specifications are updated. This exception requires an
+and changes no ready/exclusion state: existing `ready` (`dev: agent`) children
+stay `ready` and existing `exclude` children retain their current non-interview
+exclusions while their superseded specifications are updated. This exception requires an
 exact confirmed plan, original private creation proof, native links, current body
 hashes and OPEN/unassigned participants with no pending interview. A public marker
 or a settled marker alone is not proof. If the parent still owes an interview,
