@@ -1205,3 +1205,11 @@ def test_ux_paths_cli_reads_a_paths_file(tmp_path: Path, capsys: pytest.CaptureF
     code = herd.main(["ux-paths", "--repo-dir", str(work), "--no-fetch", "--paths-file", str(paths)])
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["matches"] == ["apps/web/page.tsx"] and out["match"] is True
+
+
+def test_dialog_rule_limits_folder_trust_to_same_repository_exact_head_worktrees() -> None:
+    rule = herd.DIALOG_RULE
+    assert "worktree this run created" not in rule
+    for term in ("primary checkout", "worktree_root", "exact head", "same repository", "not a fork", "clean"):
+        assert term in rule
+    assert "does not cover trusting any other folder" in rule
