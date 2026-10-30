@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import multiprocessing
 from datetime import timedelta
@@ -66,6 +67,73 @@ def test_uncertain_publish_reconciles_one_run(approval: dict[str, Any]) -> None:
     assert start(approval, lambda record, reserve: remote[0]) == RUN
     assert remote == [RUN]
     assert json.loads(Path(approval["path"]).read_text())["used"]
+
+
+def test_returning_owner_can_restart_after_abandoning_an_active_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    controller_spec = importlib.util.spec_from_file_location(
+        "returning_owner_controller", ROOT / ".codex/skills/critique/scripts/local-review-handoff.py",
+    )
+    assert controller_spec and controller_spec.loader
+    controller = importlib.util.module_from_spec(controller_spec)
+    controller_spec.loader.exec_module(controller)
+    remote = ControllerRemote(controller, monkeypatch, tmp_path, actor="first-owner")
+    base = "f" * 40
+
+    def add_run(identifier: int, actor: str, content: str) -> str:
+        digest = controller._run_digest(tier="lean", max_rounds=2, base=base,
+                                        start_head=HEAD, supersedes=None, content=content)
+        remote.rows.append({"id": identifier, "user": {"login": actor}, "body": (
+            f"<!-- local-review-run:v1 id={digest} tier=lean max-rounds=2 base={base} "
+            f"start-head={HEAD} supersedes=none content-sha256={digest} -->\n{content}"
+        )})
+        return str(digest)
+
+    def add_transition(identifier: int, source: str, recipient: str, run_id: str, run_comment: int) -> str:
+        binding = dict(version=1, approval_id="c" * 16, repo="acme/widgets", pr=7,
+                       head=HEAD, run_id=run_id, run_comment_id=run_comment,
+                       from_actor=source, to_actor=recipient,
+                       created="2026-01-01T00:00:00Z", expires="2026-01-01T04:00:00Z")
+        canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        remote.rows.append({"id": identifier, "user": {"login": recipient},
+                            "body": f"<!-- local-review-transition:v1 id={digest} -->\n{canonical}"})
+        return digest
+
+    original = add_run(10, "first-owner", "Original first-owner authorization.")
+    outward = add_transition(20, "first-owner", "second-owner", original, 10)
+    second = add_run(30, "second-owner",
+                     f"<!-- local-review-owner-transition:v1 id={outward} -->\nSeparate second-owner authorization.")
+    returning = add_transition(40, "second-owner", "first-owner", second, 30)
+    assert controller._lifecycle("acme/widgets", 7)["state"] == "transitioned"
+    authorization = tmp_path / "return-authorization.txt"
+    authorization.write_text("Separately authorized return and fresh review budget.")
+    monkeypatch.setattr(controller, "_verify_signed_pr_history", lambda *_: None)
+    monkeypatch.setattr(controller, "_scope_signals", lambda *_: {
+        "behaviour_commits": 0, "missing_patch_files": [],
+    })
+
+    def publish(repo: str, pr: int, marker: str, body: str, *, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
+        remote.rows.append({"id": 50, "user": {"login": "first-owner"}, "body": body})
+        return 50, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", publish)
+    args = SimpleNamespace(repo="acme/widgets", pr=7, head=HEAD, base=base,
+                           tier="lean", restart=True, scope_decision="keep",
+                           owner_transition_id=returning, authorization_file=str(authorization))
+    controller._start_run(args)
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is True and result["first_round"] == 1
+    state = controller._lifecycle("acme/widgets", 7)
+    assert state["state"] == "active" and state["run"]["commentId"] == 50
+    assert state["run"]["ownerTransition"] == returning
+    actor_rows = controller._actor_comments("acme/widgets", 7)
+    assert controller._run_end(actor_rows, original) is None
+    records = controller._run_records(actor_rows)
+    assert records[-1]["supersedes"] == 10
 
 
 def test_uncertain_publish_cannot_change_arguments(approval: dict[str, Any]) -> None:

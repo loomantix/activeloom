@@ -936,7 +936,7 @@ def _start_run_checked(args: argparse.Namespace) -> None:
         content = _with_scope_decision(content, scope_signals, scope_decision)
     if previous is not None and not args.restart:
         _fail("a local-review run already exists; an explicit restart is required")
-    if previous is not None and previous_end is None:
+    if previous is not None and previous_end is None and lifecycle["state"] != "transitioned":
         _fail("the previous local-review run must be ended before an explicit restart")
     if scope_signals is None:
         scope_signals = _scope_signals(args.repo, args.pr)
