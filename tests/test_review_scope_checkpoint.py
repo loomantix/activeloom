@@ -6,16 +6,24 @@ import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
 
 HEAD = "a" * 40
 BASE = "b" * 40
 
 
 @pytest.fixture
-def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def controller(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ModuleType:
     path = (
         Path(__file__).resolve().parents[1]
         / ".codex/skills/critique/scripts/local-review-handoff.py"
@@ -24,6 +32,7 @@ def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    ControllerRemote(module, monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_verify_signed_pr_history", lambda *_: None)
     monkeypatch.setattr(module, "_verify_head", lambda *_: None)
     return module
@@ -40,11 +49,15 @@ def start(
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Review the scoped change.")
     posted: list[dict[str, Any]] = []
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows or [])
+    remote = ControllerRemote.for_controller(controller)
+    remote.rows = list(rows or [])
     monkeypatch.setattr(controller, "_scope_signals", lambda *_: signals)
 
-    def post(*args: Any) -> tuple[int, bool]:
-        posted.append({"id": 20, "body": args[-1]})
+    def post(*args: Any, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
+        row = {"id": 20, "body": args[-1]}
+        posted.append(row)
+        remote.rows.append(row)
         return 20, False
 
     monkeypatch.setattr(controller, "_post_issue_comment", post)
@@ -161,7 +174,7 @@ def test_an_active_run_with_scope_decision_replays_without_reading_scope(
     def unreachable(*_: Any) -> dict[str, Any]:
         raise AssertionError("a replay must not recount scope")
 
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: posted)
+    ControllerRemote.for_controller(controller).rows = posted
     monkeypatch.setattr(controller, "_run_end", lambda *_: None)
     monkeypatch.setattr(controller, "_scope_signals", unreachable)
 

@@ -854,6 +854,24 @@ describe('prCommentSink', () => {
     expect(runner.posts).toBe(0);
   });
 
+  it('rejects credential drift before fetching any comments', () => {
+    const runner = new MockRunner();
+    runner.actorSequence = [runner.authenticatedActor, 'different-actor'];
+    setGitHubRunner(runner);
+    const result = emitTelemetry({
+      record,
+      sink: prCommentSink({ repo: 'owner/repo', pr: 123 }),
+    });
+    expect(result).toMatchObject({
+      emitted: false,
+      reference: null,
+      error: expect.stringMatching(/authenticated GitHub actor changed/),
+    });
+    expect(runner.calls.map(callKind)).toEqual(['user', 'user']);
+    expect(runner.posts).toBe(0);
+    expect(runner.issueComments).toEqual([]);
+  });
+
   it('rejects credential drift before posting', () => {
     const runner = new MockRunner();
     runner.actorSequence = [

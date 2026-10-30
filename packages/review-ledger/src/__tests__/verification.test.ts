@@ -28,7 +28,12 @@ import {
   writeBlockedResult,
   checkBlockedRound,
 } from '../index.js';
-import { resetGitHubRunner, setGitHubRunner } from '../github.js';
+import {
+  assertLiveActor,
+  readLifecycle,
+  resetGitHubRunner,
+  setGitHubRunner,
+} from '../github.js';
 import type { GitHubReviewThreadNode, GitHubRunner } from '../types.js';
 
 /**
@@ -127,6 +132,8 @@ class ConfigurableRunner implements GitHubRunner {
   threadNodes: GitHubReviewThreadNode[] = [];
   reviewComments: Array<Record<string, unknown>> = [];
   issueComments: Array<Record<string, unknown>> = [];
+  lifecycleEditedAt: string | null = null;
+  lifecycleTotalAdjustment = 0;
   prHead = HEAD;
   prBase = BASE;
   localHead = HEAD;
@@ -182,6 +189,37 @@ class ConfigurableRunner implements GitHubRunner {
       );
     }
     if (cmd.includes('graphql')) {
+      // Lifecycle inventory uses gh pagination arguments, not a JSON payload.
+      // Keep this connection separate from review-thread GraphQL below.
+      if (
+        args.some(
+          (arg) =>
+            arg.startsWith('query=') && arg.includes('issueOrPullRequest'),
+        )
+      ) {
+        return JSON.stringify([
+          {
+            data: {
+              repository: {
+                issueOrPullRequest: {
+                  comments: {
+                    totalCount:
+                      this.issueComments.length + this.lifecycleTotalAdjustment,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: this.issueComments.map((row) => ({
+                      databaseId: row['id'],
+                      body: row['body'],
+                      author: row['user'],
+                      createdAt: '2026-01-01T00:00:00Z',
+                      lastEditedAt: this.lifecycleEditedAt,
+                    })),
+                  },
+                },
+              },
+            },
+          },
+        ]);
+      }
       const p = payload as {
         query?: string;
         variables?: { threadId?: string };
@@ -210,11 +248,7 @@ class ConfigurableRunner implements GitHubRunner {
         },
       ]);
     }
-    return '{}';
-  }
-
-  currentActor(): string {
-    return this.actor;
+    throw new Error(`Unexpected verification GitHub operation: ${cmd}`);
   }
 
   gitCompare(_repo: string, before: string): unknown {
@@ -938,6 +972,46 @@ describe('completed result finalization recovery', () => {
     expect(runner.issueComments).toEqual([]);
   });
 
+  it.each([
+    ['threads', false],
+    ['threads', true],
+    ['final-head', false],
+    ['final-head', true],
+  ] as const)(
+    'rejects actor drift during %s verification without rewriting completed=%s evidence',
+    (phase, completed) => {
+      const recovery = prepare();
+      if (completed) recoverResult(recovery);
+      const originalResult = readFileSync(resultPath(), 'utf8');
+      const originalReceipt = readFileSync(receiptPath(), 'utf8');
+      const original = runner.runGh.bind(runner);
+      let headReads = 0;
+      let changedActor = false;
+      runner.runGh = (args: string[], payload?: unknown): string => {
+        const response = original(args, payload);
+        if (args[0] === 'pr' && args.includes('headRefOid')) headReads += 1;
+        const threadRead = args.some(
+          (arg) => arg.startsWith('query=') && arg.includes('reviewThreads('),
+        );
+        if (
+          (phase === 'threads' && threadRead) ||
+          (phase === 'final-head' && args[0] === 'pr' && headReads === 2)
+        ) {
+          runner.actor = 'different-actor';
+          changedActor = true;
+        }
+        return response;
+      };
+      expect(() => recoverResult(recovery)).toThrow(
+        'authenticated GitHub actor changed',
+      );
+      expect(changedActor).toBe(true);
+      expect(readFileSync(resultPath(), 'utf8')).toBe(originalResult);
+      expect(readFileSync(receiptPath(), 'utf8')).toBe(originalReceipt);
+      expect(runner.issueComments).toEqual([]);
+    },
+  );
+
   it('conservatively promotes when source proof becomes unavailable', () => {
     const recovery = prepare();
     runner.sourceBlobs = {};
@@ -1085,6 +1159,22 @@ describe('attestation identity is one per engine and round', () => {
       'saved review result does not belong to the current run base and round budget',
     );
     expect(runner.issueComments).toHaveLength(1);
+  });
+
+  it('rejects edited lifecycle evidence through the paginated inventory', () => {
+    declareRun('deep', BASE);
+    runner.lifecycleEditedAt = '2026-01-01T00:00:01Z';
+    expect(() => readLifecycle(REPO, PR)).toThrow(
+      'edited or unauthenticated lifecycle marker',
+    );
+  });
+
+  it('rejects an incomplete lifecycle inventory rather than accepting available rows', () => {
+    declareRun('deep', BASE);
+    runner.lifecycleTotalAdjustment = 1;
+    expect(() => readLifecycle(REPO, PR)).toThrow(
+      'lifecycle inventory changed or pagination is incomplete',
+    );
   });
 
   it('refuses a round above the current run budget', () => {
@@ -1424,6 +1514,15 @@ describe('reconcile reports the action the ledger actually needs', () => {
 });
 
 describe('authenticated actor resolution', () => {
+  it('re-resolves the API actor and rejects drift from a cached actor pin', () => {
+    const pinned = currentActor();
+    runner.actor = 'different-reviewer';
+    expect(currentActor()).toBe(pinned);
+    expect(() => assertLiveActor(pinned)).toThrow(
+      'authenticated GitHub actor changed',
+    );
+  });
+
   it('rejects a user response with no login', () => {
     resetGitHubRunner();
     const bare = new ConfigurableRunner();

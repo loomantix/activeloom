@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.usefixtures("offline_github")
 REPO = "acme/widgets"
 HEAD = "c" * 40
 
@@ -148,7 +149,7 @@ def test_missing_approval_exits_4(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 @pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
-def test_skills_claim_but_never_write_an_approval(root: str) -> None:
+def test_skills_start_transaction_but_never_write_an_approval(root: str) -> None:
     def skill(name: str) -> str:
         return (ROOT / root / "skills" / name / "SKILL.md").read_text()
 
@@ -157,14 +158,14 @@ def test_skills_claim_but_never_write_an_approval(root: str) -> None:
     assert "check-restart --repo $repo --pr <n> --head <head>" in ended
     assert ended.index("`--restart` typed by the user") < ended.index("check-restart")
     # The record is read, and a missing scope decision stops, before the approval is used.
-    assert ended.index("check-restart") < ended.index("do not claim it") < ended.index("`claim-restart`")
-    assert ended.index("`claim-restart`") < ended.index("including a restart a peer asked for")
-    assert "Any other exit from either command is a block" in ended
+    assert ended.index("check-restart") < ended.index("do not claim it") < ended.index("--restart-approval-id")
+    assert "instead of calling `claim-restart` separately" in ended
     assert "user restart approval <id>, recorded <created>" in ended
     assert "Never run `approve-restart` or write a record" in ended
     assert "approve-restart --repo <repo> --pr <n> --head <full head sha>" in ended
-    # A start-run failure after a successful claim reports the spent approval and never re-claims.
-    assert ended.index("`claim-restart`") < ended.index("never claim again for this attempt")
+    assert "A pre-publication validation failure leaves the approval available" in ended
+    assert "resume the identical saved command and authorization file" in ended
+    assert "An expired transaction can only reconcile an already-created run" in ended
     assert "[--deep]" not in ended
 
     horch = skill("horch")

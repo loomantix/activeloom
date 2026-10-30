@@ -14,6 +14,7 @@ cleaner than spawning subprocesses for every function-level unit test.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -23,6 +24,17 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 ISSUES_SCRIPTS_DIR = REPO_ROOT / ".claude" / "skills" / "issues" / "scripts"
+
+
+@pytest.fixture
+def offline_github(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject unmocked gh calls; individual fake transports may shadow this guard."""
+    directory = tmp_path / "reject-unmocked-github"
+    directory.mkdir()
+    executable = directory / "gh"
+    executable.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('Unmocked GitHub operation rejected\\n')\nsys.exit(97)\n")
+    executable.chmod(0o700)
+    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

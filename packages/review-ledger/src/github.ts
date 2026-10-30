@@ -18,6 +18,11 @@ import {
 } from './constants.js';
 import { requireToken, sha256Bytes } from './hash.js';
 import type { ReviewRun } from './runs.js';
+import {
+  lifecycleState,
+  requireLifecycleOwner,
+  type LifecycleState,
+} from './lifecycle.js';
 import type {
   GitHubReviewCommentNode,
   GitHubReviewThreadNode,
@@ -318,6 +323,7 @@ export function verifyHead(
       `PR head mismatch: expected ${expectedHead}, found ${actual || '<empty>'}`,
     );
   }
+  requireLifecycleOwner(readLifecycle(repo, pr));
 }
 
 /** Run a local git command through the active runner. */
@@ -482,12 +488,136 @@ export function getIssueComments(
   pr: number,
   expectedActor?: string,
 ): Array<Record<string, unknown>> {
-  if (expectedActor === undefined) {
-    return authenticatedRows(getAllIssueComments(repo, pr));
-  }
-  const actor = assertLiveActor(expectedActor);
+  const actor =
+    expectedActor === undefined ? undefined : assertLiveActor(expectedActor);
   const rows = getAllIssueComments(repo, pr);
+  if (hasLifecycle(rows)) {
+    const lifecycleActor = assertLiveActor(actor ?? currentActor());
+    const metadata = lifecycleMetadata(repo, pr, rows);
+    assertLiveActor(lifecycleActor);
+    requireLifecycleOwner(lifecycleState(metadata, repo, pr, lifecycleActor));
+  }
+  if (actor === undefined) {
+    return authenticatedRows(rows);
+  }
   return authenticatedRows(rows, { actor });
+}
+
+function hasLifecycle(rows: Array<Record<string, unknown>>): boolean {
+  return rows.some(
+    (row) =>
+      typeof row['body'] === 'string' &&
+      /^<!-- local-review-(?:run:|run-end:|transition:)/.test(row['body']),
+  );
+}
+
+function object(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    fail('malformed lifecycle response');
+  return value as Record<string, unknown>;
+}
+
+/** Reconcile REST pagination with GraphQL's explicit edit history and total count. */
+function lifecycleMetadata(
+  repo: string,
+  pr: number,
+  rows: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (!hasLifecycle(rows)) return rows;
+  const [owner, name, extra] = repo.split('/');
+  if (!owner || !name || extra) fail('invalid lifecycle repository');
+  const fields =
+    'comments(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{databaseId body createdAt lastEditedAt author{login}}}';
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){... on PullRequest{${fields}} ... on Issue{${fields}}}}}`;
+  const pages = jsonOutput<unknown>([
+    'api',
+    'graphql',
+    '--paginate',
+    '--slurp',
+    '-f',
+    `query=${query}`,
+    '-f',
+    `owner=${owner}`,
+    '-f',
+    `name=${name}`,
+    '-F',
+    `number=${pr}`,
+  ]);
+  if (!Array.isArray(pages) || !pages.length)
+    fail('incomplete lifecycle pagination');
+  const byId = new Map<number, Record<string, unknown>>();
+  let total: number | undefined;
+  const cursors = new Set<string>();
+  for (const [index, page] of pages.entries()) {
+    const envelope = object(page);
+    if (envelope['errors'] !== undefined)
+      fail('lifecycle GraphQL query failed');
+    const connection = object(
+      object(
+        object(object(envelope['data'])['repository'])['issueOrPullRequest'],
+      )['comments'],
+    );
+    const pageInfo = object(connection['pageInfo']);
+    if (
+      !Number.isSafeInteger(connection['totalCount']) ||
+      Number(connection['totalCount']) < 0 ||
+      (total !== undefined && total !== connection['totalCount']) ||
+      pageInfo['hasNextPage'] !== index < pages.length - 1
+    )
+      fail('incomplete lifecycle pagination');
+    total = Number(connection['totalCount']);
+    if (pageInfo['hasNextPage']) {
+      const cursor = pageInfo['endCursor'];
+      if (typeof cursor !== 'string' || !cursor || cursors.has(cursor))
+        fail('repeated lifecycle cursor');
+      cursors.add(cursor);
+    }
+    const nodes = connection['nodes'];
+    if (!Array.isArray(nodes)) fail('missing lifecycle comment nodes');
+    for (const node of nodes) {
+      const item = object(node);
+      const id = item['databaseId'];
+      if (!Number.isSafeInteger(id) || Number(id) < 1 || byId.has(Number(id)))
+        fail('duplicate or missing lifecycle comment identity');
+      byId.set(Number(id), item);
+    }
+  }
+  if (
+    total !== byId.size ||
+    total !== rows.length ||
+    rows.some(
+      (row) => !Number.isSafeInteger(row['id']) || Number(row['id']) < 1,
+    ) ||
+    new Set(rows.map((row) => row['id'])).size !== rows.length
+  )
+    fail('lifecycle inventory changed or pagination is incomplete');
+  return rows.map((row) => {
+    const item = byId.get(Number(row['id']));
+    if (
+      !item ||
+      item['body'] !== row['body'] ||
+      !Object.hasOwn(item, 'lastEditedAt')
+    )
+      fail('lifecycle comment changed during inventory');
+    if (
+      hasLifecycle([row]) &&
+      object(item['author'])['login'] !== object(row['user'])['login']
+    )
+      fail('lifecycle author changed during inventory');
+    return {
+      ...row,
+      lastEditedAt: item['lastEditedAt'],
+      created_at: item['createdAt'],
+    };
+  });
+}
+
+/** PR-wide state is independent from the actor-owned findings/coverage view. */
+export function readLifecycle(repo: string, pr: number): LifecycleState {
+  const actor = assertLiveActor();
+  const rows = lifecycleMetadata(repo, pr, getAllIssueComments(repo, pr));
+  assertLiveActor(actor);
+  return lifecycleState(rows, repo, pr, actor);
 }
 
 /** Fetch every issue (conversation) comment, whoever wrote it. */
@@ -506,17 +636,20 @@ export function getAllIssueComments(
 
 /**
  * Assert a review comment still has the expected author and body.
+ * When supplied, recheck the operation actor before and after readback.
  */
 export function verifyComment(
   repo: string,
   commentId: number,
   expectedBody: string,
+  expectedActor?: string,
 ): void {
   verifyOwnedComment(
     `repos/${repo}/pulls/comments/${commentId}`,
     commentId,
     expectedBody,
     'review comment',
+    expectedActor,
   );
 }
 

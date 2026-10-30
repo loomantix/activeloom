@@ -26,7 +26,7 @@ import { readFileSync as readFileSync5 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.13.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.14.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -382,6 +382,248 @@ function matchDisposition(body) {
   };
 }
 
+// src/runs.ts
+function isCommentId(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+var RUN = /^<!-- local-review-run:v1 id=([0-9a-f]{64}) tier=(lean|deep) max-rounds=([1-4]) base=([0-9a-f]{40}) start-head=([0-9a-f]{40}) supersedes=(none|[1-9][0-9]*) content-sha256=([0-9a-f]{64}) -->\n/;
+function reviewRuns(rows) {
+  const runs = [];
+  const aliases = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Map();
+  const ordered = [...rows].sort((a, b) => Number(a["id"]) - Number(b["id"]));
+  for (const row of ordered) {
+    const body = row["body"];
+    if (typeof body !== "string" || !body.startsWith("<!-- local-review-run:v1"))
+      continue;
+    const match = RUN.exec(body);
+    const commentId = row["id"];
+    if (!match || !isCommentId(commentId)) {
+      fail(
+        "local-review run marker is malformed; preserve it and repair the run declaration before retrying"
+      );
+    }
+    const [, id, tier, cap, base, startHead, parent, digest] = match;
+    const maxRounds = Number(cap);
+    const supersedes = parent === "none" ? null : Number(parent);
+    if (supersedes !== null && !Number.isSafeInteger(supersedes)) {
+      fail("local-review run parent must be a safe comment ID");
+    }
+    const expected = sha256Text(
+      JSON.stringify({
+        base,
+        content: body.slice(match[0].length),
+        max_rounds: maxRounds,
+        start_head: startHead,
+        supersedes,
+        tier
+      })
+    );
+    if (expected !== id || expected !== digest || maxRounds !== (tier === "deep" ? 4 : 2)) {
+      fail("local-review run content digest or round budget is invalid");
+    }
+    const duplicate = seen.get(id);
+    if (duplicate) {
+      if (duplicate.body !== body)
+        fail("duplicate local-review run id has conflicting content");
+      aliases.set(commentId, duplicate.commentId);
+      continue;
+    }
+    const canonicalParent = supersedes === null ? null : aliases.get(supersedes) ?? supersedes;
+    if (canonicalParent !== (runs.at(-1)?.commentId ?? null)) {
+      fail("local-review run supersession chain is incomplete or forked");
+    }
+    seen.set(id, { body, commentId });
+    runs.push({
+      id,
+      commentId,
+      base,
+      tier,
+      maxRounds
+    });
+  }
+  return runs;
+}
+function reviewRunForComment(runs, commentId) {
+  if (runs.length === 0) return void 0;
+  if (!isCommentId(commentId)) {
+    fail("attestation comment ID is required to recover its review run");
+  }
+  for (let index = runs.length - 1; index >= 0; index--) {
+    if (runs[index].commentId < commentId) return runs[index];
+  }
+  return void 0;
+}
+
+// src/lifecycle.ts
+var TRANSITION = "<!-- local-review-transition:v1 ";
+var OWNER = /^<!-- local-review-owner-transition:v1 id=([0-9a-f]{64}) -->\n/;
+var END = /^<!-- local-review-run-end:v1 id=([0-9a-f]{64}) outcome=(converged|exhausted|aborted) head=([0-9a-f]{40}) -->/;
+var LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?$/;
+function transitionJson(value) {
+  return JSON.stringify(value, Object.keys(value).sort());
+}
+function parseTransition(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    fail("invalid transition binding");
+  const row = value;
+  const keys = [
+    "approval_id",
+    "created",
+    "expires",
+    "from_actor",
+    "head",
+    "pr",
+    "repo",
+    "run_comment_id",
+    "run_id",
+    "to_actor",
+    "version"
+  ];
+  if (JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(keys))
+    fail("transition fields differ");
+  if (row["version"] !== 1 || typeof row["approval_id"] !== "string" || !/^[0-9a-f]{16}$/.test(row["approval_id"]) || typeof row["repo"] !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(row["repo"]) || !Number.isSafeInteger(row["pr"]) || Number(row["pr"]) < 1 || !Number.isSafeInteger(row["run_comment_id"]) || Number(row["run_comment_id"]) < 1 || typeof row["head"] !== "string" || !/^[0-9a-f]{40}$/.test(row["head"]) || typeof row["run_id"] !== "string" || !/^[0-9a-f]{64}$/.test(row["run_id"]) || typeof row["from_actor"] !== "string" || !LOGIN.test(row["from_actor"]) || typeof row["to_actor"] !== "string" || !LOGIN.test(row["to_actor"]) || row["from_actor"] === row["to_actor"])
+    fail("invalid transition identity");
+  for (const field of ["created", "expires"]) {
+    if (typeof row[field] !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(row[field]))
+      fail("invalid transition time");
+  }
+  const created = Date.parse(String(row["created"]));
+  const expires = Date.parse(String(row["expires"]));
+  if (!Number.isFinite(created) || !Number.isFinite(expires) || expires <= created || expires - created > 72 * 36e5)
+    fail("invalid transition expiry");
+  return {
+    version: 1,
+    approval_id: String(row["approval_id"]),
+    created: String(row["created"]),
+    expires: String(row["expires"]),
+    from_actor: String(row["from_actor"]),
+    to_actor: String(row["to_actor"]),
+    head: String(row["head"]),
+    repo: String(row["repo"]),
+    pr: Number(row["pr"]),
+    run_id: String(row["run_id"]),
+    run_comment_id: Number(row["run_comment_id"])
+  };
+}
+function identity(row) {
+  const author = row["user"];
+  const login = author && typeof author === "object" ? author["login"] : null;
+  if (typeof login !== "string" || !LOGIN.test(login) || !Number.isSafeInteger(row["id"]) || Number(row["id"]) < 1 || typeof row["body"] !== "string" || !Object.hasOwn(row, "lastEditedAt") || row["lastEditedAt"] !== null || typeof row["created_at"] !== "string")
+    fail("edited or unauthenticated lifecycle marker");
+  return { actor: login, id: Number(row["id"]), body: row["body"] };
+}
+function lifecycleState(rows, repo, pr, actor) {
+  const relevant = rows.filter(
+    (row) => typeof row["body"] === "string" && /^<!-- local-review-(?:run:|run-end:|transition:)/.test(row["body"])
+  );
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of relevant) {
+    const entry = identity(row);
+    groups.set(entry.actor, [...groups.get(entry.actor) ?? [], row]);
+  }
+  const runs = /* @__PURE__ */ new Map();
+  for (const [owner, comments] of groups) {
+    for (const run of reviewRuns(comments)) {
+      const body = String(
+        comments.find((row) => row["id"] === run.commentId)["body"]
+      );
+      const startHead = / start-head=([0-9a-f]{40}) /.exec(body)[1];
+      const content = body.slice(body.indexOf("\n") + 1);
+      runs.set(run.commentId, {
+        ...run,
+        actor: owner,
+        startHead,
+        outcome: null,
+        ownerTransition: OWNER.exec(content)?.[1] ?? null
+      });
+    }
+  }
+  let current = null;
+  let pending = null;
+  const transitions = [];
+  const seen = /* @__PURE__ */ new Map();
+  const ends = /* @__PURE__ */ new Set();
+  for (const row of relevant.sort(
+    (a, b) => Number(a["id"]) - Number(b["id"])
+  )) {
+    const entry = identity(row);
+    const run = runs.get(entry.id);
+    if (run) {
+      if (pending) {
+        const content = entry.body.slice(entry.body.indexOf("\n") + 1);
+        const owner = OWNER.exec(content);
+        if (entry.actor !== pending.binding.to_actor || owner?.[1] !== pending.id || run.startHead !== pending.binding.head)
+          fail("new run does not bind the authorized owner transition");
+        pending = null;
+      } else if (current && (current.actor !== run.actor || current.outcome === null)) {
+        fail("unrelated active run or actor change without a transition");
+      } else if (run.ownerTransition !== null) {
+        fail("run reuses an ownership transition without a pending handoff");
+      }
+      current = run;
+      continue;
+    }
+    if (entry.body.startsWith("<!-- local-review-run:v1")) continue;
+    if (entry.body.startsWith("<!-- local-review-run-end:")) {
+      const match2 = END.exec(entry.body);
+      if (!match2) fail("malformed terminal lifecycle marker");
+      const marker = match2[0];
+      const suffix = match2[2] === "converged" ? "" : " This run does not establish convergence.";
+      if (entry.body !== marker && entry.body !== `${marker}
+
+Review ${match2[2]} at \`${match2[3].slice(0, 12)}\`.${suffix}`)
+        fail("terminal marker has unexpected content");
+      const owned = [...runs.values()].filter(
+        (item) => item.actor === entry.actor && item.id === match2[1] && item.commentId < entry.id
+      );
+      if (owned.length !== 1)
+        fail("terminal marker does not identify one actor-owned run");
+      const key = `${entry.actor}:${owned[0].commentId}`;
+      if (ends.has(key)) fail("duplicate terminal lifecycle marker");
+      ends.add(key);
+      owned[0].outcome = match2[2];
+      continue;
+    }
+    if (!entry.body.startsWith(TRANSITION))
+      fail("unsupported lifecycle marker");
+    const match = /^<!-- local-review-transition:v1 id=([0-9a-f]{64}) -->\n(.+)$/.exec(
+      entry.body
+    );
+    if (!match) fail("malformed owner transition");
+    let decoded;
+    try {
+      decoded = JSON.parse(match[2]);
+    } catch {
+      fail("invalid owner transition JSON");
+    }
+    const binding = parseTransition(decoded);
+    if (transitionJson(binding) !== match[2] || sha256Text(match[2]) !== match[1] || binding.repo !== repo || binding.pr !== pr || binding.to_actor !== entry.actor)
+      fail("transition scope or authorship mismatch");
+    const posted = Date.parse(String(row["created_at"]));
+    if (!Number.isFinite(posted) || posted < Date.parse(binding.created) || posted >= Date.parse(binding.expires))
+      fail("transition was published outside its approval window");
+    const duplicate = seen.get(match[1]);
+    if (duplicate !== void 0) {
+      if (duplicate !== entry.body) fail("conflicting transition replay");
+      continue;
+    }
+    if (pending || !current || current.actor !== binding.from_actor || current.commentId !== binding.run_comment_id || current.id !== binding.run_id)
+      fail("competing or stale owner transition");
+    pending = { id: match[1], commentId: entry.id, binding };
+    transitions.push(pending);
+    seen.set(pending.id, entry.body);
+  }
+  const state = pending ? pending.binding.to_actor === actor ? "transitioned" : "foreign-transition" : !current ? "none" : current.actor === actor ? current.outcome === null ? "active" : "ended" : current.outcome === null ? "foreign-active" : "foreign-ended";
+  return { state, actor, run: current, transition: pending, transitions };
+}
+function requireLifecycleOwner(state) {
+  if (!["none", "active", "ended"].includes(state.state))
+    fail(
+      `review lifecycle is ${state.state}; explicit owner transition and a separate fresh restart are required`
+    );
+}
+
 // src/github.ts
 var defaultActor = null;
 function execFailureDetail(error) {
@@ -571,8 +813,8 @@ function authenticatedRows(rows, options) {
   return rows.filter((row) => {
     const user = row["user"];
     const author = row["author"];
-    const identity = options?.graphql ? author ?? user : user ?? author;
-    return typeof identity === "object" && identity !== null && identity.login === actor;
+    const identity2 = options?.graphql ? author ?? user : user ?? author;
+    return typeof identity2 === "object" && identity2 !== null && identity2.login === actor;
   });
 }
 function verifyHead(repo, pr, expectedHead) {
@@ -592,6 +834,7 @@ function verifyHead(repo, pr, expectedHead) {
       `PR head mismatch: expected ${expectedHead}, found ${actual || "<empty>"}`
     );
   }
+  requireLifecycleOwner(readLifecycle(repo, pr));
 }
 function runGit(args) {
   const runner = getGitHubRunner();
@@ -710,12 +953,105 @@ function getReviewComments(repo, pr) {
   return authenticatedRows(rows);
 }
 function getIssueComments(repo, pr, expectedActor) {
-  if (expectedActor === void 0) {
-    return authenticatedRows(getAllIssueComments(repo, pr));
-  }
-  const actor = assertLiveActor(expectedActor);
+  const actor = expectedActor === void 0 ? void 0 : assertLiveActor(expectedActor);
   const rows = getAllIssueComments(repo, pr);
+  if (hasLifecycle(rows)) {
+    const lifecycleActor = assertLiveActor(actor ?? currentActor());
+    const metadata = lifecycleMetadata(repo, pr, rows);
+    assertLiveActor(lifecycleActor);
+    requireLifecycleOwner(lifecycleState(metadata, repo, pr, lifecycleActor));
+  }
+  if (actor === void 0) {
+    return authenticatedRows(rows);
+  }
   return authenticatedRows(rows, { actor });
+}
+function hasLifecycle(rows) {
+  return rows.some(
+    (row) => typeof row["body"] === "string" && /^<!-- local-review-(?:run:|run-end:|transition:)/.test(row["body"])
+  );
+}
+function object(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    fail("malformed lifecycle response");
+  return value;
+}
+function lifecycleMetadata(repo, pr, rows) {
+  if (!hasLifecycle(rows)) return rows;
+  const [owner, name, extra] = repo.split("/");
+  if (!owner || !name || extra) fail("invalid lifecycle repository");
+  const fields = "comments(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{databaseId body createdAt lastEditedAt author{login}}}";
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){... on PullRequest{${fields}} ... on Issue{${fields}}}}}`;
+  const pages = jsonOutput([
+    "api",
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-f",
+    `query=${query}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${pr}`
+  ]);
+  if (!Array.isArray(pages) || !pages.length)
+    fail("incomplete lifecycle pagination");
+  const byId = /* @__PURE__ */ new Map();
+  let total;
+  const cursors = /* @__PURE__ */ new Set();
+  for (const [index, page] of pages.entries()) {
+    const envelope = object(page);
+    if (envelope["errors"] !== void 0)
+      fail("lifecycle GraphQL query failed");
+    const connection = object(
+      object(
+        object(object(envelope["data"])["repository"])["issueOrPullRequest"]
+      )["comments"]
+    );
+    const pageInfo = object(connection["pageInfo"]);
+    if (!Number.isSafeInteger(connection["totalCount"]) || Number(connection["totalCount"]) < 0 || total !== void 0 && total !== connection["totalCount"] || pageInfo["hasNextPage"] !== index < pages.length - 1)
+      fail("incomplete lifecycle pagination");
+    total = Number(connection["totalCount"]);
+    if (pageInfo["hasNextPage"]) {
+      const cursor = pageInfo["endCursor"];
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor))
+        fail("repeated lifecycle cursor");
+      cursors.add(cursor);
+    }
+    const nodes = connection["nodes"];
+    if (!Array.isArray(nodes)) fail("missing lifecycle comment nodes");
+    for (const node of nodes) {
+      const item = object(node);
+      const id = item["databaseId"];
+      if (!Number.isSafeInteger(id) || Number(id) < 1 || byId.has(Number(id)))
+        fail("duplicate or missing lifecycle comment identity");
+      byId.set(Number(id), item);
+    }
+  }
+  if (total !== byId.size || total !== rows.length || rows.some(
+    (row) => !Number.isSafeInteger(row["id"]) || Number(row["id"]) < 1
+  ) || new Set(rows.map((row) => row["id"])).size !== rows.length)
+    fail("lifecycle inventory changed or pagination is incomplete");
+  return rows.map((row) => {
+    const item = byId.get(Number(row["id"]));
+    if (!item || item["body"] !== row["body"] || !Object.hasOwn(item, "lastEditedAt"))
+      fail("lifecycle comment changed during inventory");
+    if (hasLifecycle([row]) && object(item["author"])["login"] !== object(row["user"])["login"])
+      fail("lifecycle author changed during inventory");
+    return {
+      ...row,
+      lastEditedAt: item["lastEditedAt"],
+      created_at: item["createdAt"]
+    };
+  });
+}
+function readLifecycle(repo, pr) {
+  const actor = assertLiveActor();
+  const rows = lifecycleMetadata(repo, pr, getAllIssueComments(repo, pr));
+  assertLiveActor(actor);
+  return lifecycleState(rows, repo, pr, actor);
 }
 function getAllIssueComments(repo, pr) {
   const pages = jsonOutput([
@@ -726,12 +1062,13 @@ function getAllIssueComments(repo, pr) {
   ]);
   return flattenPages(pages, "PR-comments");
 }
-function verifyComment(repo, commentId, expectedBody) {
+function verifyComment(repo, commentId, expectedBody, expectedActor) {
   verifyOwnedComment(
     `repos/${repo}/pulls/comments/${commentId}`,
     commentId,
     expectedBody,
-    "review comment"
+    "review comment",
+    expectedActor
   );
 }
 function verifyIssueComment(repo, commentId, expectedBody, expectedActor) {
@@ -5571,20 +5908,20 @@ var JsxErrorTemplates = {
   UnwrappedAdjacentJSXElements: "Adjacent JSX elements must be wrapped in an enclosing tag. Did you want a JSX fragment <>...</>?"
 };
 var JsxErrors = ParseErrorEnum`jsx`(JsxErrorTemplates);
-function isFragment(object) {
-  return object ? object.type === "JSXOpeningFragment" || object.type === "JSXClosingFragment" : false;
+function isFragment(object2) {
+  return object2 ? object2.type === "JSXOpeningFragment" || object2.type === "JSXClosingFragment" : false;
 }
-function getQualifiedJSXName(object) {
-  if (object.type === "JSXIdentifier") {
-    return object.name;
+function getQualifiedJSXName(object2) {
+  if (object2.type === "JSXIdentifier") {
+    return object2.name;
   }
-  if (object.type === "JSXNamespacedName") {
-    return object.namespace.name + ":" + object.name.name;
+  if (object2.type === "JSXNamespacedName") {
+    return object2.namespace.name + ":" + object2.name.name;
   }
-  if (object.type === "JSXMemberExpression") {
-    return getQualifiedJSXName(object.object) + "." + getQualifiedJSXName(object.property);
+  if (object2.type === "JSXMemberExpression") {
+    return getQualifiedJSXName(object2.object) + "." + getQualifiedJSXName(object2.property);
   }
-  throw new Error("Node had unexpected type: " + object.type);
+  throw new Error("Node had unexpected type: " + object2.type);
 }
 var jsx = (superClass) => class JSXParserMixin extends superClass {
   jsxReadToken() {
@@ -16115,79 +16452,6 @@ function writeBlockedResult(params) {
   };
 }
 
-// src/runs.ts
-function isCommentId(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-var RUN = /^<!-- local-review-run:v1 id=([0-9a-f]{64}) tier=(lean|deep) max-rounds=([1-4]) base=([0-9a-f]{40}) start-head=([0-9a-f]{40}) supersedes=(none|[1-9][0-9]*) content-sha256=([0-9a-f]{64}) -->\n/;
-function reviewRuns(rows) {
-  const runs = [];
-  const aliases = /* @__PURE__ */ new Map();
-  const seen = /* @__PURE__ */ new Map();
-  const ordered = [...rows].sort((a, b) => Number(a["id"]) - Number(b["id"]));
-  for (const row of ordered) {
-    const body = row["body"];
-    if (typeof body !== "string" || !body.startsWith("<!-- local-review-run:v1"))
-      continue;
-    const match = RUN.exec(body);
-    const commentId = row["id"];
-    if (!match || !isCommentId(commentId)) {
-      fail(
-        "local-review run marker is malformed; preserve it and repair the run declaration before retrying"
-      );
-    }
-    const [, id, tier, cap, base, startHead, parent, digest] = match;
-    const maxRounds = Number(cap);
-    const supersedes = parent === "none" ? null : Number(parent);
-    if (supersedes !== null && !Number.isSafeInteger(supersedes)) {
-      fail("local-review run parent must be a safe comment ID");
-    }
-    const expected = sha256Text(
-      JSON.stringify({
-        base,
-        content: body.slice(match[0].length),
-        max_rounds: maxRounds,
-        start_head: startHead,
-        supersedes,
-        tier
-      })
-    );
-    if (expected !== id || expected !== digest || maxRounds !== (tier === "deep" ? 4 : 2)) {
-      fail("local-review run content digest or round budget is invalid");
-    }
-    const duplicate = seen.get(id);
-    if (duplicate) {
-      if (duplicate.body !== body)
-        fail("duplicate local-review run id has conflicting content");
-      aliases.set(commentId, duplicate.commentId);
-      continue;
-    }
-    const canonicalParent = supersedes === null ? null : aliases.get(supersedes) ?? supersedes;
-    if (canonicalParent !== (runs.at(-1)?.commentId ?? null)) {
-      fail("local-review run supersession chain is incomplete or forked");
-    }
-    seen.set(id, { body, commentId });
-    runs.push({
-      id,
-      commentId,
-      base,
-      tier,
-      maxRounds
-    });
-  }
-  return runs;
-}
-function reviewRunForComment(runs, commentId) {
-  if (runs.length === 0) return void 0;
-  if (!isCommentId(commentId)) {
-    fail("attestation comment ID is required to recover its review run");
-  }
-  for (let index = runs.length - 1; index >= 0; index--) {
-    if (runs[index].commentId < commentId) return runs[index];
-  }
-  return void 0;
-}
-
 // src/recovery.ts
 import { lstatSync as lstatSync3, renameSync as renameSync2 } from "fs";
 function archiveResultRecovery(resultFile) {
@@ -16784,7 +17048,7 @@ function checkBlockedRound(params) {
   };
 }
 function recoverResult(params) {
-  const actor = assertActor(params.actor);
+  const actor = assertLiveActor(assertActor(params.actor));
   verifyHead(params.repo, params.pr, params.head);
   const candidate = readResultRecovery(params, actor);
   const threads = reviewThreads(params.repo, params.pr);
@@ -16800,6 +17064,7 @@ function recoverResult(params) {
     fail("result recovery classification changed during finalization");
   }
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   writeResultFile(params.resultFile, { ...candidate });
   return {
     ...candidate,
@@ -17155,12 +17420,14 @@ ${content}`;
   } else {
     body = readLegacyBody(params.bodyFile ?? "-", DISPOSITION_V1, params.body);
   }
+  const actor = assertLiveActor(assertActor());
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   if (content !== void 0) {
     const thread = reviewThreads(params.repo, params.pr).find(
       (candidate) => candidate.comments.nodes[0]?.databaseId === params.commentId
     );
-    const actor = currentActor();
+    assertLiveActor(actor);
     if (!thread?.comments.nodes.some((row) => {
       if ((row.author ?? row.user)?.login !== actor) return false;
       const match = FINDING_V1_RE.exec(String(row.body ?? ""));
@@ -17174,6 +17441,7 @@ ${content}`;
       );
     }
   }
+  assertLiveActor(actor);
   const response = jsonOutput(
     [
       "api",
@@ -17184,8 +17452,9 @@ ${content}`;
     { body }
   );
   const commentId = getPostedCommentId(response);
-  verifyComment(params.repo, commentId, body);
+  verifyComment(params.repo, commentId, body, actor);
   verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
   return { comment_id: commentId, verified: true };
 }
 function postPrComment(params) {
@@ -17367,9 +17636,9 @@ function reconcile(params) {
   }
   const occurrences = findingRows2.map((row) => row["occurrence"]).sort((a, b) => a - b);
   const sequenceValid = occurrences.every((val, idx) => val === idx + 1);
-  const identity = (row) => `${String(row["engine"])}|${String(row["round"])}|${String(row["fingerprint"])}|${String(row["occurrence"])}`;
-  const findingKeys = new Set(findingRows2.map(identity));
-  const dispositionKeys = dispositionRows.map(identity);
+  const identity2 = (row) => `${String(row["engine"])}|${String(row["round"])}|${String(row["fingerprint"])}|${String(row["occurrence"])}`;
+  const findingKeys = new Set(findingRows2.map(identity2));
+  const dispositionKeys = dispositionRows.map(identity2);
   const disposed = new Set(
     dispositionRows.map((row) => row["occurrence"])
   );
@@ -19564,7 +19833,9 @@ function resolveLegacyRoster(candidates) {
 }
 function readRoster(params) {
   assertActor(params.actor);
-  return resolveRoster(getIssueComments(params.repo, params.pr));
+  const roster = resolveRoster(getIssueComments(params.repo, params.pr));
+  const run = readLifecycle(params.repo, params.pr).run;
+  return run?.ownerTransition && (roster.commentId ?? 0) <= run.commentId ? resolveRoster([]) : roster;
 }
 function reconcileConcurrentRoster(repo, pr, body, postedCommentId) {
   const rows = getIssueComments(repo, pr).filter(
@@ -19592,7 +19863,11 @@ function postRoster(params) {
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
   const existing = resolveRoster(rows);
-  const replayCandidate = existing.present && existing.version === 2 ? buildRosterBody({
+  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const needsFreshRoster = Boolean(
+    currentRun?.ownerTransition && (existing.commentId ?? 0) <= currentRun.commentId
+  );
+  const replayCandidate = existing.present && existing.version === 2 && !needsFreshRoster ? buildRosterBody({
     author: params.author,
     reviewers: params.reviewers,
     head: params.head,
@@ -19703,11 +19978,12 @@ function matchAttestationMarker(body, pattern) {
   }
   return match;
 }
-function attestationsAtHead(rows, head) {
+function attestationsAtHead(rows, head, minimumCommentId = 0) {
   const found = [];
   const identities = /* @__PURE__ */ new Map();
   const runs = reviewRuns(rows);
   for (const row of rows) {
+    if (Number(row["id"]) <= minimumCommentId) continue;
     const body = String(row["body"] ?? "");
     const pass = matchAttestationMarker(body, PASS_V3_RE);
     const complete = matchAttestationMarker(body, COMPLETE_V3_RE);
@@ -19718,13 +19994,13 @@ function attestationsAtHead(rows, head) {
     const engine = match.groups["engine"];
     const round = parseInt(match.groups["round"], 10);
     const run = reviewRunForComment(runs, row["id"]);
-    const identity = `${run?.id ?? "legacy"}|${engine}|${round}`;
-    const prior = identities.get(identity);
+    const identity2 = `${run?.id ?? "legacy"}|${engine}|${round}`;
+    const prior = identities.get(identity2);
     if (prior !== void 0 && prior !== match[0]) {
       fail("local-review attestation identity is duplicated");
     }
     if (prior !== void 0) continue;
-    identities.set(identity, match[0]);
+    identities.set(identity2, match[0]);
     if (match.groups["head"] === head) {
       found.push({
         engine,
@@ -19744,8 +20020,11 @@ function coverage(params) {
   assertActor(params.actor);
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
-  const roster = resolveRoster(rows);
-  const attested = attestationsAtHead(rows, params.head);
+  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const minimumCommentId = currentRun?.ownerTransition ? currentRun.commentId : 0;
+  const resolvedRoster = resolveRoster(rows);
+  const roster = minimumCommentId && (resolvedRoster.commentId ?? 0) <= minimumCommentId ? resolveRoster([]) : resolvedRoster;
+  const attested = attestationsAtHead(rows, params.head, minimumCommentId);
   const attestedEngines = [
     ...new Set(attested.map((row) => row.engine))
   ].sort();
@@ -20576,6 +20855,12 @@ function runCliCommand(argv) {
   }
   validateArgs(args);
   switch (args.command) {
+    case "lifecycle-state": {
+      if (!args.repo || args.pr === void 0)
+        fail("lifecycle-state requires --repo and --pr");
+      writeSortedJson(readLifecycle(args.repo, args.pr));
+      break;
+    }
     case "preflight-fix": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0) {
         fail(
