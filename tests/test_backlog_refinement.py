@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import threading
@@ -374,7 +375,7 @@ def test_candidates_backfill_gaps_requires_grill_interview_labels(
 
 RUBRIC = REPO_ROOT / ".claude/skills/backlog-refinement/scripts/rubric.py"
 PRECHECK = REPO_ROOT / ".claude/skills/backlog-refinement/scripts/precheck.py"
-APPLY_PLAN = REPO_ROOT / ".claude/skills/backlog-refinement/scripts/apply-plan.py"
+APPLY_PLAN = REPO_ROOT / "prompts/skills/backlog-refinement/scripts/apply-plan.py"
 
 FULL_RUBRIC = (
     "## Settings\n\n"
@@ -1309,3 +1310,313 @@ def test_handback_unconfirmed_standalone_split_refused(apply_mod: ModuleType, mo
     with pytest.raises(SystemExit):
         apply_mod.main()
     assert fake.calls == []
+
+
+class ExistingChildRemote:
+    """Stateful, rejecting transport for the complete existing-child CLI path."""
+
+    def __init__(self, issues: dict[int, dict[str, Any]], journal: Path) -> None:
+        self.issues = issues
+        self.journal = journal
+        self.linked = [102]
+        self.mutations: list[tuple[int, str]] = []
+        self.uncertain_body_write = False
+        self.assign_after_preflight = False
+        self.assign_after_body = False
+
+    def __call__(self, args: list[str], *, stdin: str | None = None) -> str:
+        if args[:2] == ['label', 'list']:
+            return json.dumps([{'name': n} for n in REPO_LABELS | {'agent-bail: credential-gate'}])
+        if args[:2] == ['repo', 'view']:
+            return json.dumps({'nameWithOwner': 'example/project'})
+        if args[:2] == ['issue', 'view']:
+            if self.assign_after_preflight and self.journal.exists():
+                self.issues[102]['assignees'] = [{'login': 'owner'}]
+            return json.dumps(self.issues[int(args[2])])
+        if args == ['api', 'repos/{owner}/{repo}/issues/101/sub_issues', '--paginate', '--slurp']:
+            return json.dumps([[{'number': n} for n in self.linked]])
+        if args[:2] == ['issue', 'edit'] and '--body-file' in args:
+            number = int(args[2])
+            self.issues[number]['body'] = Path(args[args.index('--body-file') + 1]).read_text()
+            self.mutations.append((number, 'body'))
+            if self.assign_after_body:
+                self.issues[number]['assignees'] = [{'login': 'owner'}]
+            if self.uncertain_body_write:
+                self.uncertain_body_write = False
+                raise SystemExit('publication uncertain after body write')
+            return ''
+        if args[:2] == ['issue', 'comment'] and args[-2:] == ['--body-file', '-']:
+            number = int(args[2])
+            self.issues[number]['comments'].append({'body': stdin, 'createdAt': '2026-01-03T00:00:00Z'})
+            self.mutations.append((number, 'comment'))
+            return ''
+        raise AssertionError(f'Unexpected operation; no network fallback: {args}')
+
+
+def _existing_child_setup(
+    mod: ModuleType, monkeypatch: pytest.MonkeyPatch, directory: Path,
+    *, mode: str = 'edit', auto: str = 'ask', flags: tuple[str, ...] = ('--confirm-summary', '--confirm-handback'),
+) -> tuple[dict[str, Any], Path, Path, ExistingChildRemote]:
+    """Bind a new plan to a previous private split receipt and native link."""
+    original = directory / 'original.json'
+    original_assessment = _entry(add_labels=['agent-bail: credential-gate'])
+    original_assessment.pop('number')
+    split = {'issues': [_entry(number=101, add_labels=['agent-bail: epic'],
+                              decision_comment=_decision('split', kind='product-grill'),
+                              children=[{'key': 'evidence', 'title': 'Obtain qualified evidence',
+                                         'body': 'Old evidence specification.', 'assessment': original_assessment}])]}
+    original.write_text(json.dumps(split))
+    Path(str(original) + '.applied.json').write_text('[101]')
+    Path(str(original) + '.children.json').write_text(json.dumps({
+        'plan_sha256': mod.plan_digest(split),
+        'children': {'101:evidence': {'nonce': 'a' * 32, 'number': 102}},
+    }))
+    marker = '<!-- refinement-child parent: 101; key: evidence; nonce: ' + 'a' * 32 + ' -->'
+    bodies = {101: 'Coordination contract.\n', 102: 'Old evidence specification.\n\n' + marker + '\n'}
+    parent = _entry(number=101, add_labels=['agent-bail: epic'], decision_comment=_decision(kind='product-grill'),
+                    existing_children=[102], expected_body_sha256=hashlib.sha256(bodies[101].encode()).hexdigest())
+    child = _entry(number=102, add_labels=['agent-bail: credential-gate'], handback_parent=101,
+                   body='Revised evidence specification; approval still owed.\n\n' + marker + '\n',
+                   expected_body_sha256=hashlib.sha256(bodies[102].encode()).hexdigest())
+    plan = {'issues': [parent, child]}
+    path = directory / 'follow-up.json'
+    path.write_text(json.dumps(plan))
+    issues = {n: {'state': 'OPEN', 'body': bodies[n], 'assignees': [],
+                  'labels': [{'name': label} for label in ['agent: refined', 'priority: high', *entry['add_labels']]],
+                  'comments': [{'body': parent['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}] if n == 101 else []}
+              for n, entry in [(101, parent), (102, child)]}
+    remote = ExistingChildRemote(issues, Path(str(path) + '.existing-handback.json'))
+    monkeypatch.setattr(mod, 'gh', remote)
+    monkeypatch.setattr(mod, 'repo_root', lambda: str(directory))
+    monkeypatch.setattr(mod, 'load_config', lambda root: _config(mod, rewrite_mode=mode, grill_handback=auto))
+    monkeypatch.setattr('sys.argv', ['apply-plan.py', str(path), '--apply', *flags, '--existing-child-plan', str(original)])
+    return plan, path, original, remote
+
+
+@pytest.mark.parametrize('mode', ['edit', 'suggest'])
+def test_existing_child_handback_preserves_exclusion_and_retries_exactly(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, mode=mode)
+    old_body = remote.issues[102]['body']
+    old_labels = {n: issue['labels'][:] for n, issue in remote.issues.items()}
+    assert apply_mod.main() == 0
+    assert remote.issues[102]['body'] == (plan['issues'][1]['body'] if mode == 'edit' else old_body)
+    assert {n: i['labels'] for n, i in remote.issues.items()} == old_labels
+    assert all(i['state'] == 'OPEN' and not i['assignees'] for i in remote.issues.values())
+    assert remote.mutations[-1] == (101, 'comment')
+    assert all(n == 102 for n, _ in remote.mutations[:-1])
+    assert 'agent-ready' not in json.dumps(remote.issues[102]['comments'])
+    mutations = remote.mutations[:]
+    assert apply_mod.main() == 0
+    assert remote.mutations == mutations
+    assert json.loads(Path(str(path) + '.existing-handback.json').read_text())['done'] == [102, 101]
+
+
+@pytest.mark.parametrize('change', [
+    {'existing_children': []}, {'existing_children': [102, 102]}, {'existing_children': [True]},
+    {'existing_children': [101]}, {'existing_children': [103]}, {'handback_parent': 102},
+    {'expected_body_sha256': 'not-a-hash'}, {'decision_comment': None},
+    {'add_labels': ['agent-bail: epic', 'needs: grill']},
+    {'decision_comment': _decision(next_step='grill')},
+])
+def test_existing_child_handback_rejects_malformed_parent_bindings(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: dict[str, Any]
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    plan['issues'][0].update(change)
+    assert apply_mod.validate(plan, REPO_LABELS | {'agent-bail: credential-gate'}, PRIORITY_TUPLE)
+
+
+@pytest.mark.parametrize('change', [
+    {'handback_parent': 999}, {'handback_parent': True}, {'handback_parent': 102},
+    {'body': ''}, {'expected_body_sha256': None}, {'verdict': 'ready', 'add_labels': ['dev: agent']},
+    {'add_labels': ['agent-bail: credential-gate', 'priority: low']},
+    {'remove_labels': ['priority: high']}, {'decision_comment': _decision()},
+])
+def test_existing_child_handback_rejects_unbound_or_promoted_children(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: dict[str, Any]
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    plan['issues'][1].update(change)
+    assert apply_mod.validate(plan, REPO_LABELS | {'agent-bail: credential-gate'}, PRIORITY_TUPLE)
+
+
+@pytest.mark.parametrize('fault', ['closed-parent', 'closed-child', 'assigned', 'unlinked', 'forged-marker',
+                                      'body-drift', 'newer-decision', 'pending-interview', 'missing-proof',
+                                      'other-interview-decision', 'other-interview-question', 'unfinished-split', 'bad-proof'])
+def test_existing_child_handback_preflights_every_entry_before_any_write(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fault: str
+) -> None:
+    plan, path, original, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    if fault.startswith('closed-'):
+        remote.issues[101 if fault == 'closed-parent' else 102]['state'] = 'CLOSED'
+    elif fault == 'assigned':
+        remote.issues[102]['assignees'] = [{'login': 'owner'}]
+    elif fault == 'unlinked':
+        remote.linked = []
+    elif fault == 'forged-marker':
+        remote.issues[102]['body'] = remote.issues[102]['body'].replace('a' * 32, 'b' * 32)
+        plan['issues'][1]['expected_body_sha256'] = hashlib.sha256(remote.issues[102]['body'].encode()).hexdigest()
+        path.write_text(json.dumps(plan))
+    elif fault == 'body-drift':
+        remote.issues[102]['body'] += 'Concurrent edit.\n'
+    elif fault == 'newer-decision':
+        remote.issues[101]['comments'].append({'body': _decision('provisional', 'product-grill', 'product-grill'),
+                                              'createdAt': '2026-01-04T00:00:00Z'})
+    elif fault == 'pending-interview':
+        remote.issues[101]['labels'].append({'name': 'needs: grill'})
+    elif fault == 'other-interview-decision':
+        remote.issues[101]['comments'].append({'body': _decision('provisional', 'grill', 'grill'),
+                                              'createdAt': '2026-01-04T00:00:00Z'})
+    elif fault == 'other-interview-question':
+        remote.issues[101]['comments'].append({'body': 'Backlog refinement: technical gap.\nQuestion for /grill: Which input?',
+                                              'createdAt': '2026-01-04T00:00:00Z'})
+    elif fault == 'missing-proof':
+        Path(str(original) + '.children.json').unlink()
+    elif fault == 'unfinished-split':
+        Path(str(original) + '.applied.json').write_text('[]')
+    else:
+        original.write_text(json.dumps({'issues': []}))
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+
+
+@pytest.mark.parametrize('auto,flags', [('auto', ('--confirm-summary',)), ('ask', ('--confirm-handback',)), ('ask', ())])
+def test_existing_child_handback_always_requires_exact_confirmation(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, auto: str, flags: tuple[str, ...]
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, auto=auto, flags=flags)
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+
+
+def test_existing_child_handback_stops_assignment_drift_after_full_preflight(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    remote.assign_after_preflight = True
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+
+
+def test_existing_child_handback_reconciles_uncertain_body_without_duplicate_write(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    remote.uncertain_body_write = True
+    with pytest.raises(SystemExit, match='publication uncertain'):
+        apply_mod.main()
+    assert remote.mutations == [(102, 'body')]
+    assert apply_mod.main() == 0
+    assert remote.mutations.count((102, 'body')) == 1
+    assert remote.mutations[-1] == (101, 'comment')
+
+
+def test_existing_child_handback_rejects_reverted_completed_child_before_parent(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, path, original, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    old_body = remote.issues[102]['body']
+    context = apply_mod.ExistingHandback(plan, str(path), [str(original)], _config(apply_mod), set())
+    apply_mod.apply_entry(plan['issues'][1], _config(apply_mod), existing_handback=context)
+    context.complete(102)
+    apply_mod.save_progress(apply_mod.progress_path(str(path)), {102})
+    remote.issues[102]['body'] = old_body
+    mutations = remote.mutations[:]
+
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == '#102: completed replacement body changed outside this exact approved handback\n'
+    assert remote.mutations == mutations
+    assert all(number == 102 for number, _ in mutations)
+    assert json.loads(Path(str(path) + '.existing-handback.json').read_text())['done'] == [102]
+
+
+def test_existing_child_handback_rejects_changed_plan_after_partial_publication(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    remote.uncertain_body_write = True
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    plan['issues'][1]['comment'] += ' Different scope.'
+    path.write_text(json.dumps(plan))
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == 'Existing handback identity changed; use a new reviewed plan path\n'
+    assert remote.mutations == [(102, 'body')]
+
+
+def test_existing_child_handback_does_not_adopt_an_unintended_matching_body(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    remote.issues[102]['body'] = plan['issues'][1]['body']
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == '#102: body changed outside this exact approved handback\n'
+    assert remote.mutations == []
+
+
+def test_existing_child_handback_stops_partial_write_before_parent_and_resumes(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    remote.assign_after_body = True
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == [(102, 'body')]
+    remote.assign_after_body = False
+    remote.issues[102]['assignees'] = []
+    assert apply_mod.main() == 0
+    assert remote.mutations.count((102, 'body')) == 1
+    assert remote.mutations[-1] == (101, 'comment')
+
+
+def test_existing_child_handback_refuses_unbound_old_progress(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    Path(str(path) + '.applied.json').write_text('[102]')
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == 'Unbound progress cannot authorize an existing-child handback\n'
+    assert remote.mutations == []
+
+
+def test_existing_child_handback_rejects_entry_changes_after_preflight(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, path, original, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    context = apply_mod.ExistingHandback(plan, str(path), [str(original)], _config(apply_mod), set())
+    plan['issues'][1]['body'] += 'Unapproved change.\n'
+    with pytest.raises(SystemExit) as exit_info:
+        apply_mod.apply_entry(plan['issues'][1], _config(apply_mod), existing_handback=context)
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == 'Entry differs from the exact preflighted handback\n'
+    assert remote.mutations == []
+
+
+@pytest.mark.parametrize('mutation', ['orphan', 'extra-entry', 'cycle', 'duplicate-owner'])
+def test_existing_child_handback_rejects_scope_expansion_and_cycles(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutation: str
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path)
+    if mutation == 'orphan':
+        plan['issues'] = plan['issues'][1:]
+    elif mutation == 'extra-entry':
+        plan['issues'].append(_entry(number=103))
+    elif mutation == 'cycle':
+        plan['issues'][0]['handback_parent'] = 102
+    else:
+        other = dict(plan['issues'][0], number=103)
+        plan['issues'].append(other)
+    assert apply_mod.validate(plan, REPO_LABELS | {'agent-bail: credential-gate'}, PRIORITY_TUPLE)
