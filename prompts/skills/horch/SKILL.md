@@ -101,7 +101,7 @@ Add `--deep` to either command only when the user asked for Deep. When `scope_de
   - stopped at the human-glance gate → alert that the PR waits on a human glance. With `glance.auto` true, inspect the herder's reported block or installed skill version; do not independently route it to auto-glance;
   - blocked or failed on a missing or stale skill, helper or reference → [Missing or stale skill](#missing-or-stale-skill-fix-it-upstream);
   - exhausted, blocked, or a run end with no ready flip → alert. For a run that ended, include the restart words from Review chain.
-- **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A finished build with no `BUILD-PR` line gets asked why. A build stopped by a missing or stale skill goes to the section below.
+- **Build tabs:** wait with `--until idle --until done --until blocked`, then read the pane to tell finished from paused. A Claude build parked at `done` with a shell still running is not finished: use the two-stage wait (herdr.md, Waiting, Background shells). A finished build with no `BUILD-PR` line gets asked why. A build stopped by a missing or stale skill goes to the section below.
 - A session blocked on a question in its own skill's lane: answer only if the instruction file or that skill's contract decides it. Product and scope calls go to the user. Never answer a prompt that dismisses or downgrades a finding.
 - If the user merges a PR themselves, that is their call: record it, tidy the tab, move on.
 

@@ -135,7 +135,7 @@ For a Claude pane, also set the pane environment when splitting it: `--env ANTHR
 
 herdr's `idle`, `done`, `working` and `blocked` say when to look, not what happened. Before recording a session as finished, relaying its result or starting the next step, read its last lines (`herdr agent read <name> --source recent-unwrapped --lines 120`) and check:
 
-- **Claude finished:** a `✻ <verb> for …` line after the last message, no spinner line, no tool call still `Running…`.
+- **Claude finished:** a `✻ <verb> for …` line after the last message, no spinner line, no tool call still `Running…`, and no background shell: the `✻` line has no `· <N> shell(s) still running` suffix and the status bar shows no `· <N> shell`. With a shell still running, Claude has ended its turn on a command it moved to the background (`Running in the background`) and herdr reports `done`; it is still working (Waiting, Background shells).
 - **Codex finished:** the final summary, then a `Worked for …` line and an empty `›` prompt, with no `Working (…)` or `background terminal running` line after it. Codex settles at `idle`, never `done`; it also shows `idle` while waiting on its own background terminal and can flash `done` between steps of one turn.
 - **Agy finished:** the input prompt is back and two reads ten seconds apart are identical.
 - **Waiting on a question:** the last message asks something, or a dialog or menu is open. That is blocked, whatever herdr says.
@@ -152,6 +152,12 @@ One rule on every harness: run the wait as a blocking command. If the harness mo
 - State that only `gh` shows: one shell loop that checks the condition every 300 seconds and exits when it holds, run the same way.
 - A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its tab ID's label in the same kind of loop.
 - A process you started: wait on its PID (`while kill -0 <pid>`) or its harness task; never `pgrep -f <pattern>`, which matches the waiting loop's own command line and never ends. Give every hand-written wait loop a timeout.
+- **Background shells (Claude):** when Claude moves a long command to the background (a pre-push hook, a test suite) and ends its turn, herdr reports `done` while the shell runs, so `herdr agent wait <name> --until done --until idle --until blocked` returns at once. Tell it apart by reading the pane (`herdr agent read <name> --lines 40`): a `· <N> shell(s) still running` suffix on the `✻` line, or `· <N> shell` in the status bar, with no terminal line yet (`BUILD-PR:`, `PR-READY` or whatever the skill ends on). Then wait in two stages instead of polling:
+  1. `herdr agent wait <name> --until working --until blocked --timeout <ms>`: the shell's exit notification wakes Claude back into `working`.
+  2. Once that returns `working`: `herdr agent wait <name> --until done --until idle --until blocked --timeout <ms>`, then read the pane again.
+
+  If stage 1 times out, read the pane: shell indicator still there → wait stage 1 again; indicator gone and the session still `done` or `idle` → prompt `Continue.` once, then stage 2.
+
 - To stop a background wait, stop that task by its ID. Never `pkill -f <pattern>`: the pattern can match your own command or a sibling wait and kill it too.
 
 Never `source` or `.` a `.env` or other secrets file into a session's shell. It exports every value to every later command, including ones that print the environment into a pane, a log or a PR comment, and the file can run arbitrary shell. Pass the one variable a command needs explicitly, or use that tool's own env-file option scoped to the one command.
