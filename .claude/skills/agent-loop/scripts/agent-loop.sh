@@ -27,7 +27,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_LEDGER \
     AGENT_LOOP_REVIEW_ACTOR \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
-    AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
+    AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
+    AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
@@ -2741,6 +2742,15 @@ human_glance_gate() {
     [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
 }
 
+# Whether the PR's diff against its base is byte-identical to the diff a
+# clean round reviewed. A round that differs only by a fresh-base merge has
+# nothing new to review, so its reviewers are told so instead of each
+# recomputing it.
+pr_diff_unchanged() {
+    local clean_base="$1" clean_head="$2" base="$3" head="$4"
+    cmp -s <(git diff "$clean_base" "$clean_head") <(git diff "$base" "$head")
+}
+
 run_review_convergence() {
     REVIEW_REMAINING_SECONDS="$REVIEW_TIMEOUT_SECONDS"
     local round="${1:-1}" codex_classification claude_classification
@@ -2748,6 +2758,7 @@ run_review_convergence() {
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
+    local clean_base_sha="" clean_head_sha=""
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -2779,6 +2790,12 @@ run_review_convergence() {
                 recovery_message "Could not publish fresh-base integration before review round $round." uncertain-mutation
                 return 1
             }
+        fi
+        unset AGENT_LOOP_REVIEW_DIFF_UNCHANGED
+        if [ -n "$clean_base_sha" ] && \
+           pr_diff_unchanged "$clean_base_sha" "$clean_head_sha" "$round_base_sha" HEAD; then
+            export AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1
+            echo "   PR diff is unchanged since the clean review of $clean_head_sha; this round only integrated the base"
         fi
         if [ "$resume_engine" = claude ]; then
             recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
@@ -2822,6 +2839,8 @@ run_review_convergence() {
                 }
                 continue
             elif [ "$pass_status" -eq 3 ]; then
+                clean_base_sha=""
+                clean_head_sha=""
                 round=$((round + 1))
                 update_run_state reviewing "$round" "$round_base_sha" \
                     "$(git rev-parse HEAD)" "" "" codex || {
@@ -2859,6 +2878,8 @@ run_review_convergence() {
             }
             continue
         elif [ "$pass_status" -eq 3 ]; then
+            clean_base_sha=""
+            clean_head_sha=""
             round=$((round + 1))
             update_run_state reviewing "$round" "$round_base_sha" \
                 "$(git rev-parse HEAD)" "" "" codex || {
@@ -2905,6 +2926,7 @@ run_review_convergence() {
                 return 1
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+                AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
                 AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
                 AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
@@ -2912,6 +2934,14 @@ run_review_convergence() {
             return 0
         fi
 
+        if [ "$codex_classification" != material ] && \
+           [ "$claude_classification" != material ]; then
+            clean_base_sha="$round_base_sha"
+            clean_head_sha="$(git rev-parse HEAD)"
+        else
+            clean_base_sha=""
+            clean_head_sha=""
+        fi
         if [ "$latest_base_sha" != "$round_base_sha" ]; then
             echo "   Base advanced during the round; integrate it on the draft PR and restart at Codex"
         else
@@ -2926,6 +2956,7 @@ run_review_convergence() {
     done
 
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+        AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
         AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
         AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
