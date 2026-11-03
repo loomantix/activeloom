@@ -40,6 +40,20 @@ attestation, and bounded progression. Existing handoff sessions and the separate
 issue-implementation `agent-loop` keep their own contracts. An active legacy run
 is not silently converted to a new plan or granted a fresh budget.
 
+## Starting the review chain
+
+When a PR needs review and the session runs inside herdr (`HERDR_ENV=1`) with
+the herd skills installed, the default entry point for every user is
+`/hreview <pr-number>`, typed in a fresh session, or `/horch`,
+which always starts review chains through `hreview`. Recommend that and nothing
+else: `hreview` runs the review profile's engines in order, each pass in a
+fresh pane, so the author session never reviews its own change. Outside herdr,
+run each pass yourself in a fresh session, in the profile's order.
+
+`reviewit` is not a step of this chain. Never recommend it as the next step
+after a local pass or a converged chain; offer it only when the user asks for
+hosted review ([Hosted Reviewers](#hosted-reviewers)).
+
 ## PR-First Rule
 
 Open a draft pull request before any local cleanup or adversarial review. Every
@@ -807,7 +821,7 @@ identities, so their comments are context rather than actor-owned ledger
 evidence, and they do not attest. Coverage counts local engines only — a hosted
 pass does not turn a solo relay into a cross-model one.
 
-Invocation:
+Invocation, only when the user asks for hosted review:
 
 - **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
   loop, after `refactorpass <pr-number>` and `critique <pr-number>`.

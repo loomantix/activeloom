@@ -1,0 +1,14 @@
+## Starting the review chain
+
+When a PR needs review and the session runs inside herdr (`HERDR_ENV=1`) with
+the herd skills installed, the default entry point for every user is
+`<<INVOKE>>hreview <pr-number>`, typed in a fresh session, or `<<INVOKE>>horch`,
+which always starts review chains through `hreview`. Recommend that and nothing
+else: `hreview` runs the review profile's engines in order, each pass in a
+fresh pane, so the author session never reviews its own change. Outside herdr,
+run each pass yourself in a fresh session, in the profile's order.
+
+`reviewit` is not a step of this chain. Never recommend it as the next step
+after a local pass or a converged chain; offer it only when the user asks for
+hosted review ([Hosted Reviewers](#hosted-reviewers)).
+
