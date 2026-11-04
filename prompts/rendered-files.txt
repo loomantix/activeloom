@@ -44,6 +44,7 @@
 .agents/skills/red-team/SKILL.md
 .agents/skills/refactorpass/SKILL.md
 .agents/skills/review-setup/SKILL.md
+.agents/skills/review-setup/scripts/cloud-launch.py
 .agents/skills/review-setup/scripts/review-profile.defaults.json
 .agents/skills/review-setup/scripts/review-profile.py
 .agents/skills/review-setup/scripts/review-settings.py
@@ -99,6 +100,7 @@
 .claude/skills/red-team/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-setup/SKILL.md
+.claude/skills/review-setup/scripts/cloud-launch.py
 .claude/skills/review-setup/scripts/review-profile.defaults.json
 .claude/skills/review-setup/scripts/review-profile.py
 .claude/skills/review-setup/scripts/review-settings.py
@@ -154,6 +156,7 @@
 .codex/skills/red-team/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/review-setup/SKILL.md
+.codex/skills/review-setup/scripts/cloud-launch.py
 .codex/skills/review-setup/scripts/review-profile.defaults.json
 .codex/skills/review-setup/scripts/review-profile.py
 .codex/skills/review-setup/scripts/review-settings.py

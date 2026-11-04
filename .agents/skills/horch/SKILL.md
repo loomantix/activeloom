@@ -7,7 +7,7 @@ description: Herdr workspace orchestrator — this session coordinates every tab
 
 Usage: `horch [<instruction file>]`
 
-This session is the **orchestrator** for one herdr workspace and one repository. It coordinates; it does not build, review, or edit any worktree. Its tools are `herdr`, `gh`, read-only `git`, and `claude --cloud` for a Cloud build. Mechanics: [`herdr.md`](../../references/herdr.md). Design: loomantix/activeloom#422.
+This session is the **orchestrator** for one herdr workspace and one repository. It coordinates; it does not build, review, or edit any worktree. Its tools are `herdr`, `gh`, read-only `git`, and `claude --cloud`, through the `review-setup` launch helper, for a Cloud build. Mechanics: [`herdr.md`](../../references/herdr.md). Design: loomantix/activeloom#422.
 
 ## Hard stops
 
@@ -86,7 +86,7 @@ Add `--deep` to either command only when the user asked for Deep. When `scope_de
 
 **Cloud build** — a Claude build that runs in Claude Cloud rather than a tab. Create no tab, agent or worktree for it.
 
-1. **Launch** from the primary checkout: `claude --cloud "<prompt>" --model <model> --effort <effort>`, with the resolved worker model and effort (leave out `--model` when the model is `inherit`). It prints the cloud session's URL and exits. Record the issue, that URL and the role `cloud build` in `state.md`. No URL is a problem to alert.
+1. **Launch** from the primary checkout. `claude --cloud` refuses to run without a terminal, and a shell tool is not one, so write the prompt to a file in this session's scratch directory and run `python3 -I .agents/skills/review-setup/scripts/cloud-launch.py --prompt-file <file> --model <model> --effort <effort>` with the resolved worker model and effort. It runs the CLI on a pseudo-terminal and prints JSON with the session's `url`. Record the issue, that URL and the role `cloud build` in `state.md`. Exit 1 means no URL: alert with its `output_tail`, and count the issue as not started. Exit 2 is a block: report its stderr.
 2. **Prompt.** The Build prompt's issue, scope, `Refs`/`Closes` and no-review rules, with these in place of the worktree and the `BUILD-PR` line, which no pane would read: read the issue body and every comment first and stay inside its scope; run the repository's generate, format, lint, typecheck and unit test steps for what changed; push once, when done, to branch `claude/<issue>-<slug>`; open the draft PR to the integration branch, or leave the pushed branch when `gh` is unavailable; if the scope check fails, push nothing and end with `BUILD-QUESTION: <one line>`.
 3. **Watch** every cloud build in one background loop every 90 seconds: `gh pr list --repo $repo --state open --json number,headRefName,headRefOid,isDraft,baseRefName` for a head branch starting `claude/<issue>-`, and `git ls-remote --heads origin 'refs/heads/claude/<issue>-*'` for a branch pushed without a PR. A branch still without a PR two polls later: open it as `gh pr create --draft --repo $repo --head <branch> --base <integration branch> --title "<issue title>" --body "Refs #<issue>"`. Nothing after 120 minutes: alert with the session URL, where a `BUILD-QUESTION` or a failure is waiting.
 4. **Review.** The PR's number and `headRefOid` stand in for a `BUILD-PR` line. Start its review chain with `--author claude` added to the `hreview` prompt: a PR opened from a pushed branch may carry no authorship trailer. `hreview` creates the review worktree under `worktree_root` when the chain starts, so that is the issue's first local worktree.
