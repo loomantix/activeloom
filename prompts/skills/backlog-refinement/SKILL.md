@@ -107,6 +107,15 @@ Walk the **backfill** bucket from `candidates.py` and apply only steps 2 and the
 
 Process sequentially, one `gh` mutation at a time. Summarize at the end: tagged ready, excluded by category, needs labels applied by kind, priorities set by tier, re-scoped.
 
+### Running `refine` in Claude Cloud
+
+When the user asks for it, or the review profile's Claude worker `execution` is `cloud` (the `review-setup` helper's `resolve --engine claude --role worker --repo <owner/name>` reports it, with the worker model and effort; without `review-setup` installed, only the user's request dispatches), send `refine` to a Claude Cloud session instead of running it here. Say so before launching, and run it here if the user prefers. Every other mode stays local.
+
+1. **Pick the issues** with `candidates.py --json` (plus `--limit N`): the `unrefined` numbers, and the `reverify` ones for `--all`.
+2. **Launch** from the primary checkout: `claude --cloud "<prompt>" --model <worker model> --effort <worker effort>`, leaving out `--model` when the model is `inherit`. It prints the cloud session's URL and exits; give the user that URL.
+3. **Prompt:** run `<<INVOKE>>backlog-refinement refine` in that session, following this skill as written, on exactly those issue numbers (as a `--batch` for more than a handful); change no file in the repository; finish with the batch report table and the assessors' `rubric_note` fields.
+4. **Retro here.** When the user brings back the notes, fold them into `.backlog/refinement.local.md` and the learnings log as the `--batch` retro step says.
+
 ## Mode: `assess <n> [--decision <draft-comment-file>]`
 
 Dry-run one issue: the priority you would set, the §1 verdict, the §2 transformations that would apply, the `needs:` label on an exclusion, and the proposed rewritten body — without mutating anything. `--decision` supplies a draft interview comment as hypothetical decision input, not permission to write. Read its full text and marker; explain how it settles the question and what remains. Without a draft, use the strictly newer posted decision, if any. Produce the plan entry and the complete preview below, including any approved-in-principle children and proposed close.
