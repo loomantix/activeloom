@@ -47,8 +47,13 @@ the herd skills installed, the default entry point for every user is
 `hreview <pr-number>`, typed in a fresh session, or `horch`,
 which always starts review chains through `hreview`. Recommend that and nothing
 else: `hreview` runs the review profile's engines in order, each pass in a
-fresh pane, so the author session never reviews its own change. Outside herdr,
+fresh pane, so the author session never reviews its own change. Otherwise,
 run each pass yourself in a fresh session, in the profile's order.
+
+This sets the default recommendation. It does not override an explicit request
+for the automatic chain, the local-or-hosted question when a request names no
+style ([Hosted Reviewers](#hosted-reviewers)), or a one-pass reviewer's return
+to its controller: that session recommends no entry point.
 
 `reviewit` is not a step of this chain. Never recommend it as the next step
 after a local pass or a converged chain; offer it only when the user asks for
