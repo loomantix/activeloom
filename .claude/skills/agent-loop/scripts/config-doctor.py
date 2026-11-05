@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Compatibility preflight for consumer agent-loop configuration.
 
-The check is non-mutating. `--migrate` is the one mode that writes: it moves
-review-hook model and effort literals to the pinned-settings variables and
-removes retired keys.
+The check is non-mutating: it names every line to change and never edits the
+config itself.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,7 +49,6 @@ def _hook_program(hook: str) -> str | None:
 RETIRED_KEYS = ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort")
 # Review hooks whose model and effort flags read the pinned reviewer settings.
 REVIEW_HOOK_ENGINES = {"claude_review_hook": "claude", "codex_review_hook": "codex"}
-MIGRATE_COMMAND = "config-doctor.py --project-dir <repo> --migrate"
 PROFILE_HELPER = ".claude/skills/critique/scripts/review-profile.py"
 
 # One shell word: a quoted string or an unquoted run up to whitespace,
@@ -303,8 +300,8 @@ class _SettingsResolver:
             reason = detail[-1] if detail else f"exit {result.returncode}"
             raise DoctorError(
                 f"cannot resolve {engine} reviewer settings to check the review hook literals "
-                f"against ({reason}); run the review-setup skill, or run {MIGRATE_COMMAND} "
-                "so the hooks read the pinned settings instead"
+                f"against ({reason}); run the review-setup skill, or edit the hooks so they "
+                "read the pinned settings instead"
             )
         try:
             resolved = json.loads(result.stdout)
@@ -321,9 +318,9 @@ def _check_retired_keys(values: dict[str, str]) -> None:
         if values[key]:
             raise DoctorError(
                 f"{key} is retired: reviewer and worker settings come from the per-user review "
-                f"profile. Run {MIGRATE_COMMAND} to remove it"
+                f"profile. Remove it from the config"
             )
-        _warn(f"{key} is retired and has no effect; run {MIGRATE_COMMAND} to remove it")
+        _warn(f"{key} is retired and has no effect; remove it from the config")
 
 
 def _check_hook_literals(values: dict[str, str], resolver: _SettingsResolver) -> None:
@@ -335,13 +332,13 @@ def _check_hook_literals(values: dict[str, str], resolver: _SettingsResolver) ->
             if literal.value != expected:
                 raise DoctorError(
                     f"{key} passes {literal.flag} {literal.value}, but {settings.source} set "
-                    f"{literal.engine} {literal.field} {expected}. Run {MIGRATE_COMMAND} so the "
-                    f"hook reads ${literal.variable}"
+                    f"{literal.engine} {literal.field} {expected}. Edit the hook so it "
+                    f"reads ${literal.variable}"
                 )
             _warn(
                 f"{key} passes {literal.flag} {literal.value} literally; it matches "
                 f"{settings.source}, but a developer whose profile differs is refused. "
-                f"Run {MIGRATE_COMMAND} so the hook reads ${literal.variable}"
+                f"Edit the hook so it reads ${literal.variable}"
             )
 
 
@@ -450,58 +447,6 @@ def doctor(project: Path, *, repo: str | None = None, settings_from_env: bool = 
     _check_hook_literals(values, _SettingsResolver(root, repo, settings_from_env))
 
 
-def _migrated_line(line: str) -> tuple[str | None, list[str]]:
-    """A config line after migration (None when removed) and what changed."""
-    match = re.fullmatch(r"(\s*)([a-z_]+)(\s*=\s*)(.*?)(\s*)", line)
-    if match is None:
-        return line, []
-    key, value = match[2], match[4]
-    if key in RETIRED_KEYS:
-        return None, [f"removed {key}"]
-    if key not in REVIEW_HOOK_ENGINES:
-        return line, []
-    changes = []
-    for literal in reversed(_hook_literals(key, value)):
-        value = value[: literal.start] + literal.replacement + value[literal.end :]
-        changes.insert(0, f"{key}: {literal.flag} {literal.value} -> ${literal.variable}")
-    return match[1] + key + match[3] + value + match[5], changes
-
-
-def migrate(project: Path) -> list[str]:
-    """Rewrite review-hook literals to the pinned-settings variables and drop retired keys.
-
-    Every other line, comments included, is kept byte for byte. A second run
-    finds nothing to change.
-    """
-    config_path = project.resolve() / ".claude/skills/agent-loop/agent-loop.config"
-    if not config_path.is_file():
-        raise DoctorError("required agent-loop file is missing: .claude/skills/agent-loop/agent-loop.config")
-    _config(config_path)
-    # Decoded without newline translation so CRLF line endings survive.
-    original = config_path.read_bytes().decode("utf-8")
-    output: list[str] = []
-    changes: list[str] = []
-    for raw in original.splitlines(keepends=True):
-        body = raw.rstrip("\r\n")
-        ending = raw[len(body) :]
-        migrated, line_changes = _migrated_line(body)
-        changes += line_changes
-        if migrated is not None:
-            output.append(migrated + ending)
-    if not changes:
-        return []
-    handle, temporary = tempfile.mkstemp(dir=config_path.parent, prefix=".agent-loop.config.")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
-            stream.write("".join(output))
-        shutil.copymode(config_path, temporary)
-        os.replace(temporary, config_path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-    return changes
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
@@ -513,20 +458,7 @@ def main() -> int:
         action="store_true",
         help="check hook literals against the AGENT_LOOP_* settings the wrapper pinned",
     )
-    parser.add_argument(
-        "--migrate",
-        action="store_true",
-        help="rewrite review-hook model and effort literals to the AGENT_LOOP_* variables "
-        "and remove retired keys",
-    )
     args = parser.parse_args()
-    if args.migrate:
-        changes = migrate(Path(args.project_dir))
-        for change in changes:
-            print(f"agent-loop config doctor: migrated {change}")
-        if not changes:
-            print("agent-loop config doctor: nothing to migrate")
-        return 0
     doctor(Path(args.project_dir), repo=args.repo, settings_from_env=args.settings_from_env)
     print("agent-loop config doctor: compatible")
     return 0

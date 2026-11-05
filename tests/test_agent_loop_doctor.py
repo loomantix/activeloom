@@ -1,4 +1,4 @@
-"""Failure fixtures for the agent-loop config doctor and its --migrate mode."""
+"""Failure fixtures for the agent-loop config doctor."""
 
 from __future__ import annotations
 
@@ -372,7 +372,7 @@ def test_doctor_refuses_a_hook_literal_that_conflicts_with_the_pinned_settings(
     expected = PINNED[f"AGENT_LOOP_{engine.upper()}_{field.upper()}"]
     assert f"{engine}_review_hook passes {flag} {value}" in result.stderr
     assert f"{engine} {field} {expected}" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Edit the hook so it reads" in result.stderr
     assert f"$AGENT_LOOP_{engine.upper()}_{field.upper()}" in result.stderr
 
 
@@ -389,7 +389,7 @@ def test_doctor_resolves_the_profile_when_run_standalone(tmp_path: Path) -> None
     result = _run(project)
     assert result.returncode == 1
     assert "passes --effort low, but the user profile set claude effort high" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Edit the hook so it reads" in result.stderr
 
     # A repository override is honoured for the repository named by --repo.
     subprocess.run(
@@ -410,14 +410,14 @@ def test_doctor_resolves_the_profile_when_run_standalone(tmp_path: Path) -> None
     assert "matches the repository override" in result.stderr
 
 
-def test_doctor_accepts_a_matching_literal_with_a_migration_warning(tmp_path: Path) -> None:
+def test_doctor_accepts_a_matching_literal_with_an_edit_warning(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _set_hooks(project, claude="claude -p --model claude-review --effort high /deepcritique")
     result = _run(project, args=("--settings-from-env",), extra_env=PINNED)
     assert result.returncode == 0, result.stderr
     assert "claude_review_hook passes --model claude-review literally" in result.stderr
     assert "claude_review_hook passes --effort high literally" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Edit the hook so it reads" in result.stderr
 
 
 def test_doctor_needs_no_profile_for_hooks_that_read_the_variables(tmp_path: Path) -> None:
@@ -439,7 +439,7 @@ def test_doctor_names_review_setup_when_a_literal_cannot_be_checked(tmp_path: Pa
     assert result.returncode == 1
     assert "cannot resolve claude reviewer settings" in result.stderr
     assert "review-setup" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "edit the hooks so they" in result.stderr
 
 
 def test_doctor_settings_from_env_requires_the_pinned_variables(tmp_path: Path) -> None:
@@ -475,7 +475,7 @@ def test_doctor_reads_literals_only_from_the_engine_command(
 
 
 @pytest.mark.parametrize("key", ["claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"])
-def test_doctor_refuses_retired_keys_and_points_at_migrate(tmp_path: Path, key: str) -> None:
+def test_doctor_refuses_retired_keys_and_says_to_remove_them(tmp_path: Path, key: str) -> None:
     project = _project(tmp_path)
     config = project / ".claude/skills/agent-loop/agent-loop.config"
     base = config.read_text(encoding="utf-8")
@@ -484,7 +484,7 @@ def test_doctor_refuses_retired_keys_and_points_at_migrate(tmp_path: Path, key: 
     result = _run(project)
     assert result.returncode == 1
     assert f"{key} is retired" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Remove it from the config" in result.stderr
 
     # An empty key has no effect, so it is reported rather than refused.
     config.write_text(base + f"{key} =\n", encoding="utf-8")
@@ -500,183 +500,14 @@ def test_doctor_no_longer_accepts_the_claude_effort_option(tmp_path: Path) -> No
     assert "unrecognized arguments: --claude-effort" in result.stderr
 
 
-LEGACY_CONFIG = """\
-# Consumer-owned settings.
-base_branch =
-setup_hook = pnpm install --frozen-lockfile
-# The gate runs the model tests.
-validation_hook = pnpm test -- --model fixture --effort low
-review_contract_version = 3
-config_doctor = true
-claude_effort_policy = low
-review_max_rounds = 4
-review_timeout_seconds = 7200
-claude_review_hook = claude --print --effort low --model claude-old /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
-codex_review_hook = codex exec -m gpt-old -c model_reasoning_effort=medium -c 'model_reasoning_effort="high"' deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
-worker_hook =
-# Worker model keys.
-worker_model = claude-old
-worker_fallback_model =
-worker_effort = low
-worker_retries = 1
-hook_timeout_seconds = 3600
-"""
-
-MIGRATED_CONFIG = """\
-# Consumer-owned settings.
-base_branch =
-setup_hook = pnpm install --frozen-lockfile
-# The gate runs the model tests.
-validation_hook = pnpm test -- --model fixture --effort low
-review_contract_version = 3
-config_doctor = true
-review_max_rounds = 4
-review_timeout_seconds = 7200
-claude_review_hook = claude --print --effort "$AGENT_LOOP_CLAUDE_EFFORT" $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
-codex_review_hook = codex exec $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
-worker_hook =
-# Worker model keys.
-worker_retries = 1
-hook_timeout_seconds = 3600
-"""
-
-
-def _migrate(project: Path) -> subprocess.CompletedProcess[str]:
-    return _run(project, path_stubs=(), args=("--migrate",))
-
-
-def test_migrate_rewrites_literals_and_removes_retired_keys_once(tmp_path: Path) -> None:
+def test_doctor_has_no_migrate_mode(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    config.write_text(LEGACY_CONFIG, encoding="utf-8")
-    config.chmod(0o640)
-    prompt = project / ".claude/skills/agent-loop/prompt.txt"
-    prompt_before = prompt.read_bytes()
-
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert config.read_text(encoding="utf-8") == MIGRATED_CONFIG
-    assert config.stat().st_mode & 0o777 == 0o640
-    assert prompt.read_bytes() == prompt_before
-    assert "migrated claude_review_hook: --effort low -> $AGENT_LOOP_CLAUDE_EFFORT" in result.stdout
-    assert "migrated codex_review_hook: -m gpt-old -> $AGENT_LOOP_CODEX_MODEL" in result.stdout
-    for key in ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"):
-        assert f"migrated removed {key}" in result.stdout
-
-    migrated = config.read_bytes()
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "agent-loop config doctor: nothing to migrate"
-    assert config.read_bytes() == migrated
-
-    # The migrated hooks pass the doctor on any profile.
-    result = _run(
-        project,
-        path_stubs=("claude", "codex", "pnpm"),
-        args=("--settings-from-env",),
-        extra_env=PINNED,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "retired" not in result.stderr
+    result = _run(project, args=("--migrate",))
+    assert result.returncode == 2
+    assert "unrecognized arguments: --migrate" in result.stderr
 
 
-def test_migrate_leaves_a_config_without_literals_byte_identical(tmp_path: Path) -> None:
-    project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    config.write_text(config.read_text(encoding="utf-8") + "# trailing comment\r\n", encoding="utf-8")
-    before = config.read_bytes()
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert "nothing to migrate" in result.stdout
-    assert config.read_bytes() == before
-
-
-def test_migrate_keeps_crlf_line_endings_on_a_config_it_changes(tmp_path: Path) -> None:
-    project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    config.write_bytes(b"review_contract_version = 3\r\nworker_model = x\r\n# kept\r\n")
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert config.read_bytes() == b"review_contract_version = 3\r\n# kept\r\n"
-
-
-def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
-    tmp_path: Path,
-) -> None:
-    project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    prompt = '"commit with git commit -m fix; run python3 -m pytest --model x"'
-    hooks = {
-        "claude_review_hook": f"claude --print --model opus --effort low {prompt} /deepcritique"
-        + TAIL,
-        "codex_review_hook": (
-            f'codex exec -m gpt-old -c model=gpt-old -c "model=\\"gpt-old\\"" '
-            f'-c "model_reasoning_effort=\\"low\\"" {prompt} deepcritique'
-        )
-        + TAIL,
-    }
-    lines = [
-        line
-        for line in config.read_text(encoding="utf-8").splitlines()
-        if not line.startswith(tuple(hooks))
-    ]
-    config.write_text(
-        "\n".join(lines + [f"{key} = {hook}" for key, hook in hooks.items()]) + "\n",
-        encoding="utf-8",
-    )
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert "-m fix" not in result.stdout and "-m pytest" not in result.stdout
-    migrated = dict(
-        line.split(" = ", 1)
-        for line in config.read_text(encoding="utf-8").splitlines()
-        if line.startswith(tuple(hooks))
-    )
-    for hook in migrated.values():
-        assert prompt in hook
-    # Escaped-quote tokens are replaced whole, leaving no stray quote behind.
-    assert '\\"' not in migrated["codex_review_hook"]
-
-    inherit = {**PINNED, "AGENT_LOOP_CLAUDE_MODEL": "inherit", "AGENT_LOOP_CODEX_MODEL": "inherit"}
-    for pinned in (PINNED, inherit):
-        result = _run(
-            project, path_stubs=("claude", "codex"), args=("--settings-from-env",), extra_env=pinned
-        )
-        assert result.returncode == 0, result.stderr
-        for key, engine in (("claude_review_hook", "claude"), ("codex_review_hook", "codex")):
-            # Run the hook's engine command with the CLI replaced by an argv printer.
-            shell = subprocess.run(
-                ["bash", "-c", f'{engine}() {{ printf "%s\\n" "$@"; exit; }}; {migrated[key]}'],
-                capture_output=True,
-                text=True,
-                check=True,
-                env={**os.environ, **pinned},
-            )
-            argv = shell.stdout.splitlines()
-            model = pinned[f"AGENT_LOOP_{engine.upper()}_MODEL"]
-            if model == "inherit":
-                assert not any(arg in ("--model", "-m") or "model=" in arg for arg in argv)
-            else:
-                assert model in argv or f"model={model}" in argv
-            effort = pinned[f"AGENT_LOOP_{engine.upper()}_EFFORT"]
-            if engine == "codex":
-                assert f"model_reasoning_effort={effort}" in argv
-            else:
-                assert argv[argv.index("--effort") + 1] == effort
-            assert prompt.strip('"') in argv
-
-
-def test_migrate_refuses_an_unparseable_config(tmp_path: Path) -> None:
-    project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    config.write_text("claude_effort_policy = low\nnot a config line\n", encoding="utf-8")
-    result = _migrate(project)
-    assert result.returncode == 1
-    assert "invalid config line" in result.stderr
-    assert config.read_text(encoding="utf-8").startswith("claude_effort_policy")
-
-
-def test_template_ships_in_the_migrated_form(
+def test_template_ships_in_the_variable_form(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     text = TEMPLATE.read_text(encoding="utf-8")
@@ -704,11 +535,3 @@ def test_template_ships_in_the_migrated_form(
         ) in hook
         assert f'"$AGENT_LOOP_{engine.upper()}_EFFORT"' in hook
         assert module._hook_literals(key, hook) == []
-
-    project = _project(tmp_path)
-    config = project / ".claude/skills/agent-loop/agent-loop.config"
-    config.write_text(text, encoding="utf-8")
-    result = _migrate(project)
-    assert result.returncode == 0, result.stderr
-    assert "nothing to migrate" in result.stdout
-    assert config.read_text(encoding="utf-8") == text
