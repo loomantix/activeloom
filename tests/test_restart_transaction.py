@@ -221,9 +221,11 @@ def test_concurrent_starters_publish_once(approval: dict[str, Any], tmp_path: Pa
         results.close()
 
 
+@pytest.mark.parametrize("scope", [None, "keep"])
+@pytest.mark.parametrize("source", ["user-approval", "autonomy-policy"])
 def test_controller_recovers_uncertain_publication(
     approval: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], scope: str | None, source: str,
 ) -> None:
     """Exercise installed helper lookup and real controller replay with fake remote IO."""
     path = ROOT / ".codex/skills/critique/scripts/local-review-handoff.py"
@@ -234,9 +236,31 @@ def test_controller_recovers_uncertain_publication(
     remote = ControllerRemote(controller, monkeypatch, tmp_path)
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit synthetic restart authorization.")
+    if scope:
+        saved = json.loads(Path(approval["path"]).read_text())
+        saved["scope_decision"] = scope
+        Path(approval["path"]).write_text(json.dumps(saved))
     rows: list[dict[str, Any]] = []
     publications: list[str] = []
     remote.rows = rows
+    policy = {"protected": True, "mode": "full", "launch_blocked": False,
+              "reason": "fixture", "policy_sha256": "d" * 64, "stops": [], "restart_budget": 2}
+    if source == "autonomy-policy":
+        parent = controller._run_digest(tier="lean", max_rounds=2, base="f" * 40,
+                                        start_head=HEAD, supersedes=None, content="Original authorization.")
+        rows.extend([
+            {"id": 10, "body": f"<!-- local-review-run:v1 id={parent} tier=lean max-rounds=2 base={'f' * 40} start-head={HEAD} supersedes=none content-sha256={parent} -->\nOriginal authorization."},
+            {"id": 11, "body": f"<!-- local-review-run-end:v1 id={parent} outcome=converged head={HEAD} -->"},
+        ])
+        saved = json.loads(Path(approval["path"]).read_text())
+        saved.update(source=source, policy_sha256="d" * 64, ended_run_id=parent, ended_outcome="converged", budget_used=1)
+        Path(approval["path"]).write_text(json.dumps(saved))
+        monkeypatch.setattr(controller, "_restart_helper", lambda: herd)
+        monkeypatch.setattr(herd, "_policy_report", lambda: policy)
+        monkeypatch.setattr(herd, "_restart_inventory", lambda *args: {
+            "state": "ended", "latest": {"run_id": parent},
+            "end": {"outcome": "converged", "head": HEAD}, "budget_used": 0,
+        })
     monkeypatch.setattr(controller, "_verify_signed_pr_history", lambda *_: None)
     monkeypatch.setattr(controller, "_scope_signals", lambda *_: {
         "behaviour_commits": 0, "missing_patch_files": [],
@@ -255,6 +279,7 @@ def test_controller_recovers_uncertain_publication(
     def arguments() -> SimpleNamespace:
         return SimpleNamespace(repo="acme/widgets", pr=7, head=HEAD, base="f" * 40,
                                tier="lean", restart=True,
+                               scope_decision=scope, sequence="codex,claude",
                                restart_approval_id=approval["id"],
                                authorization_file=str(authorization))
 
@@ -262,9 +287,22 @@ def test_controller_recovers_uncertain_publication(
         controller._start_run(arguments())
     assert capsys.readouterr().out == ""
     assert json.loads(Path(approval["path"]).read_text())["used"] is None
+    policy["mode"] = "manual"  # Published intent must reconcile after revocation.
     controller._start_run(arguments())
     result = json.loads(capsys.readouterr().out)
     assert result["verified"] is True
     assert result["replayed"] is True
     assert publications == [result["run_id"]]
     assert json.loads(Path(approval["path"]).read_text())["used"]
+    body = rows[-1]["body"]
+    marker = f"<!-- local-review-restart:v1 source={source} id={approval['id']}"
+    assert body.count(marker) == 1
+    preceding = "local-review-scope:v1" if scope else "local-review-sequence:v1"
+    assert body.index(preceding) < body.index(marker) < body.index("Explicit synthetic")
+    saved = json.loads(Path(approval["path"]).read_text())
+    saved["source"] = "autonomy-policy"
+    saved.update(policy_sha256="e" * 64, ended_run_id="c" * 64, ended_outcome="converged", budget_used=1)
+    Path(approval["path"]).write_text(json.dumps(saved))
+    with pytest.raises(controller.HandoffError):
+        controller._start_run(arguments())
+    assert publications == [result["run_id"]]

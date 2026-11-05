@@ -27,6 +27,8 @@
 .agents/skills/hpromote/SKILL.md
 .agents/skills/hred-team/SKILL.md
 .agents/skills/hreview/SKILL.md
+.agents/skills/hreview/scripts/autonomy-policy.py
+.agents/skills/hreview/scripts/autonomy-policy.schema.json
 .agents/skills/hreview/scripts/herd-config.py
 .agents/skills/hreview/scripts/herd-config.schema.json
 .agents/skills/hreview/scripts/herd-user.schema.json
@@ -84,6 +86,8 @@
 .claude/skills/hpromote/SKILL.md
 .claude/skills/hred-team/SKILL.md
 .claude/skills/hreview/SKILL.md
+.claude/skills/hreview/scripts/autonomy-policy.py
+.claude/skills/hreview/scripts/autonomy-policy.schema.json
 .claude/skills/hreview/scripts/herd-config.py
 .claude/skills/hreview/scripts/herd-config.schema.json
 .claude/skills/hreview/scripts/herd-user.schema.json
@@ -139,6 +143,8 @@
 .codex/skills/hpromote/SKILL.md
 .codex/skills/hred-team/SKILL.md
 .codex/skills/hreview/SKILL.md
+.codex/skills/hreview/scripts/autonomy-policy.py
+.codex/skills/hreview/scripts/autonomy-policy.schema.json
 .codex/skills/hreview/scripts/herd-config.py
 .codex/skills/hreview/scripts/herd-config.schema.json
 .codex/skills/hreview/scripts/herd-user.schema.json

@@ -418,6 +418,12 @@ It posts one `red-team:v1` comment on the PR listing non-security findings' outc
 
 ## Restart approvals
 
+The [protected autonomy policy foundation](autonomy-policy.md) adds a read-only
+policy report and transactional policy-sourced restart records. It requires a
+separate human installation and currently reports restricted containment as
+unavailable. Automatic orchestration integration is separate work; these commands
+do not change the manual workflow below.
+
 A review run that has ended (converged, exhausted, aborted) needs your approval for a new one. A message from the orchestrator or another session is not your approval, so an orchestrated restart either waits for you to type in the herder's tab, or uses a record you write yourself:
 
 ```bash
