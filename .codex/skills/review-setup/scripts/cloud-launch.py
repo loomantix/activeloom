@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Launch a Claude Cloud session from a non-interactive shell and print its URL.
 
-`claude --cloud` refuses to run without an interactive terminal, and an agent's
-shell tool is not one. This helper runs the CLI on a pseudo-terminal (Python's
-`pty`, so the same code works on Linux and macOS without `script`), reads the
-prompt from a file so a multi-line prompt needs no shell quoting, strips ANSI
-escapes from what the CLI prints, and reports the first claude.ai session URL.
+The Claude CLI's `--cloud` mode refuses to run without an interactive terminal,
+and an agent's shell tool is not one. This helper runs the CLI on a
+pseudo-terminal (Python's `pty`, so the same code works on Linux and macOS
+without `script`), reads the prompt from a file so a multi-line prompt needs no
+shell quoting, strips ANSI escapes from what the CLI prints, and reports the
+first claude.ai session URL.
 
     cloud-launch.py --prompt-file <file> [--model <m>] [--effort <e>]
 

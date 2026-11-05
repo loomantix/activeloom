@@ -179,3 +179,14 @@ def test_rendered_copies_match_source() -> None:
     for copy in COPIES:
         assert copy.read_bytes() == SOURCE.read_bytes(), copy
         assert os.access(copy, os.X_OK), copy
+
+
+def test_passes_claude_cli_invocations_lint() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / ".claude/lint-claude-cli-invocations.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
