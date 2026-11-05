@@ -30,6 +30,15 @@ if not os.isatty(sys.stdout.fileno()):
 if mode == "url":
     print("\x1b[1mCreated cloud session\x1b[0m")
     print("View: \x1b[36mhttps://claude.ai/code/session_01AbC\x1b[0m.")
+elif mode == "split-url":
+    sys.stdout.write("View: \x1b[36mhttps://claude.ai/code/session_01")
+    sys.stdout.flush()
+    time.sleep(0.05)
+    sys.stdout.write("Split\x1b")
+    sys.stdout.flush()
+    time.sleep(0.05)
+    sys.stdout.write("[0m.\n")
+    sys.stdout.flush()
 elif mode == "url-then-hang":
     print("https://claude.ai/code/session_hang", flush=True)
     time.sleep(60)
@@ -100,6 +109,16 @@ def test_prints_url_and_passes_prompt_verbatim(fake: dict[str, Path]) -> None:
 def test_inherit_model_leaves_the_flag_out(fake: dict[str, Path]) -> None:
     assert run(fake, "--model", "inherit", "--effort", "medium").returncode == 0
     assert json.loads(fake["argv"].read_text()) == ["--cloud", fake["prompt"].read_text(), "--effort", "medium"]
+
+
+def test_url_split_across_pty_reads_is_captured_in_full(fake: dict[str, Path]) -> None:
+    result = run(fake, mode="split-url")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "url": "https://claude.ai/code/session_01Split",
+        "exit_code": 0,
+        "timed_out": False,
+    }
 
 
 def test_no_url_exits_1_with_cleaned_output(fake: dict[str, Path]) -> None:

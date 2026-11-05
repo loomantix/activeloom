@@ -35,7 +35,7 @@ from pathlib import Path
 
 # CSI and OSC sequences, then any other two-byte escape.
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]")
-URL_RE = re.compile(r"https://(?:[A-Za-z0-9-]+\.)*claude\.ai/code/[^\s\"'<>)\]]+")
+URL_RE = re.compile(r"https://" r"(?:[A-Za-z0-9-]+\.)*claude\.ai/code/[^\s\"'<>)\]]+")
 TAIL_CHARS = 2000
 # The CLI prints the URL and exits; give it this long to exit once the URL is out.
 EXIT_GRACE_SECONDS = 10.0
@@ -91,14 +91,14 @@ def run_on_pty(argv: list[str], timeout: float) -> tuple[str, int | None, bool, 
     finally:
         os.close(slave)
     chunks: list[bytes] = []
-    url: str | None = None
+    grace_started = False
     deadline = time.monotonic() + timeout
-    timed_out = False
+    deadline_expired = False
     try:
         while True:
             now = time.monotonic()
             if now >= deadline:
-                timed_out = url is None
+                deadline_expired = True
                 break
             ready, _, _ = select.select([master], [], [], min(0.5, deadline - now))
             if ready:
@@ -109,9 +109,10 @@ def run_on_pty(argv: list[str], timeout: float) -> tuple[str, int | None, bool, 
                 if not data:
                     break
                 chunks.append(data)
-                if url is None:
-                    url = find_url(b"".join(chunks).decode("utf-8", "replace"))
-                    if url is not None:
+                if not grace_started and b"\n" in data:
+                    completed_lines = b"".join(chunks).decode("utf-8", "replace").rsplit("\n", 1)[0]
+                    if find_url(completed_lines) is not None:
+                        grace_started = True
                         deadline = min(deadline, time.monotonic() + EXIT_GRACE_SECONDS)
             elif proc.poll() is not None:
                 break
@@ -119,7 +120,9 @@ def run_on_pty(argv: list[str], timeout: float) -> tuple[str, int | None, bool, 
         os.close(master)
         if proc.poll() is None:
             stop(proc)
-    return b"".join(chunks).decode("utf-8", "replace"), proc.returncode, timed_out, url
+    output = b"".join(chunks).decode("utf-8", "replace")
+    url = find_url(output)
+    return output, proc.returncode, deadline_expired and url is None, url
 
 
 def main(argv: list[str] | None = None) -> int:
