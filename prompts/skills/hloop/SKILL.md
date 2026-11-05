@@ -51,7 +51,7 @@ Keep at most `--concurrency` builds running. Start the next queued issue when a 
 
 A `BUILD-QUESTION` moves the issue to the skipped list with that question. End the session and close its tab.
 
-When the profile sends Claude builds to the cloud, `horch`'s **Cloud build** replaces the tab: no tab, agent or worktree, the additions above go into its prompt, and the issue counts toward `--concurrency` until its PR appears or its 120-minute alert fires. Record the session URL against the issue in `state.md`. A question or failure reaches the batch only through that alert; move the issue to the skipped list with the session URL.
+When the profile sends Claude builds to the cloud, `horch`'s **Cloud build** replaces the tab: no tab, agent or worktree, the additions above go into its prompt, and the issue counts toward `--concurrency` until its PR appears or its 120-minute alert fires. Record the session URL against the issue in `state.md`. A launch that prints no URL frees its slot: move the issue to the skipped list with the helper's `output_tail`. A question or failure reaches the batch only through that alert; move the issue to the skipped list with the session URL.
 
 ## 3. Review
 

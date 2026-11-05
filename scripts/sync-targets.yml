@@ -361,6 +361,11 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .claude/skills/review-setup/scripts/cloud-launch.py
+        destination: .claude/skills/review-setup/scripts/cloud-launch.py
+        substitutions: []
+        mode: '0755'
+
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
       # hloop, hpromote, hred-team). The seven move together with the shared herdr
       # reference and the config helper beside hreview, which the others call. The
@@ -959,6 +964,11 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .codex/skills/review-setup/scripts/cloud-launch.py
+        destination: .codex/skills/review-setup/scripts/cloud-launch.py
+        substitutions: []
+        mode: '0755'
+
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
       # hloop, hpromote, hred-team). The seven move together with the shared herdr
       # reference and the config helper beside hreview, which the others call. The
@@ -1501,6 +1511,11 @@ harnesses:
 
       - source: .agents/skills/review-setup/scripts/review-settings.py
         destination: .agents/skills/review-setup/scripts/review-settings.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/review-setup/scripts/cloud-launch.py
+        destination: .agents/skills/review-setup/scripts/cloud-launch.py
         substitutions: []
         mode: '0755'
 
