@@ -1,0 +1,87 @@
+# ActiveLoom
+
+> Open-source (Apache 2.0) engineering skills, adversarial PR review protocols, commit-pinned review ledgers, bounded automation, and herd orchestration for Claude Code, OpenAI Codex, and Gemini / Antigravity (Agy).
+
+This index is the agent entry point for the repository. Every link points at GitHub (`github.com` or `raw.githubusercontent.com`), so agents in network-restricted sandboxes can follow them.
+
+Skills are distributed per harness: Claude Code `.claude/skills/<name>/SKILL.md`, Codex `.codex/skills/<name>/SKILL.md`, Gemini / Agy `.agents/skills/<name>/SKILL.md`. Links below point at the Claude Code copy on `main` unless noted; swap the root for your harness. In a consumer repository, prefer the installed copy: check `.activeloom-config.yml` (selected harnesses, sync) and `ls .claude/skills .codex/skills .agents/skills`, or run `npx activeloom detect`, which writes nothing.
+
+## Start here
+
+- [Agent Entry Guide](https://raw.githubusercontent.com/loomantix/activeloom/main/docs/agent-guide.md): Copyable session prompt, task-to-skill selector, prerequisites, and source ownership map.
+- [README](https://raw.githubusercontent.com/loomantix/activeloom/main/README.md): Scope, non-goals, and a "choose a starting point" table.
+- [Getting Started](https://raw.githubusercontent.com/loomantix/activeloom/main/docs/getting-started.md): Adoption tiers 0–3, requirements, and onboarding.
+- [Everyday Workflows](https://raw.githubusercontent.com/loomantix/activeloom/main/docs/workflows.md): How the common skills are started and hand off to each other.
+- [Set Up for Autonomous Development](https://raw.githubusercontent.com/loomantix/activeloom/main/docs/autonomous-development.md): Stage-by-stage setup from install to a first allowlisted `agent-loop` run.
+- [Herd Orchestration](https://raw.githubusercontent.com/loomantix/activeloom/main/docs/herd-orchestration.md): Driving review chains, grills, builds, and promotions in herdr panes.
+
+## Pick by task
+
+- Design unclear before code: `grill`. Whether or what to build: `product-grill`.
+- Reproducible bug or regression: `diagnosing-bugs`.
+- One issue to a draft PR: `issues start <n>`. Ready queue: `issues ready`.
+- Make the backlog agent-ready: `backlog-refinement`. Then an allowlisted queue: `agent-loop`.
+- Review an existing PR: the harness's `REVIEW_WORKFLOW.md`, then `critique` (Lean) or `deepcritique` (Deep). The depth comes from the workflow's triggers, not diff size.
+- Find how a reviewed PR fails once live: `red-team`.
+- Set up a repository from zero: the Set Up for Autonomous Development guide.
+- The same work in visible herdr panes: `hreview`, `hgrill`, `hloop`, `horch`, `hred-team`, `hpromote`.
+
+## Core Engineering Skills
+
+- [grill](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/grill/SKILL.md): Relentless pre-code interview that stress-tests a plan or design until nothing is silently assumed.
+- [product-grill](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/product-grill/SKILL.md): Product interview that stress-tests a plan from the user's point of view; can conclude don't build.
+- [diagnosing-bugs](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/diagnosing-bugs/SKILL.md): Disciplined diagnosis loop for hard bugs and regressions: isolate, repro, RCA, minimal verified fix.
+- [feature-dev](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/feature-dev/SKILL.md): Guided feature development with codebase understanding and architecture focus.
+- [issues](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/issues/SKILL.md): Work an issue end to end (scope check, claim, worktree, implement, draft PR); ready queue with dependency resolution.
+- [backlog-refinement](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/backlog-refinement/SKILL.md): Prepare a GitHub backlog for autonomous work: assess, prioritize, and rewrite issues into agent-ready form.
+- [agent-loop](https://raw.githubusercontent.com/loomantix/activeloom/main/.codex/skills/agent-loop/SKILL.md): Autonomous issue implementation loop with strict allowlisting, one linked worktree and draft PR per issue, and bounded local review. Linked as the Codex copy; it needs both the Claude and Codex CLIs.
+- [handoff](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/handoff/SKILL.md): Write or resume a session handoff comment on a GitHub issue.
+- [onboard](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/onboard/SKILL.md): After `init`, draft the project-specific `TODO(activeloom)` values from repository evidence for confirmation.
+
+## Review Skills
+
+- [critique](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/critique/SKILL.md): PR-first adversarial review. Posts verified findings inline before fixing. Lean mode (highest-signal lenses) vs Deep mode (full relevant review matrix).
+- [deepcritique](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/deepcritique/SKILL.md): High-fidelity review chain for changes whose review depth resolves to Deep.
+- [red-team](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/red-team/SKILL.md): Pre-merge red team of a reviewed PR: how the change fails once live, sorted into fix-before-merge, follow-up issue, or accepted risk.
+- [review-setup](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/review-setup/SKILL.md): Set reviewer and worker model/effort pairs and local review engine order.
+
+## Herd Orchestration (herdr)
+
+One agent session drives other agent sessions in visible [herdr](https://herdr.dev) panes. Requires herdr 0.9.0+ with the driving session running inside it (`HERDR_ENV=1`), ActiveLoom installed in the repository including the Codex harness (the review run controller lives at `.codex/skills/critique/scripts/local-review-handoff.py`), the review profile (`review-setup`), an authenticated `gh`, plus `git`, `jq`, and Python 3. For `horch` to merge, the `ship-staging` skill (Codex and Gemini / Agy roots only; not pulled in by `add horch`) and a `ship` section in `.activeloom-herd.json` are also required. See [Before you start](https://github.com/loomantix/activeloom/blob/main/docs/herd-orchestration.md#before-you-start) and [Running unattended safely](https://github.com/loomantix/activeloom/blob/main/docs/herd-orchestration.md#running-unattended-safely).
+
+- [horch](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/horch/SKILL.md): Workspace orchestrator: starts review chains, builds, grills, and promotions in tabs; merges converged work only into the integration branch.
+- [hreview](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/hreview/SKILL.md): Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds. Never merges.
+- [hgrill](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/hgrill/SKILL.md): Grills an issue on each configured engine in turn, then posts product calls and assumptions for a human check.
+- [hloop](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/hloop/SKILL.md): Batch loop: a build tab per agent-ready issue, then a fresh review chain, then a ship through horch's gate.
+- [hred-team](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/hred-team/SKILL.md): Red-teams a reviewed PR in a read-only pane; blocker and high findings are fixed on the PR, the rest become issues.
+- [hpromote](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/hpromote/SKILL.md): Runs the repository's promotion recipe across visible panes; stops at the human approval and merge.
+- [auto-glance](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/auto-glance/SKILL.md): One non-author model stands in for the human glance on small or docs-only PRs. Opt-in per repository; never merges.
+
+## Review Protocols & Ledgers
+
+- Review workflow, per harness: [Claude Code](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/REVIEW_WORKFLOW.md), [Codex](https://raw.githubusercontent.com/loomantix/activeloom/main/.codex/REVIEW_WORKFLOW.md), [Gemini / Agy](https://raw.githubusercontent.com/loomantix/activeloom/main/.agents/REVIEW_WORKFLOW.md). PR-first review lifecycle, review depth (Lean vs Deep), and multi-engine convergence.
+- [Review Ledger Protocol](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/references/local-review-ledger.md): Engine-neutral contract. The draft PR is the ledger: roster and attestation markers carry sha256 digests and name the exact head commit they cover. Evidence, not a merge gate.
+- [Review Chain Runner](https://raw.githubusercontent.com/loomantix/activeloom/main/.codex/references/review-chain-runner.md): Deterministic automatic review relay (Codex control surface).
+
+## CLI & Installation
+
+- Inspect first (writes nothing):
+  - `npx activeloom detect`: What this repository looks like (harnesses, existing config).
+  - `npx activeloom add`: List the skills available. `npx activeloom tiers`: Explain the four adoption tiers.
+  - Add `--dry-run` to `add` or `init` to report what would change without writing.
+- Install:
+  - `npx activeloom add <skill>... --harness <id>`: Tier 0, personal skill directories; pulls each skill's required skills.
+  - `npx activeloom init --harness <id>`: Tier 1, write the selected harness trees and `.activeloom-config.yml` into this repository (`--harness` is repeatable: claude, codex, gemini; omit it to use detection). Then run the `onboard` skill.
+  - `npx activeloom init --sync`: Tier 2 (recommended), scheduled GitHub Actions sync PRs. `--sync --app`: Tier 3, GitHub App signed commits.
+  - `npx activeloom review-config <cmd>`: Show or set the review profile.
+- Requirements: Node 18.17+; `init` also needs Python 3.9+ with PyYAML (`add` needs no Python). The CLI fetches `registry.npmjs.org` and `codeload.github.com`, and installs content from the `sync-v2` ref by default (`--ref` overrides); links here track `main`.
+
+## Optional
+
+- [refactorpass](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/refactorpass/SKILL.md): PR-first refactor pass: read-only cleanup proposals, verified findings posted before edits. At most once per PR per engine.
+- [promote](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/promote/SKILL.md): Integration-to-production promotion from the repository's `.activeloom-promote.json` recipe; stops at the human approval and merge.
+- [ship-staging](https://raw.githubusercontent.com/loomantix/activeloom/main/.codex/skills/ship-staging/SKILL.md): Merge converged PRs to a staging branch; required for `horch` to ship (Codex and Gemini / Agy roots only).
+- [dep-analysis](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/dep-analysis/SKILL.md): What a dependency update could break, the tests that exercise it, and a verdict at the exact head.
+- [simplify-comments](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/simplify-comments/SKILL.md): Cut comment bloat without changing code.
+- [copilot-review](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/copilot-review/SKILL.md) and [reviewit](https://raw.githubusercontent.com/loomantix/activeloom/main/.claude/skills/reviewit/SKILL.md): Hosted review integrations, where repository policy permits.
+- [Website](https://activeloom.dev): Human-facing overview. Some sandboxes cannot reach it; everything above is on GitHub.
