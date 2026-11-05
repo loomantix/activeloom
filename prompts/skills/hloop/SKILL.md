@@ -24,6 +24,8 @@ This session is the **orchestrator** and follows the `horch` skill (`<<SKILLS_RO
 - product and scope calls go to the user, or to `hgrill` when the user has asked for grill chains;
 - never pad a batch with issues that fail the screens below.
 
+`horch`'s standing authority advances this batch within its selected scope; it does not authorize another batch. Keep blocked issues recorded and advance independent eligible issues. Refinement and product decisions still follow this skill's screens and hard stops.
+
 ## 1. Pick
 
 1. **Queue.** `python3 -I <<SKILLS_ROOT>>/issues/scripts/ready.py --agent --limit 30 --json` for `next <k>` or no arguments; otherwise the named issues. A single bare number names one issue, never a batch size.
