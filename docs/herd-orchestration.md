@@ -278,6 +278,8 @@ Before launching it screens the queue and shows you the plan: issues assigned to
 
 Each issue then gets a build tab whose session opens a draft PR and starts no review, a fresh `hreview` chain (or `auto-glance` at the glance gate), the PR's own and changed tests run at its head, and a ship through `horch`'s gate. Deferred findings that are confirmed and user-visible become one follow-up issue per PR, labelled so the next batch skips it until it is refined.
 
+To move Claude builds off your machine, set `claude.worker.execution=cloud` in the review profile (`review-setup`, optionally per repository). Each Claude build then starts in Claude Cloud with `claude --cloud` instead of a build tab. That CLI needs a terminal, so the skills launch it through `review-setup`'s `cloud-launch.py`, which runs it on a pseudo-terminal and prints the session URL; `horch` records its session URL and watches for the pushed branch or draft PR. The first local worktree is the review one, and the chain is told the author is Claude. Review, auto-glance, tests at the head and shipping stay local. `backlog-refinement` can send a `refine` run to Claude Cloud the same way.
+
 To pause after the current work, tell the orchestrator. It writes a `HOLD` line to its state file and starts nothing new until you lift it; running chains finish and converged PRs still ship unless you say otherwise.
 
 ### `hpromote` — promotion

@@ -383,7 +383,7 @@ End with:
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
 - the next step under `.agents/REVIEW_WORKFLOW.md`: hand back to the relay for
   the declared reviewers that have not attested this head, and add
-  `reviewit <pr>` / `reviewit <pr> deep` whenever a hosted pass is wanted. When
+  `reviewit <pr>` / `reviewit <pr> deep` only when the user asks for a hosted pass. When
   recommending `reviewit`, recommend a fresh session; the current one has
   absorbed critique findings, fix commits, and (in deep mode) the full review
   matrix.

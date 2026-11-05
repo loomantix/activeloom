@@ -155,4 +155,4 @@ Report:
 - recommended next step from the selected path: if invoked by `deepcritique`,
   return so it can run `critique deep`; if run standalone, run `deepcritique`
   next and hand to the next declared reviewer only after that full chain; add
-  `reviewit <pr-number>` whenever a hosted pass is wanted
+  `reviewit <pr-number>` only when the user asks for a hosted pass

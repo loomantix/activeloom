@@ -411,7 +411,7 @@ def test_defaults_prefill_worker_settings_from_reviewer_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = json.loads(run(capsys, "defaults")[1])
-    assert defaults["schema_version"] == 3
+    assert defaults["schema_version"] == 4
     for settings in defaults["engines"].values():
         assert settings["worker"] == {
             "model": settings["model"],
@@ -570,6 +570,7 @@ def test_worker_settings_resolve_separately_from_reviewer_settings(
         "role": "worker",
         "model": "sonnet",
         "effort": "high",
+        "execution": "local",
         "source": "user profile",
     }
     assert (
@@ -945,7 +946,7 @@ def test_every_key_the_current_writer_emits_is_modelled_by_the_reader(
         assert set(settings) <= module.engine_settings_keys(engine)
         worker = settings.get("worker")
         if isinstance(worker, dict):
-            assert set(worker) <= module.ENGINE_WORKER_KEYS
+            assert set(worker) <= module.worker_keys(engine)
     for override in document.get("repos", {}).values():
         assert set(override) <= module.REPO_OVERRIDE_KEYS
 
@@ -1006,7 +1007,7 @@ def test_a_profile_holding_reviewit_stays_readable_by_a_reader_without_it(
     status, _, err = run(capsys, "set", "reviewit.availability=unavailable")
     assert status == 0, err
     stored = json.loads(profile.read_text())["schema_version"]
-    assert stored == load().SCHEMA_VERSION
+    assert stored == 3
     assert f"storing schema_version {stored}" in err
 
     def older_reader(*argv: str) -> tuple[int, str]:
@@ -1023,3 +1024,74 @@ def test_a_profile_holding_reviewit_stays_readable_by_a_reader_without_it(
     before = profile.read_bytes()
     assert older_reader("set", "claude.effort=high")[0] == 1
     assert profile.read_bytes() == before
+
+
+def test_claude_worker_execution_defaults_local_and_is_claude_only(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    assert "execution" not in json.loads(profile.read_text())["engines"]["claude"]["worker"]
+
+    def worker(engine: str, *repo: str) -> dict[str, Any]:
+        argv = ["resolve", "--engine", engine, "--role", "worker", *repo]
+        status, out, _ = run(capsys, *argv)
+        assert status == 0
+        return dict(json.loads(out))
+
+    assert worker("claude")["execution"] == "local"
+    # Only Claude has a cloud runner, so other engines neither report nor accept it.
+    assert "execution" not in worker("codex")
+    before = profile.read_bytes()
+    for assignment in ("codex.worker.execution=cloud", "claude.worker.execution=remote"):
+        assert run(capsys, "set", assignment)[0] == 2, assignment
+        assert profile.read_bytes() == before
+
+    assert run(capsys, "set", "claude.worker.execution=cloud")[0] == 0
+    assert worker("claude")["execution"] == "cloud"
+    # launch-args stays two lines; execution never becomes a CLI flag.
+    assert (
+        run(capsys, "launch-args", "--engine", "claude", "--role", "worker")[1]
+        == "claude-opus-5-5\nmedium\n"
+    )
+    assert run(capsys, "set", "claude.worker.execution=local")[0] == 0
+
+    # Per-repository scope layers over the user's value and unsets cleanly.
+    repo = ("--repo", "example/project")
+    assert run(capsys, "set", *repo, "claude.worker.execution=cloud")[0] == 0
+    assert worker("claude", *repo)["execution"] == "cloud"
+    assert worker("claude", *repo)["source"] == "repository override"
+    assert worker("claude")["execution"] == "local"
+    assert run(capsys, "unset", *repo, "claude.worker.execution")[0] == 0
+    assert worker("claude", *repo)["execution"] == "local"
+
+
+def test_storing_worker_execution_keeps_the_profile_readable_by_older_readers(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`execution` raises the stored version only when present, past readers lacking it."""
+    assert run(capsys, "init", "--accept-defaults", "--replace")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+    status, _, err = run(capsys, "set", "--repo", "example/project", "claude.worker.execution=cloud")
+    assert status == 0, err
+    assert json.loads(profile.read_text())["schema_version"] == 4
+    assert "storing schema_version 4" in err
+
+    def older_reader(*argv: str) -> tuple[int, str]:
+        module = load()
+        setattr(module, "SCHEMA_VERSION", 3)
+        setattr(module, "EXECUTION_ENGINES", ())
+        status = module.main(list(argv))
+        return status, capsys.readouterr().out
+
+    status, out = older_reader(
+        "resolve", "--engine", "claude", "--role", "worker", "--repo", "example/project"
+    )
+    assert status == 0
+    assert "execution" not in json.loads(out)
+    before = profile.read_bytes()
+    assert older_reader("set", "claude.effort=high")[0] == 1
+    assert profile.read_bytes() == before
+
+    # Removing the only `execution` lets the profile drop back to its oldest version.
+    assert run(capsys, "unset", "--repo", "example/project")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2

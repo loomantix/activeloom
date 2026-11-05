@@ -15,7 +15,7 @@
 
 agent-loop: critique issues review-setup | deepcritique grill handoff refactorpass reviewit
 auto-glance: critique dep-analysis hreview review-setup |
-backlog-refinement: | agent-loop grill issues product-grill
+backlog-refinement: | agent-loop grill issues product-grill review-setup
 codex-review: critique dep-analysis | deepcritique
 critique: deepcritique dep-analysis refactorpass review-setup | reviewit
 deepcritique: critique dep-analysis refactorpass review-setup | reviewit
