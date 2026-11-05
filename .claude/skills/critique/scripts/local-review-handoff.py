@@ -18,6 +18,14 @@ from urllib.parse import quote
 
 
 CURRENT_ACTOR: str | None = None
+RESTART_V1_RE = re.compile(
+    r"<!-- local-review-restart:v1 source=(?P<source>autonomy-policy|user-approval) "
+    r"id=(?P<id>[0-9a-f]{16}) policy-sha256=(?P<policy_sha256>[0-9a-f]{64}|none) "
+    r"repo=(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+) pr=(?P<pr>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) ended-run=(?P<ended_run_id>[0-9a-f]{64}|none) "
+    r"ended-outcome=(?P<ended_outcome>converged|exhausted|aborted|transitioned|none) "
+    r"budget-used=(?P<budget_used>[0-9]+|none) -->"
+)
 # Engine identities this handoff surface accepts. Must stay in step with the
 # marker grammar below and with the engines the review-ledger helper accepts.
 ENGINES = ("codex", "claude", "gemini")
@@ -766,6 +774,16 @@ def _transition_run(args: argparse.Namespace) -> None:
     print(json.dumps(result, sort_keys=True))
 
 
+def _restart_helper() -> Any:
+    path = Path(__file__).resolve().parents[2] / "hreview/scripts/herd-config.py"
+    spec = importlib.util.spec_from_file_location("restart_approval", path)
+    if spec is None or spec.loader is None:
+        _fail("restart approval helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
 def _start_run(args: argparse.Namespace) -> None:
     approval_id = getattr(args, "restart_approval_id", None)
     if approval_id is None:
@@ -773,12 +791,7 @@ def _start_run(args: argparse.Namespace) -> None:
         return
     if not args.restart or getattr(args, "restart_from_run", None):
         _fail("--restart-approval-id requires --restart without --restart-from-run")
-    path = Path(__file__).resolve().parents[2] / "hreview/scripts/herd-config.py"
-    spec = importlib.util.spec_from_file_location("restart_approval", path)
-    if spec is None or spec.loader is None:
-        _fail("restart approval helper is unavailable")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    helper = _restart_helper()
     fields = {key: value for key, value in vars(args).items() if key != "handler"}
     fields["authorization_file"] = _read_context(args.authorization_file)
     fingerprint = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
@@ -790,6 +803,7 @@ def _start_run(args: argparse.Namespace) -> None:
             _fail("scope decision differs from the restart approval")
         args.restart_reserve = reserve
         args.restart_intent = record.get("intent")
+        args.restart_record = record
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             _start_run_checked(args)
@@ -800,6 +814,32 @@ def _start_run(args: argparse.Namespace) -> None:
     except helper.ApprovalError as exc:
         _fail(str(exc))
     print(output, end="")
+
+
+def _restart_marker(record: dict[str, Any], repo: str, pr: int, head: str,
+                    previous: dict[str, Any] | None, end: dict[str, Any] | None) -> str:
+    policy = record.get("source", "user-approval") == "autonomy-policy"
+    ended_run = record.get("ended_run_id") if policy else previous["run_id"] if previous else None
+    outcome = record.get("ended_outcome") if policy else end["outcome"] if end else "transitioned" if previous else None
+    marker = (
+        f"<!-- local-review-restart:v1 source={record.get('source', 'user-approval')} "
+        f"id={record['id']} policy-sha256={record.get('policy_sha256') or 'none'} "
+        f"repo={repo} pr={pr} head={head} ended-run={ended_run or 'none'} "
+        f"ended-outcome={outcome or 'none'} budget-used={record.get('budget_used') if policy else 'none'} -->"
+    )
+    if not RESTART_V1_RE.fullmatch(marker):
+        _fail("malformed restart provenance")
+    return marker
+
+
+def _with_restart_marker(content: str, marker: str) -> str:
+    prefix = re.match(
+        r"(?:<!-- local-review-owner-transition:v1 [^\n]* -->\n)?"
+        r"(?:<!-- local-review-(?:sequence|plan):v1 [^\n]* -->\n\n)?"
+        r"(?:<!-- local-review-scope:v1 [^\n]* -->\n\n)?", content,
+    )
+    at = prefix.end() if prefix else 0
+    return content[:at] + marker + "\n\n" + content[at:]
 
 
 def _start_run_checked(args: argparse.Namespace) -> None:
@@ -905,6 +945,13 @@ def _start_run_checked(args: argparse.Namespace) -> None:
             replay_content = (
                 replay_content[:at] + scope_match.group(0) + replay_content[at:]
             )
+        restart_record = getattr(args, "restart_record", None)
+        if restart_record is not None:
+            parent = records[-2] if len(records) > 1 else None
+            parent_end = _run_end(rows, parent["run_id"]) if parent else None
+            replay_content = _with_restart_marker(replay_content, _restart_marker(
+                restart_record, args.repo, args.pr, args.head, parent, parent_end,
+            ))
         if previous["content"] == replay_content:
             intent = getattr(args, "restart_intent", None)
             if intent is not None and intent["run_id"] != previous["run_id"]:
@@ -953,6 +1000,16 @@ def _start_run_checked(args: argparse.Namespace) -> None:
                 "re-run start-run with --scope-decision keep or --scope-decision split"
             )
     supersedes = None if previous is None else cast(int, previous["comment_id"])
+    restart_record = getattr(args, "restart_record", None)
+    if restart_record is not None:
+        if restart_record.get("source") == "autonomy-policy" and (
+            previous is None or previous["run_id"] != restart_record["ended_run_id"]
+            or previous_end is None or previous_end["outcome"] != restart_record["ended_outcome"]
+        ):
+            _fail("policy restart parent or outcome changed")
+        content = _with_restart_marker(content, _restart_marker(
+            restart_record, args.repo, args.pr, args.head, previous, previous_end,
+        ))
     run_id = _run_digest(
         tier=args.tier,
         max_rounds=max_rounds,

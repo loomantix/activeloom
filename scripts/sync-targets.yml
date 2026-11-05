@@ -402,6 +402,15 @@ harnesses:
         destination: .claude/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .claude/skills/hreview/scripts/autonomy-policy.py
+        destination: .claude/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .claude/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .claude/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .claude/skills/hreview/scripts/herd-config.schema.json
         destination: .claude/skills/hreview/scripts/herd-config.schema.json
@@ -1005,6 +1014,15 @@ harnesses:
         destination: .codex/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .codex/skills/hreview/scripts/autonomy-policy.py
+        destination: .codex/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .codex/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .codex/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .codex/skills/hreview/scripts/herd-config.schema.json
         destination: .codex/skills/hreview/scripts/herd-config.schema.json
@@ -1555,6 +1573,15 @@ harnesses:
         destination: .agents/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .agents/skills/hreview/scripts/autonomy-policy.py
+        destination: .agents/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .agents/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .agents/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .agents/skills/hreview/scripts/herd-config.schema.json
         destination: .agents/skills/hreview/scripts/herd-config.schema.json
