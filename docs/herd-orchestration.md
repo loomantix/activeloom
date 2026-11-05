@@ -256,7 +256,7 @@ What you type: `/horch ./push-notes.md` in a fresh session in the workspace you 
 It inventories every tab and session in the workspace, checks your instruction file against GitHub, and then:
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
-- dispatches requested work and confirmed in-scope repairs on the engines `builds.engines` allows; each build ends at a draft PR;
+- dispatches requested work and confirmed in-scope repairs on the engines `builds.engines` allows (in the PR's existing worktree and branch when repairing an open PR; each new build ends at a draft PR);
 - watches `hreview` dispatch and finish `auto-glance` for glance-sized PRs (or alerts you when `glance.auto` is off);
 - dispatches `hgrill`, `hloop` and `hpromote` when you ask;
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
@@ -266,7 +266,7 @@ It inventories every tab and session in the workspace, checks your instruction f
 
 Invocation grants standing authority within your repository, workspace and instruction scope. A completed diagnosis with a reproducible in-scope defect proceeds to a focused repair without another build go-ahead. Scoped issues or refinement, local implementation, synthetic or non-sensitive tests, draft PRs and configured review lead to integration shipment only after the existing gates. Read-only access to a restricted environment limits operations there; it does not block an independently authorized local repair. Whole-task read-only, review-only and do-nothing-else instructions remain binding.
 
-When current work cannot advance, `horch` can select one bounded priority issue from an explicitly allowed queue using the existing `ready.py` policy and `hloop` screens. Direction must be settled; assignment, exclusion, refinement, dependency and overlap checks still apply. Missing scope grants no authority over arbitrary backlog. Necessary prerequisites within scope can proceed; new product choices and unrelated work need your decision. A blocked unit does not pause independent authorized work or expand a finite batch.
+When current work cannot advance, `horch` can select one bounded priority issue from an explicitly allowed queue using the existing `ready.py` policy and `hloop` screens. Direction must be settled; assignment, exclusion, refinement, dependency, open `Closes`/`Refs` PR and workspace file-overlap checks still apply. Missing scope grants no authority over arbitrary backlog. Necessary prerequisites within scope can proceed; new product choices and unrelated work need your decision. A blocked unit does not pause independent authorized work or expand a finite batch.
 
 Use the local instruction file or consumer instructions to narrow or disable this behavior. For example:
 
