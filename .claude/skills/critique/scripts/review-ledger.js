@@ -1590,7 +1590,7 @@ function rowsHaveHistoricalMarkers(rows) {
   });
 }
 
-// ../../node_modules/.pnpm/@babel+parser@8.0.7/node_modules/@babel/parser/lib/index.js
+// ../../node_modules/.pnpm/@babel+parser@8.0.8/node_modules/@babel/parser/lib/index.js
 var Position = class {
   constructor(line, col, index) {
     this.line = void 0;
@@ -2724,6 +2724,9 @@ var tt = {
   _while: createKeyword("while", {
     isLoop
   }),
+  _arguments: createKeywordLike("arguments", {
+    startsExpr
+  }),
   _as: createKeywordLike("as", {
     startsExpr
   }),
@@ -2873,16 +2876,16 @@ var tt = {
   jsxTagEnd: createToken("jsxTagEnd")
 };
 function tokenIsIdentifier(token) {
-  return token >= 89 && token <= 129;
+  return token >= 89 && token <= 130;
 }
 function tokenKeywordOrIdentifierIsKeyword(token) {
   return token <= 88;
 }
 function tokenIsKeywordOrIdentifier(token) {
-  return token >= 54 && token <= 129;
+  return token >= 54 && token <= 130;
 }
 function tokenIsLiteralPropertyName(token) {
-  return token >= 54 && token <= 132;
+  return token >= 54 && token <= 133;
 }
 function tokenComesBeforeExpression(token) {
   return tokenBeforeExprs[token];
@@ -2894,7 +2897,7 @@ function tokenIsAssignment(token) {
   return token >= 25 && token <= 29;
 }
 function tokenIsFlowInterfaceOrTypeOrOpaque(token) {
-  return token >= 125 && token <= 127;
+  return token >= 126 && token <= 128;
 }
 function tokenIsLoop(token) {
   return token >= 86 && token <= 88;
@@ -2912,10 +2915,10 @@ function tokenIsPrefix(token) {
   return tokenPrefixes[token];
 }
 function tokenIsTSTypeOperator(token) {
-  return token >= 117 && token <= 119;
+  return token >= 118 && token <= 120;
 }
 function tokenIsTSDeclarationStart(token) {
-  return token >= 120 && token <= 126;
+  return token >= 121 && token <= 127;
 }
 function tokenLabelName(token) {
   return tokenLabels[token];
@@ -3325,7 +3328,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return this.getPluginOption("flow", "all") || this.flowPragma === "flow";
   }
   finishToken(type, val) {
-    if (type !== 130 && type !== 9 && type !== 24) {
+    if (type !== 131 && type !== 9 && type !== 24) {
       if (this.flowPragma === void 0) {
         this.flowPragma = null;
       }
@@ -3358,7 +3361,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const node = this.startNode();
     const moduloLoc = this.state.startLoc;
     this.next();
-    this.expectContextual(106);
+    this.expectContextual(107);
     if (this.state.lastTokStartLoc.index > moduloLoc.index + 1) {
       this.raise(FlowErrors.UnexpectedSpaceBetweenModuloChecks, moduloLoc);
     }
@@ -3424,7 +3427,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       return this.flowParseDeclareFunction(node);
     } else if (this.match(70)) {
       return this.flowParseDeclareVariable(node);
-    } else if (this.eatContextual(123)) {
+    } else if (this.eatContextual(124)) {
       if (this.match(12)) {
         return this.flowParseDeclareModuleExports(node);
       } else {
@@ -3433,11 +3436,11 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         }
         return this.flowParseDeclareModule(node);
       }
-    } else if (this.isContextual(126)) {
-      return this.flowParseDeclareTypeAlias(node);
     } else if (this.isContextual(127)) {
+      return this.flowParseDeclareTypeAlias(node);
+    } else if (this.isContextual(128)) {
       return this.flowParseDeclareOpaqueType(node);
-    } else if (this.isContextual(125)) {
+    } else if (this.isContextual(126)) {
       return this.flowParseDeclareInterface(node);
     } else if (this.match(78)) {
       return this.flowParseDeclareExportDeclaration(node, insideModule);
@@ -3453,7 +3456,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   }
   flowParseDeclareModule(node) {
     this.scope.enter(0);
-    if (this.match(130)) {
+    if (this.match(131)) {
       node.id = super.parseExprAtom();
     } else {
       node.id = this.parseIdentifier();
@@ -3465,12 +3468,12 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       const bodyNode2 = this.startNode();
       if (this.match(79)) {
         this.next();
-        if (!this.isContextual(126) && !this.match(83)) {
+        if (!this.isContextual(127) && !this.match(83)) {
           this.raise(FlowErrors.InvalidNonTypeImportInDeclareModule, this.state.lastTokStartLoc);
         }
         body.push(super.parseImport(bodyNode2));
       } else {
-        this.expectContextual(121, FlowErrors.UnsupportedStatementInDeclareModule);
+        this.expectContextual(122, FlowErrors.UnsupportedStatementInDeclareModule);
         body.push(this.flowParseDeclare(bodyNode2, true));
       }
     }
@@ -3511,18 +3514,18 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       node.default = true;
       return this.finishNode(node, "DeclareExportDeclaration");
     } else {
-      if (this.match(71) || this.isLet() || (this.isContextual(126) || this.isContextual(125)) && !insideModule) {
+      if (this.match(71) || this.isLet() || (this.isContextual(127) || this.isContextual(126)) && !insideModule) {
         const label = this.state.value;
         throw this.raise(FlowErrors.UnsupportedDeclareExportKind, this.state.startLoc, {
           unsupportedExportKind: label,
           suggestion: exportSuggestions[label]
         });
       }
-      if (this.match(70) || this.match(64) || this.match(76) || this.isContextual(127)) {
+      if (this.match(70) || this.match(64) || this.match(76) || this.isContextual(128)) {
         node.declaration = this.flowParseDeclare(this.startNode());
         node.default = false;
         return this.finishNode(node, "DeclareExportDeclaration");
-      } else if (this.match(51) || this.match(2) || this.isContextual(125) || this.isContextual(126) || this.isContextual(127)) {
+      } else if (this.match(51) || this.match(2) || this.isContextual(126) || this.isContextual(127) || this.isContextual(128)) {
         const result = this.parseExport(node, null);
         if (result.type === "ExportNamedDeclaration") {
           result.default = false;
@@ -3537,7 +3540,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   }
   flowParseDeclareModuleExports(node) {
     this.next();
-    this.expectContextual(107);
+    this.expectContextual(108);
     node.typeAnnotation = this.flowParseTypeAnnotation();
     this.semicolon();
     return this.finishNode(node, "DeclareModuleExports");
@@ -3574,12 +3577,12 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     if (isClass) {
       const implemented = [];
       const mixins = [];
-      if (this.eatContextual(113)) {
+      if (this.eatContextual(114)) {
         do {
           mixins.push(this.flowParseInterfaceExtends());
         } while (this.eat(8));
       }
-      if (this.eatContextual(109)) {
+      if (this.eatContextual(110)) {
         do {
           implemented.push(this.flowParseClassImplements());
         } while (this.eat(8));
@@ -3642,7 +3645,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return this.finishNode(node, "TypeAlias");
   }
   flowParseOpaqueType(node, declare) {
-    this.expectContextual(126);
+    this.expectContextual(127);
     node.id = this.flowParseRestrictedIdentifier(true, true);
     this.scope.declareName(node.id.name, 8201, node.id.start);
     if (this.match(43)) {
@@ -3691,7 +3694,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const node = this.startNode();
     node.params = [];
     this.state.inType = true;
-    if (this.match(43) || this.match(138)) {
+    if (this.match(43) || this.match(139)) {
       this.next();
     } else {
       this.unexpected();
@@ -3771,7 +3774,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   }
   flowParseInterfaceType() {
     const node = this.startNode();
-    this.expectContextual(125);
+    this.expectContextual(126);
     node.extends = [];
     if (this.eat(77)) {
       do {
@@ -3788,7 +3791,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return this.finishNode(node, "InterfaceTypeAnnotation");
   }
   flowParseObjectPropertyKey() {
-    return this.match(131) || this.match(130) ? super.parseExprAtom() : this.parseIdentifier(true);
+    return this.match(132) || this.match(131) ? super.parseExprAtom() : this.parseIdentifier(true);
   }
   flowParseObjectTypeIndexer(node, isStatic, variance) {
     node.static = isStatic;
@@ -3889,7 +3892,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       let protoStartLoc = null;
       let inexactStartLoc = null;
       const node = this.startNode();
-      if (allowProto && this.isContextual(114)) {
+      if (allowProto && this.isContextual(115)) {
         const lookahead = this.lookahead();
         if (lookahead.type !== 10 && lookahead.type !== 13) {
           this.next();
@@ -3897,7 +3900,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
           allowStatic = false;
         }
       }
-      if (allowStatic && this.isContextual(102)) {
+      if (allowStatic && this.isContextual(103)) {
         const lookahead = this.lookahead();
         if (lookahead.type !== 10 && lookahead.type !== 13) {
           this.next();
@@ -3927,7 +3930,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         nodeStart.callProperties.push(this.flowParseObjectTypeCallProperty(node, isStatic));
       } else {
         let kind = "init";
-        if (this.isContextual(95) || this.isContextual(100)) {
+        if (this.isContextual(96) || this.isContextual(101)) {
           const lookahead = this.lookahead();
           if (tokenIsLiteralPropertyName(lookahead.type)) {
             kind = this.state.value;
@@ -4229,7 +4232,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         node2.typeParameters = null;
         return this.finishNode(node2, "FunctionTypeAnnotation");
       }
-      case 130:
+      case 131:
         return this.parseLiteral(this.state.value, "StringLiteralTypeAnnotation");
       case 81:
       case 82:
@@ -4239,18 +4242,18 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       case 49:
         if (this.state.value === "-") {
           this.next();
-          if (this.match(131)) {
+          if (this.match(132)) {
             return this.parseLiteralAtNode(-this.state.value, "NumberLiteralTypeAnnotation", node);
           }
-          if (this.match(132)) {
+          if (this.match(133)) {
             return this.parseLiteralAtNode(-this.state.value, "BigIntLiteralTypeAnnotation", node);
           }
           throw this.raise(FlowErrors.UnexpectedSubtractionOperand, this.state.startLoc);
         }
         throw this.unexpected();
-      case 131:
-        return this.parseLiteral(this.state.value, "NumberLiteralTypeAnnotation");
       case 132:
+        return this.parseLiteral(this.state.value, "NumberLiteralTypeAnnotation");
+      case 133:
         return this.parseLiteral(this.state.value, "BigIntLiteralTypeAnnotation");
       case 84:
         this.next();
@@ -4272,7 +4275,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
           this.next();
           return super.createIdentifier(node, label);
         } else if (tokenIsIdentifier(this.state.type)) {
-          if (this.isContextual(125)) {
+          if (this.isContextual(126)) {
             return this.flowParseInterfaceType();
           }
           return this.flowIdentToTypeAnnotation(startLoc, node, this.parseIdentifier());
@@ -4357,7 +4360,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return type;
   }
   flowParseTypeOrImplicitInstantiation() {
-    if (this.state.type === 128 && this.state.value === "_") {
+    if (this.state.type === 129 && this.state.value === "_") {
       const startLoc = this.state.startLoc;
       const node = this.parseIdentifier();
       return this.flowParseGenericType(startLoc, node);
@@ -4417,14 +4420,14 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return super.parseFunctionBodyAndFinish(node, type, isMethod);
   }
   parseStatementLike(flags) {
-    if (this.state.strict && this.isContextual(125)) {
+    if (this.state.strict && this.isContextual(126)) {
       const lookahead = this.lookahead();
       if (tokenIsKeywordOrIdentifier(lookahead.type)) {
         const node = this.startNode();
         this.next();
         return this.flowParseInterface(node);
       }
-    } else if (this.isContextual(122)) {
+    } else if (this.isContextual(123)) {
       const node = this.startNode();
       this.next();
       return this.flowParseEnumDeclaration(node);
@@ -4435,7 +4438,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     }
     return stmt;
   }
-  parseExpressionStatement(node, expr) {
+  parseExpressionStatement(node, expr, flags) {
     if (expr.type === "Identifier") {
       if (expr.name === "declare") {
         if (this.match(76) || tokenIsIdentifier(this.state.type) || this.match(64) || this.match(70) || this.match(78)) {
@@ -4451,13 +4454,13 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         }
       }
     }
-    return super.parseExpressionStatement(node, expr);
+    return super.parseExpressionStatement(node, expr, flags);
   }
   shouldParseExportDeclaration() {
     const {
       type
     } = this.state;
-    if (type === 122 || tokenIsFlowInterfaceOrTypeOrOpaque(type)) {
+    if (type === 123 || tokenIsFlowInterfaceOrTypeOrOpaque(type)) {
       return !this.state.containsEsc;
     }
     return super.shouldParseExportDeclaration();
@@ -4466,13 +4469,13 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const {
       type
     } = this.state;
-    if (type === 122 || tokenIsFlowInterfaceOrTypeOrOpaque(type)) {
+    if (type === 123 || tokenIsFlowInterfaceOrTypeOrOpaque(type)) {
       return this.state.containsEsc;
     }
     return super.isExportDefaultSpecifier();
   }
   parseExportDefaultExpression() {
-    if (this.isContextual(122)) {
+    if (this.isContextual(123)) {
       const node = this.startNode();
       this.next();
       return this.flowParseEnumDeclaration(node);
@@ -4606,7 +4609,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     super.assertModuleNodeAllowed(node);
   }
   parseExportDeclaration(node) {
-    if (this.isContextual(126)) {
+    if (this.isContextual(127)) {
       node.exportKind = "type";
       const declarationNode = this.startNode();
       this.next();
@@ -4617,17 +4620,17 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       } else {
         return this.flowParseTypeAlias(declarationNode);
       }
-    } else if (this.isContextual(127)) {
+    } else if (this.isContextual(128)) {
       node.exportKind = "type";
       const declarationNode = this.startNode();
       this.next();
       return this.flowParseOpaqueType(declarationNode, false);
-    } else if (this.isContextual(125)) {
+    } else if (this.isContextual(126)) {
       node.exportKind = "type";
       const declarationNode = this.startNode();
       this.next();
       return this.flowParseInterface(declarationNode);
-    } else if (this.isContextual(122)) {
+    } else if (this.isContextual(123)) {
       node.exportKind = "value";
       const declarationNode = this.startNode();
       this.next();
@@ -4638,7 +4641,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   }
   eatExportStar(node) {
     if (super.eatExportStar(node)) return true;
-    if (this.isContextual(126) && this.lookahead().type === 51) {
+    if (this.isContextual(127) && this.lookahead().type === 51) {
       node.exportKind = "type";
       this.next();
       this.next();
@@ -4657,7 +4660,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     return hasNamespace;
   }
   parseClassId(node, isStatement, optionalId) {
-    if ((!isStatement || optionalId) && this.isContextual(109)) {
+    if ((!isStatement || optionalId) && this.isContextual(110)) {
       node.id = null;
       return;
     }
@@ -4670,7 +4673,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const {
       startLoc
     } = this.state;
-    if (this.isContextual(121)) {
+    if (this.isContextual(122)) {
       if (super.parseClassMemberFromModifier(classBody, member)) {
         return;
       }
@@ -4696,7 +4699,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         identifierName: fullWord
       });
     }
-    this.finishToken(128, fullWord);
+    this.finishToken(129, fullWord);
   }
   getTokenFromCode(code2) {
     const next = this.input.charCodeAt(this.state.pos + 1);
@@ -4823,7 +4826,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     if (node.superClass && (this.match(43) || this.match(47))) {
       node.superTypeArguments = this.flowParseTypeParameterInstantiationInExpression();
     }
-    if (this.eatContextual(109)) {
+    if (this.eatContextual(110)) {
       const implemented = node.implements = [];
       do {
         implemented.push(this.flowParseClassImplements());
@@ -4895,7 +4898,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   }
   isPotentialImportPhase(isExport) {
     if (super.isPotentialImportPhase(isExport)) return true;
-    if (this.isContextual(126)) {
+    if (this.isContextual(127)) {
       if (!isExport) return true;
       const ch = this.lookaheadCharCode();
       return ch === 123 || ch === 42;
@@ -4925,7 +4928,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       }
     }
     let isBinding = false;
-    if (this.isContextual(89) && !this.isLookaheadContextual("as")) {
+    if (this.isContextual(90) && !this.isLookaheadContextual("as")) {
       const as_ident = this.parseIdentifier(true);
       if (specifierTypeKind !== null && !tokenIsKeywordOrIdentifier(this.state.type)) {
         specifier.imported = as_ident;
@@ -4949,7 +4952,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         specifier.imported = firstIdent;
         specifier.importKind = null;
       }
-      if (this.eatContextual(89)) {
+      if (this.eatContextual(90)) {
         specifier.local = this.parseIdentifier();
       } else {
         isBinding = true;
@@ -5005,7 +5008,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   parseMaybeAssign(refExpressionErrors, isParenItem) {
     let state = null;
     let jsx2;
-    if (this.hasPlugin("jsx") && (this.match(138) || this.match(43))) {
+    if (this.hasPlugin("jsx") && (this.match(139) || this.match(43))) {
       state = this.state.clone();
       jsx2 = this.tryParse(() => super.parseMaybeAssign(refExpressionErrors, isParenItem), state);
       if (!jsx2.error) return jsx2.node;
@@ -5256,7 +5259,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const startLoc = this.state.startLoc;
     const endOfInit = () => this.match(8) || this.match(4);
     switch (this.state.type) {
-      case 131: {
+      case 132: {
         const literal = this.parseNumericLiteral(this.state.value);
         if (endOfInit()) {
           return {
@@ -5267,7 +5270,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
         }
         break;
       }
-      case 130: {
+      case 131: {
         const literal = this.parseStringLiteral(this.state.value);
         if (endOfInit()) {
           return {
@@ -5434,7 +5437,7 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
   flowEnumParseExplicitType({
     enumName
   }) {
-    if (!this.eatContextual(98)) return null;
+    if (!this.eatContextual(99)) return null;
     if (!tokenIsIdentifier(this.state.type)) {
       throw this.raise(FlowErrors.EnumInvalidExplicitTypeUnknownSupplied, this.state.startLoc, {
         enumName
@@ -5863,6 +5866,7 @@ function hasNewLine(input, start, end) {
   return false;
 }
 var skipWhiteSpace = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+var skipWhiteSpaceAnnexB = /(?:[^\S\n\r\u2028\u2029]|\/\*.*?\*\/)*(?:(?!-->)(?:\s|\/\/.*|\/\*[^]*?\*\/|<!--.*|-->.*)*)?/g;
 var skipWhiteSpaceInLine = /(?:[^\S\n\r\u2028\u2029]|\/\/.*|\/\*.*?\*\/)*/g;
 function isWhitespace(code2) {
   switch (code2) {
@@ -5938,14 +5942,14 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
           if (this.state.pos === this.state.start) {
             if (ch === 60 && this.state.canStartJSXElement) {
               ++this.state.pos;
-              this.finishToken(138);
+              this.finishToken(139);
             } else {
               super.getTokenFromCode(ch);
             }
             return;
           }
           out += this.input.slice(chunkStart, this.state.pos);
-          this.finishToken(137, out);
+          this.finishToken(138, out);
           return;
         case 38:
           out += this.input.slice(chunkStart, this.state.pos);
@@ -6005,7 +6009,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
       }
     }
     out += this.input.slice(chunkStart, this.state.pos++);
-    this.finishToken(130, out);
+    this.finishToken(131, out);
   }
   jsxReadEntity() {
     const startPos = ++this.state.pos;
@@ -6045,11 +6049,11 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
     do {
       ch = this.input.charCodeAt(++this.state.pos);
     } while (isIdentifierChar(ch) || ch === 45);
-    this.finishToken(136, this.input.slice(start, this.state.pos));
+    this.finishToken(137, this.input.slice(start, this.state.pos));
   }
   jsxParseIdentifier() {
     const node = this.startNode();
-    if (this.match(136)) {
+    if (this.match(137)) {
       node.name = this.state.value;
     } else if (tokenIsKeyword(this.state.type)) {
       node.name = tokenLabelName(this.state.type);
@@ -6094,8 +6098,8 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
           this.raise(JsxErrors.AttributeIsEmpty, node);
         }
         return node;
-      case 138:
-      case 130:
+      case 139:
+      case 131:
         return this.parseExprAtom();
       default:
         throw this.raise(JsxErrors.UnsupportedJsxValue, this.state.startLoc);
@@ -6146,7 +6150,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
     return this.finishNode(node, "JSXAttribute");
   }
   jsxParseOpeningElementAt(startLoc) {
-    if (this.eat(139)) {
+    if (this.eat(140)) {
       const node2 = this.startNodeAt(startLoc);
       return this.finishNode(node2, "JSXOpeningFragment");
     }
@@ -6156,22 +6160,22 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
   }
   jsxParseOpeningElementAfterName(node) {
     const attributes = [];
-    while (!this.match(52) && !this.match(139)) {
+    while (!this.match(52) && !this.match(140)) {
       attributes.push(this.jsxParseAttribute());
     }
     node.attributes = attributes;
     node.selfClosing = this.eat(52);
-    this.expect(139);
+    this.expect(140);
     return this.finishNode(node, "JSXOpeningElement");
   }
   jsxParseClosingElementAt(startLoc) {
-    if (this.eat(139)) {
+    if (this.eat(140)) {
       const node2 = this.startNodeAt(startLoc);
       return this.finishNode(node2, "JSXClosingFragment");
     }
     const node = this.startNodeAt(startLoc);
     node.name = this.jsxParseElementName();
-    this.expect(139);
+    this.expect(140);
     return this.finishNode(node, "JSXClosingElement");
   }
   jsxParseElementAt(startLoc) {
@@ -6182,7 +6186,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
     if (!openingElement.selfClosing) {
       contents: for (; ; ) {
         switch (this.state.type) {
-          case 138:
+          case 139:
             startLoc = this.state.startLoc;
             this.next();
             if (this.eat(52)) {
@@ -6192,7 +6196,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
             }
             children.push(this.jsxParseElementAt(startLoc));
             break;
-          case 137:
+          case 138:
             children.push(this.parseLiteral(this.state.value, "JSXText"));
             break;
           case 2: {
@@ -6249,10 +6253,10 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
     context[context.length - 1] = newContext;
   }
   parseExprAtom(refExpressionErrors) {
-    if (this.match(138)) {
+    if (this.match(139)) {
       return this.jsxParseElement();
     } else if (this.match(43) && this.input.charCodeAt(this.state.pos) !== 33) {
-      this.replaceToken(138);
+      this.replaceToken(139);
       return this.jsxParseElement();
     } else {
       return super.parseExprAtom(refExpressionErrors);
@@ -6275,7 +6279,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
       }
       if (code2 === 62) {
         ++this.state.pos;
-        this.finishToken(139);
+        this.finishToken(140);
         return;
       }
       if ((code2 === 34 || code2 === 39) && context === types.j_oTag) {
@@ -6285,7 +6289,7 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
     }
     if (code2 === 60 && this.state.canStartJSXElement && this.input.charCodeAt(this.state.pos + 1) !== 33) {
       ++this.state.pos;
-      this.finishToken(138);
+      this.finishToken(139);
       return;
     }
     super.getTokenFromCode(code2);
@@ -6295,12 +6299,12 @@ var jsx = (superClass) => class JSXParserMixin extends superClass {
       context,
       type
     } = this.state;
-    if (type === 52 && prevType === 138) {
+    if (type === 52 && prevType === 139) {
       context.splice(-2, 2, types.j_cTag);
       this.state.canStartJSXElement = false;
-    } else if (type === 138) {
-      context.push(types.j_oTag);
     } else if (type === 139) {
+      context.push(types.j_oTag);
+    } else if (type === 140) {
       const out = context[context.length - 1];
       if (out === types.j_oTag && prevType === 52 || out === types.j_cTag) {
         context.pop();
@@ -6662,6 +6666,7 @@ var State = class _State {
   errors = [];
   noArrowAt = [];
   noArrowParamsConversionAt = [];
+  regExpAllowedAt = -1;
   get canStartArrow() {
     return (this.flags & 2) > 0;
   }
@@ -6736,7 +6741,7 @@ var State = class _State {
   commentsLen = 0;
   commentStack = [];
   pos = 0;
-  type = 135;
+  type = 136;
   value = null;
   start = 0;
   end = 0;
@@ -6781,6 +6786,7 @@ var State = class _State {
     state.errors = this.errors.slice();
     state.noArrowAt = this.noArrowAt.slice();
     state.noArrowParamsConversionAt = this.noArrowParamsConversionAt.slice();
+    state.regExpAllowedAt = this.regExpAllowedAt;
     state.labels = this.labels.slice();
     state.commentsLen = this.commentsLen;
     state.commentStack = this.commentStack.slice();
@@ -6802,7 +6808,7 @@ var _isDigit = function isDigit(code2) {
   return code2 >= 48 && code2 <= 57;
 };
 var forbiddenNumericSeparatorSiblings = {
-  decBinOct: /* @__PURE__ */ new Set([46, 66, 69, 79, 95, 98, 101, 111]),
+  decBinOct: /* @__PURE__ */ new Set([46, 66, 69, 79, 95, 98, 101, 111, 43, 45]),
   hex: /* @__PURE__ */ new Set([46, 88, 95, 120])
 };
 var isAllowedNumericSeparatorSibling = {
@@ -7001,7 +7007,7 @@ function readInt(input, pos, lineStart, curLine, radix, len, forceLen, allowNumS
           pos
         };
         errors.numericSeparatorInEscapeSequence(pos, lineStart, curLine);
-      } else if (Number.isNaN(next) || !isAllowedSibling(next) || forbiddenSiblings.has(prev) || forbiddenSiblings.has(next)) {
+      } else if (Number.isNaN(next) || !isAllowedSibling(next) || forbiddenSiblings.has(prev)) {
         if (bailOnError) return {
           n: null,
           pos
@@ -7176,8 +7182,9 @@ var Tokenizer = class extends CommentsParser {
     return this.nextTokenStartSince(this.state.pos);
   }
   nextTokenStartSince(pos) {
-    skipWhiteSpace.lastIndex = pos;
-    return skipWhiteSpace.test(this.input) ? skipWhiteSpace.lastIndex : pos;
+    const skipWhiteSpaceRe = this.inModule || !(this.optionFlags & 16384) ? skipWhiteSpace : skipWhiteSpaceAnnexB;
+    skipWhiteSpaceRe.lastIndex = pos;
+    return skipWhiteSpaceRe.test(this.input) ? skipWhiteSpaceRe.lastIndex : pos;
   }
   lookaheadCharCode() {
     return this.lookaheadCharCodeSince(this.state.pos);
@@ -7220,7 +7227,7 @@ var Tokenizer = class extends CommentsParser {
     this.state.start = this.state.pos;
     if (!this.isLookahead) this.state.startLoc = this.state.curPosition();
     if (this.state.pos >= this.length) {
-      this.finishToken(135);
+      this.finishToken(136);
       return;
     }
     this.getTokenFromCode(this.codePointAtPos(this.state.pos));
@@ -7394,10 +7401,10 @@ var Tokenizer = class extends CommentsParser {
     }
     if (isIdentifierStart(next)) {
       ++this.state.pos;
-      this.finishToken(134, this.readWord1(next));
+      this.finishToken(135, this.readWord1(next));
     } else if (next === 92) {
       ++this.state.pos;
-      this.finishToken(134, this.readWord1());
+      this.finishToken(135, this.readWord1());
     } else {
       this.finishOp(23, 1);
     }
@@ -7776,7 +7783,7 @@ var Tokenizer = class extends CommentsParser {
       mods += char;
     }
     this.state.pos = pos;
-    this.finishToken(133, {
+    this.finishToken(134, {
       pattern: content,
       flags: mods
     });
@@ -7810,10 +7817,10 @@ var Tokenizer = class extends CommentsParser {
     }
     if (isBigInt) {
       const str = this.input.slice(start, this.state.pos).replace(/[_n]/g, "");
-      this.finishToken(132, str);
+      this.finishToken(133, str);
       return;
     }
-    this.finishToken(131, val);
+    this.finishToken(132, val);
   }
   readNumber(startsWithDot) {
     const start = this.state.pos;
@@ -7866,11 +7873,11 @@ var Tokenizer = class extends CommentsParser {
       throw this.raise(Errors.NumberIdentifier, this.state.curPosition());
     }
     if (isBigInt) {
-      this.finishToken(132, str);
+      this.finishToken(133, str);
       return;
     }
     const val = isOctal ? parseInt(str, 8) : parseFloat(str);
-    this.finishToken(131, val);
+    this.finishToken(132, val);
   }
   readCodePoint(throwOnInvalid) {
     const {
@@ -7890,7 +7897,7 @@ var Tokenizer = class extends CommentsParser {
     this.state.pos = pos + 1;
     this.state.lineStart = lineStart;
     this.state.curLine = curLine;
-    this.finishToken(130, str);
+    this.finishToken(131, str);
   }
   readTemplateContinuation() {
     if (!this.match(4)) {
@@ -7972,7 +7979,7 @@ var Tokenizer = class extends CommentsParser {
     if (type !== void 0) {
       this.finishToken(type, tokenLabelName(type));
     } else {
-      this.finishToken(128, word);
+      this.finishToken(129, word);
     }
   }
   checkKeywordEscapes() {
@@ -8327,7 +8334,7 @@ var UtilParser = class extends Tokenizer {
     }
   }
   canInsertSemicolon() {
-    return this.match(135) || this.match(4) || this.hasPrecedingLineBreak();
+    return this.match(136) || this.match(4) || this.hasPrecedingLineBreak();
   }
   hasPrecedingLineBreak() {
     return hasNewLine(this.input, this.offsetToSourcePos(this.state.lastTokEndLoc.index), this.state.start);
@@ -8903,7 +8910,7 @@ var LValParser = class extends NodeUtils {
       return this.parseBindingRestProperty(this.startNode());
     }
     const prop = this.startNode();
-    if (type === 134) {
+    if (type === 135) {
       this.expectPlugin("destructuringPrivate", startLoc);
       this.classScope.usePrivateName(this.state.value, startLoc);
       prop.key = this.parsePrivateName();
@@ -9004,7 +9011,7 @@ var LValParser = class extends NodeUtils {
       this.raise(Errors.VoidPatternCatchClauseParam, expression);
     }
     const unwrappedExpression = unwrapParenthesizedExpression(expression);
-    disallowCallExpression ||= unwrappedExpression.type === "CallExpression" && (unwrappedExpression.callee.type === "Import" || unwrappedExpression.callee.type === "Super");
+    disallowCallExpression ||= binding !== 64 || unwrappedExpression.type === "CallExpression" && (unwrappedExpression.callee.type === "Import" || unwrappedExpression.callee.type === "Super");
     const validity = this.isValidLVal(type, disallowCallExpression, !(hasParenthesizedAncestor || expression.extra?.parenthesized) && ancestor.type === "AssignmentExpression", binding);
     if (validity === true) return;
     if (validity === false) {
@@ -9036,6 +9043,15 @@ var LValParser = class extends NodeUtils {
     }
   }
   checkIdentifier(at, bindingType, strictModeChanged = false) {
+    this.checkStrictBindReservedWord(at, bindingType, strictModeChanged);
+    if (bindingType & 8192 && at.name === "let") {
+      this.raise(Errors.LetInLexicalBinding, at);
+    }
+    if (!(bindingType & 64)) {
+      this.declareNameFromIdentifier(at, bindingType);
+    }
+  }
+  checkStrictBindReservedWord(at, bindingType, strictModeChanged = false) {
     if (this.state.strict && (strictModeChanged ? isStrictBindReservedWord(at.name, this.inModule) : isStrictBindOnlyReservedWord(at.name))) {
       if (bindingType === 64) {
         this.raise(Errors.StrictEvalArguments, at, {
@@ -9046,12 +9062,6 @@ var LValParser = class extends NodeUtils {
           bindingName: at.name
         });
       }
-    }
-    if (bindingType & 8192 && at.name === "let") {
-      this.raise(Errors.LetInLexicalBinding, at);
-    }
-    if (!(bindingType & 64)) {
-      this.declareNameFromIdentifier(at, bindingType);
     }
   }
   declareNameFromIdentifier(identifier, binding) {
@@ -9107,11 +9117,11 @@ var ExpressionParser = class extends LValParser {
   getExpression() {
     this.enterInitialScopes();
     this.nextToken();
-    if (this.match(135)) {
+    if (this.match(136)) {
       throw this.raise(Errors.ParseExpressionEmptyInput, this.state.startLoc);
     }
     const expr = this.parseExpression();
-    if (!this.match(135)) {
+    if (!this.match(136)) {
       throw this.raise(Errors.ParseExpressionExpectsEOF, this.state.startLoc, {
         unexpected: this.input.codePointAt(this.state.start)
       });
@@ -9155,7 +9165,7 @@ var ExpressionParser = class extends LValParser {
   }
   parseMaybeAssign(refExpressionErrors, isParenItem) {
     const startLoc = this.state.startLoc;
-    const isYield = this.isContextual(104);
+    const isYield = this.isContextual(105);
     if (isYield) {
       if (this.prodParam.hasYield) {
         this.next();
@@ -9178,7 +9188,7 @@ var ExpressionParser = class extends LValParser {
     if (isParenItem) {
       left = this.parseParenItem(left, startLoc);
     }
-    if (tokenIsAssignment(this.state.type)) {
+    if (tokenIsAssignment(this.state.type) && !(this.match(27) && this.state.lastTokEndLoc.index === this.state.regExpAllowedAt)) {
       const node = this.startNodeAt(startLoc);
       const operator = this.state.value;
       node.operator = operator;
@@ -9241,7 +9251,7 @@ var ExpressionParser = class extends LValParser {
     return expr;
   }
   parseMaybeUnaryOrPrivate(refExpressionErrors) {
-    return this.match(134) ? this.parsePrivateName() : this.parseMaybeUnary(refExpressionErrors);
+    return this.match(135) ? this.parsePrivateName() : this.parseMaybeUnary(refExpressionErrors);
   }
   parseExprOps(refExpressionErrors) {
     const startLoc = this.state.startLoc;
@@ -9252,18 +9262,25 @@ var ExpressionParser = class extends LValParser {
     this.state.canStartArrow = false;
     return this.parseExprOp(expr, startLoc, -1);
   }
+  isEscapedKeywordOperatorAfterLineBreak() {
+    return tokenIsKeyword(this.state.type) && this.state.containsEsc && this.hasPrecedingLineBreak();
+  }
+  isBinaryOperator(op) {
+    return tokenIsOperator(op) && (this.prodParam.hasIn || op !== 54) && !this.isEscapedKeywordOperatorAfterLineBreak();
+  }
   parseExprOp(left, leftStartLoc, minPrec) {
+    const op = this.state.type;
+    const isOperator = this.isBinaryOperator(op);
     if (this.isPrivateName(left)) {
       const value = this.getPrivateNameSV(left);
-      if (minPrec >= tokenOperatorPrecedence(54) || !this.prodParam.hasIn || !this.match(54)) {
+      if (minPrec >= tokenOperatorPrecedence(54) || op !== 54 || !isOperator) {
         this.raise(Errors.PrivateInExpectedIn, leftStartLoc, {
           identifierName: value
         });
       }
       this.classScope.usePrivateName(value, leftStartLoc);
     }
-    const op = this.state.type;
-    if (tokenIsOperator(op) && (this.prodParam.hasIn || !this.match(54))) {
+    if (isOperator) {
       let prec = tokenOperatorPrecedence(op);
       if (prec > minPrec) {
         if (op === 35) {
@@ -9334,7 +9351,7 @@ var ExpressionParser = class extends LValParser {
   }
   parseMaybeUnary(refExpressionErrors, sawUnary) {
     const startLoc = this.state.startLoc;
-    const isAwait = this.isContextual(92);
+    const isAwait = this.isContextual(93);
     if (isAwait && this.recordAwaitIfAllowed()) {
       this.next();
       const expr2 = this.parseAwait(startLoc);
@@ -9355,7 +9372,7 @@ var ExpressionParser = class extends LValParser {
       node.argument = this.parseMaybeUnary(null, true);
       this.checkExpressionErrors(refExpressionErrors, true);
       if (this.state.strict && isDelete) {
-        const arg = node.argument;
+        const arg = unwrapParenthesizedExpression(node.argument);
         if (arg.type === "Identifier") {
           this.raise(Errors.StrictDelete, node);
         } else if (this.hasPropertyAsPrivateName(arg)) {
@@ -9404,6 +9421,21 @@ var ExpressionParser = class extends LValParser {
   parseExprSubscripts(refExpressionErrors) {
     const startLoc = this.state.startLoc;
     this.setLoc(startLoc);
+    if (refExpressionErrors != null && (this.match(2) || this.match(0))) {
+      const atomExpressionErrors = new ExpressionErrors();
+      const expr2 = this.parseExprAtom(atomExpressionErrors);
+      const result = this.parseSubscripts(expr2, startLoc);
+      if (result !== expr2) {
+        this.checkExpressionErrors(atomExpressionErrors, true);
+      } else {
+        refExpressionErrors.shorthandAssignLoc ??= atomExpressionErrors.shorthandAssignLoc;
+        refExpressionErrors.doubleProtoLoc ??= atomExpressionErrors.doubleProtoLoc;
+        refExpressionErrors.privateKeyLoc ??= atomExpressionErrors.privateKeyLoc;
+        refExpressionErrors.optionalParametersLoc ??= atomExpressionErrors.optionalParametersLoc;
+        refExpressionErrors.voidPatternLoc ??= atomExpressionErrors.voidPatternLoc;
+      }
+      return result;
+    }
     const expr = this.parseExprAtom(refExpressionErrors);
     if (this.shouldExitDescending(expr)) {
       return expr;
@@ -9464,7 +9496,7 @@ var ExpressionParser = class extends LValParser {
     if (computed) {
       node.property = this.parseExpression();
       this.expect(1);
-    } else if (this.match(134)) {
+    } else if (this.match(135)) {
       if (base.type === "Super") {
         this.raise(Errors.SuperPrivateField, startLoc);
       }
@@ -9595,6 +9627,7 @@ var ExpressionParser = class extends LValParser {
   parseNoCallExpr(onUnparenthesizedImportExpression) {
     const startLoc = this.state.startLoc;
     const isImport = this.match(79);
+    this.state.canStartArrow = false;
     const base = this.parseExprAtom();
     if (isImport && base.type === "ImportExpression") {
       onUnparenthesizedImportExpression(base);
@@ -9638,11 +9671,11 @@ var ExpressionParser = class extends LValParser {
         this.readRegexp();
         return this.parseRegExpLiteral(this.state.value);
       }
-      case 131:
-        return this.parseNumericLiteral(this.state.value);
       case 132:
+        return this.parseNumericLiteral(this.state.value);
+      case 133:
         return this.parseBigIntLiteral(this.state.value);
-      case 130:
+      case 131:
         return this.parseStringLiteral(this.state.value);
       case 80:
         return this.parseNullLiteral();
@@ -9683,7 +9716,7 @@ var ExpressionParser = class extends LValParser {
           throw this.raise(Errors.UnsupportedBind, callee);
         }
       }
-      case 134: {
+      case 135: {
         this.raise(Errors.PrivateInExpectedIn, this.state.startLoc, {
           identifierName: this.state.value
         });
@@ -9717,7 +9750,7 @@ var ExpressionParser = class extends LValParser {
       }
       default:
         if (tokenIsIdentifier(type)) {
-          if (this.isContextual(123) && this.lookaheadInLineCharCode() === 123) {
+          if (this.isContextual(124) && this.lookaheadInLineCharCode() === 123) {
             return this.parseModuleExpression();
           }
           const {
@@ -9853,7 +9886,7 @@ var ExpressionParser = class extends LValParser {
     if (this.prodParam.hasYield && this.match(12)) {
       const meta = this.createIdentifier(this.startNodeAtNode(node), "function");
       this.next();
-      if (this.match(99)) {
+      if (this.match(100)) {
         this.expectPlugin("functionSent");
       } else if (!this.hasPlugin("functionSent")) {
         this.unexpected();
@@ -9876,15 +9909,15 @@ var ExpressionParser = class extends LValParser {
   }
   parseImportMetaPropertyOrPhaseCall(node) {
     this.next();
-    if (this.isContextual(101) || this.isContextual(93)) {
-      const isSource = this.isContextual(101);
+    if (this.isContextual(102) || this.isContextual(94)) {
+      const isSource = this.isContextual(102);
       this.expectPlugin(isSource ? "sourcePhaseImports" : "deferredImportEvaluation");
       this.next();
       node.phase = isSource ? "source" : "defer";
       return this.parseImportCall(node);
     } else {
       const id = this.createIdentifierAt(this.startNodeAtNode(node), "import", this.state.lastTokStartLoc);
-      if (this.isContextual(97)) {
+      if (this.isContextual(98)) {
         if (!this.inModule) {
           this.raise(Errors.ImportMetaOutsideModule, id);
         }
@@ -10273,16 +10306,16 @@ var ExpressionParser = class extends LValParser {
         key = this.parseIdentifier(true);
       } else {
         switch (type) {
-          case 131:
+          case 132:
             key = this.parseNumericLiteral(value);
             break;
-          case 130:
+          case 131:
             key = this.parseStringLiteral(value);
             break;
-          case 132:
+          case 133:
             key = this.parseBigIntLiteral(value);
             break;
-          case 134: {
+          case 135: {
             const privateKeyLoc = this.state.startLoc;
             if (refExpressionErrors != null) {
               if (refExpressionErrors.privateKeyLoc === null) {
@@ -10299,7 +10332,7 @@ var ExpressionParser = class extends LValParser {
         }
       }
       prop.key = key;
-      if (type !== 134) {
+      if (type !== 135) {
         prop.computed = false;
       }
     }
@@ -10329,7 +10362,8 @@ var ExpressionParser = class extends LValParser {
   parseArrowExpression(node, params, isAsync, trailingCommaLoc) {
     this.scope.enter(514 | 4);
     let flags = functionFlags(isAsync, false);
-    if (!this.match(2)) {
+    const hasBlockBody = this.match(2);
+    if (!hasBlockBody) {
       flags |= this.prodParam.currentFlags() & (8 | 16);
     }
     this.prodParam.enter(flags);
@@ -10338,6 +10372,9 @@ var ExpressionParser = class extends LValParser {
       this.setArrowFunctionParameters(node, params, trailingCommaLoc);
     }
     this.parseFunctionBody(node, true);
+    if (hasBlockBody) {
+      this.state.regExpAllowedAt = this.state.lastTokEndLoc.index;
+    }
     this.prodParam.exit();
     this.scope.exit();
     return this.finishNode(node, "ArrowFunctionExpression");
@@ -10368,8 +10405,8 @@ var ExpressionParser = class extends LValParser {
         }
         const strictModeChanged = !oldStrict && this.state.strict;
         this.checkParams(node, !this.state.strict && !allowExpression && !isMethod && !nonSimple, allowExpression, strictModeChanged);
-        if (this.state.strict && node.id) {
-          this.checkIdentifier(node.id, 65, strictModeChanged);
+        if (node.id) {
+          this.checkStrictBindReservedWord(node.id, 65, strictModeChanged);
         }
       });
       this.prodParam.exit();
@@ -10473,7 +10510,7 @@ var ExpressionParser = class extends LValParser {
     const tokenIsKeyword2 = tokenKeywordOrIdentifierIsKeyword(type);
     if (liberal) {
       if (tokenIsKeyword2) {
-        this.replaceToken(128);
+        this.replaceToken(129);
       }
     } else {
       this.checkReservedWord(name, this.sourceToOffsetPos(start), tokenIsKeyword2, false);
@@ -10545,6 +10582,7 @@ var ExpressionParser = class extends LValParser {
       }
     }
     if (!soloAwait) {
+      this.state.canStartArrow = false;
       node.argument = this.parseMaybeUnary(null, true);
     }
     return this.finishNode(node, "AwaitExpression");
@@ -10554,7 +10592,7 @@ var ExpressionParser = class extends LValParser {
     const {
       type
     } = this.state;
-    return type === 49 || type === 6 || type === 0 || tokenIsTemplate(type) || type === 98 && !this.state.containsEsc || type === 133 || type === 52 || this.hasPlugin("v8intrinsic") && type === 50;
+    return type === 49 || type === 6 || type === 0 || tokenIsTemplate(type) || type === 99 && !this.state.containsEsc || type === 134 || type === 52 || this.hasPlugin("v8intrinsic") && type === 50;
   }
   parseYield(startLoc) {
     this.setLoc(startLoc);
@@ -10566,7 +10604,7 @@ var ExpressionParser = class extends LValParser {
       delegating = this.eat(51);
       switch (this.state.type) {
         case 9:
-        case 135:
+        case 136:
         case 4:
         case 7:
         case 1:
@@ -10577,6 +10615,9 @@ var ExpressionParser = class extends LValParser {
         default:
           argument = this.parseMaybeAssign();
       }
+    }
+    if (!argument) {
+      this.state.regExpAllowedAt = this.state.lastTokEndLoc.index;
     }
     node.delegate = delegating;
     node.argument = argument;
@@ -10650,11 +10691,11 @@ var ExpressionParser = class extends LValParser {
     const startLoc = this.state.startLoc;
     this.prodParam.enter(this.prodParam.currentFlags() & -17);
     let ret;
-    if (this.isContextual(92) && this.recordAwaitIfAllowed()) {
+    if (this.isContextual(93) && this.recordAwaitIfAllowed()) {
       this.next();
       ret = this.parseAwait(startLoc, true);
       const nextOp = this.state.type;
-      if (tokenIsOperator(nextOp) && nextOp !== 35 && (this.prodParam.hasIn || nextOp !== 54)) {
+      if (nextOp !== 35 && this.isBinaryOperator(nextOp)) {
         this.raise(Errors.PipelineUnparenthesized, startLoc);
       }
     } else {
@@ -10725,7 +10766,7 @@ function createExportedTokens(tokens) {
 }
 var StatementParser = class extends ExpressionParser {
   parseTopLevel(file, program) {
-    file.program = this.parseProgram(program, 135, this.options.sourceType === "module" ? "module" : "script");
+    file.program = this.parseProgram(program, 136, this.options.sourceType === "module" ? "module" : "script");
     file.comments = this.comments;
     if (this.optionFlags & 512) {
       file.tokens = createExportedTokens(this.tokens);
@@ -10747,7 +10788,7 @@ var StatementParser = class extends ExpressionParser {
       this.addExtra(program, "topLevelAwait", this.state.hasTopLevelAwait);
     }
     let finishedProgram;
-    if (end === 135) {
+    if (end === 136) {
       finishedProgram = this.finishNode(program, "Program");
     } else {
       finishedProgram = this.finishNodeAt(program, "Program", createPositionWithColumnOffset(this.state.startLoc, -1));
@@ -10777,19 +10818,19 @@ var StatementParser = class extends ExpressionParser {
     return this.finishNode(node, "InterpreterDirective");
   }
   isLet() {
-    if (!this.isContextual(96)) {
+    if (!this.isContextual(97)) {
       return false;
     }
     return this.hasFollowingBindingAtom();
   }
   isUsing() {
-    if (!this.isContextual(103)) {
+    if (!this.isContextual(104)) {
       return false;
     }
     return this.nextTokenIsIdentifierOnSameLine();
   }
   isForUsing() {
-    if (!this.isContextual(103)) {
+    if (!this.isContextual(104)) {
       return false;
     }
     const next = this.nextTokenInLineStart();
@@ -10811,7 +10852,7 @@ var StatementParser = class extends ExpressionParser {
     return this.chStartsBindingIdentifier(nextCh, next);
   }
   isAwaitUsing() {
-    if (!this.isContextual(92)) {
+    if (!this.isContextual(93)) {
       return false;
     }
     let next = this.nextTokenInLineStart();
@@ -10904,7 +10945,7 @@ var StatementParser = class extends ExpressionParser {
         if (!allowFunctionDeclaration) {
           this.raise(this.state.strict ? Errors.StrictFunction : this.options.annexB ? Errors.SloppyFunctionAnnexB : Errors.SloppyFunction, this.state.startLoc);
         }
-        return this.parseFunctionStatement(node, false, !allowDeclaration && allowFunctionDeclaration);
+        return this.parseFunctionStatement(node, false, flags);
       case 76:
         if (!allowDeclaration) this.unexpected();
         return this.parseClass(this.maybeTakeDecorators(decorators, node), true);
@@ -10918,7 +10959,7 @@ var StatementParser = class extends ExpressionParser {
         return this.parseThrowStatement(node);
       case 69:
         return this.parseTryStatement(node);
-      case 92:
+      case 93:
         if (this.isAwaitUsing()) {
           if (!this.allowsUsing()) {
             this.raise(Errors.UnexpectedUsingDeclaration, node);
@@ -10931,7 +10972,7 @@ var StatementParser = class extends ExpressionParser {
           return this.parseVarStatement(node, "await using");
         }
         break;
-      case 103:
+      case 104:
         if (this.state.containsEsc || !this.hasInLineFollowingBindingIdentifierOrBrace()) {
           break;
         }
@@ -10941,7 +10982,7 @@ var StatementParser = class extends ExpressionParser {
           this.raise(Errors.UnexpectedLexicalDeclaration, this.state.startLoc);
         }
         return this.parseVarStatement(node, "using");
-      case 96: {
+      case 97: {
         if (this.state.containsEsc) {
           break;
         }
@@ -10997,16 +11038,21 @@ var StatementParser = class extends ExpressionParser {
             this.raise(Errors.AsyncFunctionInSingleStatementContext, this.state.startLoc);
           }
           this.next();
-          return this.parseFunctionStatement(node, true, !allowDeclaration && allowFunctionDeclaration);
+          return this.parseFunctionStatement(node, true, flags);
         }
       }
     }
     const maybeName = this.state.value;
+    if (startType === 89 && this.lookahead().type === 10) {
+      const label = this.parseIdentifier(true);
+      this.next();
+      return this.parseLabeledStatement(node, maybeName, label, flags);
+    }
     const expr = this.parseExpression();
     if (tokenIsIdentifier(startType) && expr.type === "Identifier" && this.eat(10)) {
       return this.parseLabeledStatement(node, maybeName, expr, flags);
     } else {
-      return this.parseExpressionStatement(node, expr);
+      return this.parseExpressionStatement(node, expr, flags);
     }
   }
   assertModuleNodeAllowed(node) {
@@ -11067,7 +11113,7 @@ var StatementParser = class extends ExpressionParser {
         while (this.eat(12)) {
           const node2 = this.startNodeAt(startLoc);
           node2.object = expr;
-          if (this.match(134)) {
+          if (this.match(135)) {
             this.classScope.usePrivateName(this.state.value, this.state.startLoc);
             node2.property = this.parsePrivateName();
           } else {
@@ -11099,7 +11145,7 @@ var StatementParser = class extends ExpressionParser {
     if (this.isLineTerminator()) {
       node.label = null;
     } else {
-      node.label = this.parseIdentifier();
+      node.label = this.parseIdentifier(this.match(89));
       this.semicolon();
     }
     this.verifyBreakContinue(node, isBreak);
@@ -11148,7 +11194,7 @@ var StatementParser = class extends ExpressionParser {
     this.next();
     this.state.labels.push(loopLabel);
     let awaitAt = null;
-    if (this.isContextual(92) && this.recordAwaitIfAllowed()) {
+    if (this.isContextual(93) && this.recordAwaitIfAllowed()) {
       awaitAt = this.state.startLoc;
       this.next();
     }
@@ -11160,7 +11206,7 @@ var StatementParser = class extends ExpressionParser {
       }
       return this.parseFor(node, null);
     }
-    const startsWithLet = this.isContextual(96);
+    const startsWithLet = this.isContextual(97);
     {
       const startsWithAwaitUsing = this.isAwaitUsing();
       const starsWithUsingDeclaration = startsWithAwaitUsing || this.isForUsing();
@@ -11184,7 +11230,7 @@ var StatementParser = class extends ExpressionParser {
         if (isForIn && starsWithUsingDeclaration) {
           this.raise(Errors.ForInUsing, init2);
         }
-        if ((isForIn || this.isContextual(98)) && init2.declarations.length === 1) {
+        if ((isForIn || this.isContextual(99)) && init2.declarations.length === 1) {
           return this.parseForX(node, init2, awaitAt);
         }
         if (awaitAt !== null) {
@@ -11193,10 +11239,10 @@ var StatementParser = class extends ExpressionParser {
         return this.parseFor(node, init2);
       }
     }
-    const startsWithAsync = this.isContextual(91);
+    const startsWithAsync = this.isContextual(92);
     const refExpressionErrors = new ExpressionErrors();
     const init = this.parseExpression(true, refExpressionErrors);
-    const isForOf = this.isContextual(98);
+    const isForOf = this.isContextual(99);
     if (isForOf) {
       if (startsWithLet) {
         this.raise(Errors.ForOfLet, init);
@@ -11221,9 +11267,16 @@ var StatementParser = class extends ExpressionParser {
     }
     return this.parseFor(node, init);
   }
-  parseFunctionStatement(node, isAsync, isHangingDeclaration) {
+  parseFunctionStatement(node, isAsync, statementFlags) {
     this.next();
-    return this.parseFunction(node, 1 | (isHangingDeclaration ? 2 : 0) | (isAsync ? 8 : 0));
+    let flags = 1 | (isAsync ? 8 : 0);
+    if (!(statementFlags & 2) && statementFlags & 4) {
+      flags |= 16;
+      if (!(statementFlags & 8)) {
+        flags |= 2;
+      }
+    }
+    return this.parseFunction(node, flags);
   }
   parseIfStatement(node) {
     this.next();
@@ -11381,7 +11434,7 @@ var StatementParser = class extends ExpressionParser {
     node.label = expr;
     return this.finishNode(node, "LabeledStatement");
   }
-  parseExpressionStatement(node, expr) {
+  parseExpressionStatement(node, expr, _flags) {
     node.expression = expr;
     this.semicolon();
     return this.finishNode(node, "ExpressionStatement");
@@ -11483,12 +11536,12 @@ var StatementParser = class extends ExpressionParser {
       const decl = this.startNode();
       this.parseVarId(decl, kind);
       decl.init = !this.eat(25) ? null : isFor ? this.parseMaybeAssignDisallowIn() : this.parseMaybeAssignAllowIn();
-      if (decl.init === null && !allowMissingInitializer) {
-        if (decl.id.type !== "Identifier" && !(isFor && (this.match(54) || this.isContextual(98)))) {
+      if (decl.init === null && !allowMissingInitializer && !(isFor && declarations.length === 0 && (this.match(54) || this.isContextual(99)))) {
+        if (decl.id.type !== "Identifier") {
           this.raise(Errors.DeclarationMissingInitializer, this.state.lastTokEndLoc, {
             kind: "destructuring"
           });
-        } else if ((kind === "const" || kind === "using" || kind === "await using") && !(this.match(54) || this.isContextual(98))) {
+        } else if (kind === "const" || kind === "using" || kind === "await using") {
           this.raise(Errors.DeclarationMissingInitializer, this.state.lastTokEndLoc, {
             kind
           });
@@ -11519,13 +11572,12 @@ var StatementParser = class extends ExpressionParser {
     return this.parseFunction(node, 8);
   }
   parseFunction(node, flags = 0) {
-    const hangingDeclaration = flags & 2;
     const isDeclaration = !!(flags & 1);
     const requireId = isDeclaration && !(flags & 4);
     const isAsync = !!(flags & 8);
     this.initFunction(node, isAsync);
     if (this.match(51)) {
-      if (hangingDeclaration) {
+      if (flags & 16) {
         this.raise(Errors.GeneratorInSingleStatementContext, this.state.startLoc);
       }
       this.next();
@@ -11545,7 +11597,7 @@ var StatementParser = class extends ExpressionParser {
     this.parseFunctionBodyAndFinish(node, isDeclaration ? "FunctionDeclaration" : "FunctionExpression");
     this.prodParam.exit();
     this.scope.exit();
-    if (isDeclaration && !hangingDeclaration) {
+    if (isDeclaration && !(flags & 2)) {
       this.registerFunctionStatementId(node);
     }
     return node;
@@ -11643,7 +11695,7 @@ var StatementParser = class extends ExpressionParser {
     return false;
   }
   parseClassMember(classBody, member, state) {
-    const isStatic = this.isContextual(102);
+    const isStatic = this.isContextual(103);
     if (isStatic) {
       if (this.parseClassMemberFromModifier(classBody, member)) {
         return;
@@ -11667,7 +11719,7 @@ var StatementParser = class extends ExpressionParser {
     this.parsePropertyNamePrefixOperator(member);
     if (this.eat(51)) {
       method.kind = "method";
-      const isPrivateName = this.match(134);
+      const isPrivateName = this.match(135);
       this.parseClassElementName(method);
       this.parsePostMemberNameModifiers(method);
       if (isPrivateName) {
@@ -11722,7 +11774,7 @@ var StatementParser = class extends ExpressionParser {
         this.unexpected(maybeQuestionTokenStartLoc);
       }
       method.kind = "method";
-      const isPrivate2 = this.match(134);
+      const isPrivate2 = this.match(135);
       this.parseClassElementName(method);
       this.parsePostMemberNameModifiers(publicMember);
       if (isPrivate2) {
@@ -11736,7 +11788,7 @@ var StatementParser = class extends ExpressionParser {
     } else if ((maybeContextualKw === "get" || maybeContextualKw === "set") && !(this.match(51) && this.isLineTerminator())) {
       this.resetPreviousNodeTrailingComments(key);
       method.kind = maybeContextualKw;
-      const isPrivate2 = this.match(134);
+      const isPrivate2 = this.match(135);
       this.parseClassElementName(publicMethod);
       if (isPrivate2) {
         this.pushClassPrivateMethod(classBody, privateMethod, false, false);
@@ -11750,7 +11802,7 @@ var StatementParser = class extends ExpressionParser {
     } else if (maybeContextualKw === "accessor" && !this.isLineTerminator()) {
       this.expectPlugin("decoratorAutoAccessors");
       this.resetPreviousNodeTrailingComments(key);
-      const isPrivate2 = this.match(134);
+      const isPrivate2 = this.match(135);
       this.parseClassElementName(publicProp);
       this.pushClassAccessorProperty(classBody, accessorProp, isPrivate2);
     } else if (this.isLineTerminator()) {
@@ -11768,10 +11820,10 @@ var StatementParser = class extends ExpressionParser {
       type,
       value
     } = this.state;
-    if ((type === 128 || type === 130) && member.static && value === "prototype") {
+    if ((type === 129 || type === 131) && member.static && value === "prototype") {
       this.raise(Errors.StaticPrototype, this.state.startLoc);
     }
-    if (type === 134) {
+    if (type === 135) {
       if (value === "constructor") {
         this.raise(Errors.ConstructorClassPrivateField, this.state.startLoc);
       }
@@ -11859,6 +11911,7 @@ var StatementParser = class extends ExpressionParser {
   parseClassId(node, isStatement, optionalId, bindingType = 8331) {
     if (tokenIsIdentifier(this.state.type)) {
       node.id = this.parseIdentifier();
+      this.checkStrictBindReservedWord(node.id, bindingType);
       if (isStatement) {
         this.declareNameFromIdentifier(node.id, bindingType);
       }
@@ -11884,7 +11937,7 @@ var StatementParser = class extends ExpressionParser {
     const parseAfterDefault = !hasDefault || this.eat(8);
     const hasStar = parseAfterDefault && this.eatExportStar(node);
     const hasNamespace = hasStar && this.maybeParseExportNamespaceSpecifier(node);
-    const parseAfterNamespace = parseAfterDefault && (!hasNamespace || this.eat(8));
+    const parseAfterNamespace = parseAfterDefault && !hasNamespace;
     const isFromRequired = hasDefault || hasStar;
     if (hasStar && !hasNamespace) {
       if (hasDefault) this.unexpected();
@@ -11895,12 +11948,9 @@ var StatementParser = class extends ExpressionParser {
       this.sawUnambiguousESM = true;
       return this.finishNode(node, "ExportAllDeclaration");
     }
-    const hasSpecifiers = this.maybeParseExportNamedSpecifiers(node);
+    const hasSpecifiers = parseAfterNamespace && this.maybeParseExportNamedSpecifiers(node);
     if (hasDefault && parseAfterDefault && !hasStar && !hasSpecifiers) {
       this.unexpected(null, 2);
-    }
-    if (hasNamespace && parseAfterNamespace) {
-      this.unexpected(null, 94);
     }
     let hasDeclaration;
     if (isFromRequired || hasSpecifiers) {
@@ -11958,7 +12008,7 @@ var StatementParser = class extends ExpressionParser {
     return false;
   }
   maybeParseExportNamespaceSpecifier(node) {
-    if (this.isContextual(89)) {
+    if (this.isContextual(90)) {
       node.specifiers ??= [];
       const specifier = this.startNodeAt(this.state.lastTokStartLoc);
       this.next();
@@ -11992,7 +12042,7 @@ var StatementParser = class extends ExpressionParser {
     return false;
   }
   isAsyncFunction() {
-    if (!this.isContextual(91)) return false;
+    if (!this.isContextual(92)) return false;
     const next = this.nextTokenInLineStart();
     return this.isUnparsedContextual(next, "function");
   }
@@ -12031,10 +12081,10 @@ var StatementParser = class extends ExpressionParser {
       type
     } = this.state;
     if (tokenIsIdentifier(type)) {
-      if (type === 91 && !this.state.containsEsc || type === 96) {
+      if (type === 92 && !this.state.containsEsc || type === 97) {
         return false;
       }
-      if ((type === 126 || type === 125) && !this.state.containsEsc) {
+      if ((type === 127 || type === 126) && !this.state.containsEsc) {
         const next2 = this.nextTokenStart();
         const nextChar = this.input.charCodeAt(next2);
         if (nextChar === 123 || this.chStartsBindingIdentifier(nextChar, next2) && !this.input.startsWith("from", next2)) {
@@ -12051,17 +12101,17 @@ var StatementParser = class extends ExpressionParser {
       return true;
     }
     if (this.match(61) && hasFrom) {
-      const nextAfterFrom = this.input.charCodeAt(this.nextTokenStartSince(next + 4));
+      const nextAfterFrom = this.input.charCodeAt(this.hasPlugin("exportDefaultFrom") ? this.nextTokenStartSince(next + 4) : this.nextTokenInLineStartSince(next + 4));
       return nextAfterFrom === 34 || nextAfterFrom === 39;
     }
     return false;
   }
   parseExportFrom(node, expect) {
-    if (this.eatContextual(94)) {
+    if (this.eatContextual(95)) {
       node.source = this.parseImportSource();
       this.maybeParseImportAttributes(node);
     } else if (expect) {
-      this.unexpected();
+      this.unexpected(null, 95);
     }
     this.semicolon();
   }
@@ -12167,8 +12217,8 @@ var StatementParser = class extends ExpressionParser {
         this.expect(8);
         if (this.eat(4)) break;
       }
-      const isMaybeTypeOnly = this.isContextual(126);
-      const isString = this.match(130);
+      const isMaybeTypeOnly = this.isContextual(127);
+      const isString = this.match(131);
       const node = this.startNode();
       node.local = this.parseModuleExportName();
       nodes.push(this.parseExportSpecifier(node, isString, isInTypeExport, isMaybeTypeOnly));
@@ -12176,7 +12226,7 @@ var StatementParser = class extends ExpressionParser {
     return nodes;
   }
   parseExportSpecifier(node, isString, isInTypeExport, isMaybeTypeOnly) {
-    if (this.eatContextual(89)) {
+    if (this.eatContextual(90)) {
       node.exported = this.parseModuleExportName();
     } else if (isString) {
       node.exported = this.cloneStringLiteral(node.local);
@@ -12186,7 +12236,7 @@ var StatementParser = class extends ExpressionParser {
     return this.finishNode(node, "ExportSpecifier");
   }
   parseModuleExportName() {
-    if (this.match(130)) {
+    if (this.match(131)) {
       const result = this.parseStringLiteral(this.state.value);
       const surrogate = loneSurrogate.exec(result.value);
       if (surrogate) {
@@ -12215,7 +12265,7 @@ var StatementParser = class extends ExpressionParser {
   }
   isPotentialImportPhase(isExport) {
     if (isExport) return false;
-    return this.isContextual(101) || this.isContextual(93);
+    return this.isContextual(102) || this.isContextual(94);
   }
   applyImportPhase(node, isExport, phase, loc) {
     if (isExport) {
@@ -12227,7 +12277,7 @@ var StatementParser = class extends ExpressionParser {
     } else if (phase === "defer") {
       this.expectPlugin("deferredImportEvaluation", loc);
       node.phase = "defer";
-    } else if (this.hasPlugin("sourcePhaseImports")) {
+    } else if (this.hasPlugin("sourcePhaseImports") || this.hasPlugin("deferredImportEvaluation")) {
       node.phase = null;
     }
   }
@@ -12241,7 +12291,7 @@ var StatementParser = class extends ExpressionParser {
     const {
       type
     } = this.state;
-    const isImportPhase = tokenIsKeywordOrIdentifier(type) ? type !== 94 || this.lookaheadCharCode() === 102 : type !== 8;
+    const isImportPhase = tokenIsKeywordOrIdentifier(type) ? type !== 95 || this.lookaheadCharCode() === 102 : type !== 8;
     if (isImportPhase) {
       this.applyImportPhase(node, isExport, phaseIdentifierName, phaseIdentifier.start);
       return null;
@@ -12254,10 +12304,10 @@ var StatementParser = class extends ExpressionParser {
     const {
       type
     } = this.state;
-    return tokenIsIdentifier(type) ? type !== 94 || this.lookaheadCharCode() === 102 : type !== 8;
+    return tokenIsIdentifier(type) ? type !== 95 || this.lookaheadCharCode() === 102 : type !== 8;
   }
   parseImport(node) {
-    if (this.match(130)) {
+    if (this.match(131)) {
       return this.parseImportSourceAndAttributes(node);
     }
     return this.parseImportSpecifiersAndAfter(node, this.parseMaybeImportPhase(node, false));
@@ -12268,7 +12318,7 @@ var StatementParser = class extends ExpressionParser {
     const parseNext = !hasDefault || this.eat(8);
     const hasStar = parseNext && this.maybeParseStarImportSpecifier(node);
     if (parseNext && !hasStar) this.parseNamedImportSpecifiers(node);
-    this.expectContextual(94);
+    this.expectContextual(95);
     return this.parseImportSourceAndAttributes(node);
   }
   parseImportSourceAndAttributes(node) {
@@ -12281,7 +12331,7 @@ var StatementParser = class extends ExpressionParser {
     return this.finishNode(node, "ImportDeclaration");
   }
   parseImportSource() {
-    if (!this.match(130)) this.unexpected();
+    if (!this.match(131)) this.unexpected();
     return this.parseExprAtom();
   }
   parseImportSpecifierLocal(node, specifier, type) {
@@ -12310,13 +12360,13 @@ var StatementParser = class extends ExpressionParser {
         });
       }
       attrNames.add(keyName);
-      if (this.match(130)) {
+      if (this.match(131)) {
         node.key = this.parseStringLiteral(keyName);
       } else {
         node.key = this.parseIdentifier(true);
       }
       this.expect(10);
-      if (!this.match(130)) {
+      if (!this.match(131)) {
         throw this.raise(Errors.ModuleAttributeInvalidValue, this.state.startLoc);
       }
       node.value = this.parseStringLiteral(this.state.value);
@@ -12354,7 +12404,7 @@ var StatementParser = class extends ExpressionParser {
     if (this.match(51)) {
       const specifier = this.startNode();
       this.next();
-      this.expectContextual(89);
+      this.expectContextual(90);
       this.parseImportSpecifierLocal(node, specifier, "ImportNamespaceSpecifier");
       return true;
     }
@@ -12374,15 +12424,15 @@ var StatementParser = class extends ExpressionParser {
         if (this.eat(4)) break;
       }
       const specifier = this.startNode();
-      const importedIsString = this.match(130);
-      const isMaybeTypeOnly = this.isContextual(126);
+      const importedIsString = this.match(131);
+      const isMaybeTypeOnly = this.isContextual(127);
       specifier.imported = this.parseModuleExportName();
       const importSpecifier = this.parseImportSpecifier(specifier, importedIsString, node.importKind === "type" || node.importKind === "typeof", isMaybeTypeOnly, void 0);
       node.specifiers.push(importSpecifier);
     }
   }
   parseImportSpecifier(specifier, importedIsString, isInTypeOnlyImport, isMaybeTypeOnly, bindingType) {
-    if (this.eatContextual(89)) {
+    if (this.eatContextual(90)) {
       specifier.local = this.parseIdentifier();
     } else {
       const {
@@ -12588,7 +12638,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return tokenIsIdentifier(this.state.type);
   }
   tsTokenCanFollowModifier() {
-    return this.match(0) || this.match(2) || this.match(51) || this.match(17) || this.match(134) || this.isLiteralPropertyName();
+    return this.match(0) || this.match(2) || this.match(51) || this.match(17) || this.match(135) || this.isLiteralPropertyName();
   }
   tsNextTokenOnSameLineAndCanFollowModifier() {
     this.next();
@@ -12598,7 +12648,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.tsTokenCanFollowModifier();
   }
   tsNextTokenCanFollowModifier() {
-    if (this.match(102)) {
+    if (this.match(103)) {
       this.next();
       return this.tsTokenCanFollowModifier();
     }
@@ -12610,15 +12660,23 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     const modifier = this.state.value;
     if (modifiers.has(modifier)) {
-      if (hasSeenStaticModifier && this.match(102)) {
+      if (hasSeenStaticModifier && this.match(103)) {
         return void 0;
       }
       if (stopOnStartOfClassStaticBlock && this.tsIsStartOfStaticBlocks()) {
         return void 0;
       }
+      const escapedKeywordLoc = this.state.containsEsc && !tokenIsIdentifier(this.state.type) ? this.state.startLoc : null;
+      if (escapedKeywordLoc) this.state.containsEsc = false;
       if (this.tsTryParse(this.tsNextTokenCanFollowModifier.bind(this))) {
+        if (escapedKeywordLoc) {
+          this.raise(Errors.InvalidEscapedReservedWord, escapedKeywordLoc, {
+            reservedWord: modifier
+          });
+        }
         return modifier;
       }
+      if (escapedKeywordLoc) this.state.containsEsc = true;
     }
     return void 0;
   }
@@ -12757,7 +12815,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     const node = this.startNode();
     this.expect(79);
     this.expect(6);
-    if (!this.match(130)) {
+    if (!this.match(131)) {
       this.raise(TSErrors.UnsupportedImportTypeArgument, this.state.startLoc);
       node.source = this.tsParseNonConditionalType();
     } else {
@@ -12802,7 +12860,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     this.expect(2);
     while (!this.match(4)) {
       const type = this.state.type;
-      if (tokenIsIdentifier(type) || type === 130) {
+      if (tokenIsIdentifier(type) || type === 131) {
         properties.push(super.parsePropertyDefinition(null));
       } else {
         this.unexpected();
@@ -12886,7 +12944,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseTypeParameters(parseModifiers) {
     const node = this.startNode();
-    if (this.match(43) || this.match(138)) {
+    if (this.match(43) || this.match(139)) {
       this.next();
     } else {
       this.unexpected();
@@ -13057,9 +13115,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   tsIsStartOfMappedType() {
     this.next();
     if (this.eat(49)) {
-      return this.isContextual(118);
+      return this.isContextual(119);
     }
-    if (this.isContextual(118)) {
+    if (this.isContextual(119)) {
       this.next();
     }
     if (!this.match(0)) {
@@ -13078,14 +13136,14 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     if (this.match(49)) {
       node.readonly = this.state.value;
       this.next();
-      this.expectContextual(118);
-    } else if (this.eatContextual(118)) {
+      this.expectContextual(119);
+    } else if (this.eatContextual(119)) {
       node.readonly = true;
     }
     this.expect(0);
     node.key = this.tsParseTypeParameterName();
     node.constraint = this.tsExpectThenParseType(54);
-    node.nameType = this.eatContextual(89) ? this.tsParseType() : null;
+    node.nameType = this.eatContextual(90) ? this.tsParseType() : null;
     this.expect(1);
     if (this.match(49)) {
       node.optional = this.state.value;
@@ -13203,9 +13261,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   tsParseLiteralTypeNode() {
     const node = this.startNode();
     switch (this.state.type) {
-      case 131:
       case 132:
-      case 130:
+      case 133:
+      case 131:
       case 81:
       case 82:
         node.literal = super.parseExprAtom();
@@ -13245,7 +13303,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseThisTypeOrThisTypePredicate() {
     const thisKeyword = this.tsParseThisTypeNode();
-    if (this.isContextual(112) && !this.hasPrecedingLineBreak()) {
+    if (this.isContextual(113) && !this.hasPrecedingLineBreak()) {
       return this.tsParseThisTypePredicate(thisKeyword);
     } else {
       return thisKeyword;
@@ -13253,9 +13311,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseNonArrayType() {
     switch (this.state.type) {
-      case 130:
       case 131:
       case 132:
+      case 133:
       case 81:
       case 82:
         return this.tsParseLiteralTypeNode();
@@ -13263,7 +13321,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         if (this.state.value === "-") {
           const node = this.startNode();
           const nextToken = this.lookahead();
-          if (nextToken.type !== 131 && nextToken.type !== 132) {
+          if (nextToken.type !== 132 && nextToken.type !== 133) {
             this.unexpected();
           }
           node.literal = this.parseMaybeUnary();
@@ -13354,7 +13412,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseInferType() {
     const node = this.startNode();
-    this.expectContextual(111);
+    this.expectContextual(112);
     const typeParameter = this.startNode();
     typeParameter.name = this.tsParseTypeParameterName();
     typeParameter.constraint = this.tsTryParse(() => this.tsParseConstraintForInferType());
@@ -13371,7 +13429,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseTypeOperatorOrHigher() {
     const isTypeOperator = tokenIsTSTypeOperator(this.state.type) && !this.state.containsEsc;
-    return isTypeOperator ? this.tsParseTypeOperator() : this.isContextual(111) ? this.tsParseInferType() : this.tsInAllowConditionalTypesContext(() => this.tsParseArrayTypeOrHigher());
+    return isTypeOperator ? this.tsParseTypeOperator() : this.isContextual(112) ? this.tsParseInferType() : this.tsInAllowConditionalTypesContext(() => this.tsParseArrayTypeOrHigher());
   }
   tsParseUnionOrIntersectionType(kind, parseConstituentType, operator) {
     const node = this.startNode();
@@ -13502,13 +13560,13 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseTypePredicatePrefix() {
     const id = this.parseIdentifier();
-    if (this.isContextual(112) && !this.hasPrecedingLineBreak()) {
+    if (this.isContextual(113) && !this.hasPrecedingLineBreak()) {
       this.next();
       return id;
     }
   }
   tsParseTypePredicateAsserts() {
-    if (this.state.type !== 105) {
+    if (this.state.type !== 106) {
       return false;
     }
     const containsEsc = this.state.containsEsc;
@@ -13546,7 +13604,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.finishNode(node, "TSConditionalType");
   }
   isAbstractConstructorSignature() {
-    return this.isContextual(120) && this.isLookaheadContextual("new");
+    return this.isContextual(121) && this.isLookaheadContextual("new");
   }
   tsParseNonConditionalType() {
     if (this.tsIsStartOfFunctionType()) {
@@ -13569,6 +13627,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       return this.match(71) ? this.tsParseTypeReference() : this.tsParseType();
     });
     this.expect(44);
+    this.state.canStartArrow = false;
     node.expression = this.parseMaybeUnary();
     return this.finishNode(node, "TSTypeAssertion");
   }
@@ -13602,7 +13661,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseInterfaceDeclaration(node, properties = {}) {
     if (this.hasFollowingLineBreak()) return null;
-    this.expectContextual(125);
+    this.expectContextual(126);
     if (properties.declare) node.declare = true;
     if (tokenIsIdentifier(this.state.type)) {
       node.id = this.parseIdentifier();
@@ -13626,7 +13685,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     node.typeAnnotation = this.tsInType(() => {
       node.typeParameters = this.tsTryParseTypeParameters(this.tsParseInOutModifiers);
       this.expect(25);
-      if (this.isContextual(110) && this.lookaheadCharCode() !== 46) {
+      if (this.isContextual(111) && this.lookaheadCharCode() !== 46) {
         const node2 = this.startNode();
         this.next();
         return this.finishNode(node2, "TSIntrinsicKeyword");
@@ -13695,7 +13754,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseEnumMember() {
     const node = this.startNode();
-    node.id = this.match(130) ? super.parseStringLiteral(this.state.value) : this.parseIdentifier(true);
+    node.id = this.match(131) ? super.parseStringLiteral(this.state.value) : this.parseIdentifier(true);
     if (this.eat(25)) {
       node.initializer = super.parseMaybeAssignAllowIn();
     }
@@ -13704,7 +13763,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   tsParseEnumDeclaration(node, properties = {}) {
     if (properties.const) node.const = true;
     if (properties.declare) node.declare = true;
-    this.expectContextual(122);
+    this.expectContextual(123);
     node.id = this.parseIdentifier();
     this.checkIdentifier(node.id, node.const ? 8971 : 8459);
     node.body = this.tsParseEnumBody();
@@ -13742,7 +13801,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.finishNode(node, "TSModuleDeclaration");
   }
   tsParseAmbientExternalModuleDeclaration(node) {
-    const isGlobal = this.isContextual(108);
+    const isGlobal = this.isContextual(109);
     if (isGlobal) {
       node.kind = "global";
       node.id = this.parseIdentifier();
@@ -13752,7 +13811,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         type,
         value
       } = this.state;
-      if (type === 130) {
+      if (type === 131) {
         node.id = super.parseStringLiteral(value);
       } else if (tokenIsIdentifier(type)) {
         this.raise(TSErrors.InlineModuleDeclarationMustUseString, this.state.startLoc);
@@ -13792,16 +13851,16 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.finishNode(node, "TSImportEqualsDeclaration");
   }
   tsIsExternalModuleReference() {
-    return this.isContextual(115) && this.lookaheadCharCode() === 40;
+    return this.isContextual(116) && this.lookaheadCharCode() === 40;
   }
   tsParseModuleReference() {
     return this.tsIsExternalModuleReference() ? this.tsParseExternalModuleReference() : this.tsParseEntityName(0);
   }
   tsParseExternalModuleReference() {
     const node = this.startNode();
-    this.expectContextual(115);
+    this.expectContextual(116);
     this.expect(6);
-    if (!this.match(130)) {
+    if (!this.match(131)) {
       this.unexpected();
     }
     node.expression = super.parseExprAtom();
@@ -13838,17 +13897,17 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       switch (startType) {
         case 64:
           node.declare = true;
-          return super.parseFunctionStatement(node, false, false);
+          return super.parseFunctionStatement(node, false, 2);
         case 76:
           node.declare = true;
           return this.parseClass(node, true, false);
-        case 122:
+        case 123:
           return this.tsParseEnumDeclaration(node, {
             declare: true
           });
-        case 108:
+        case 109:
           return this.tsParseAmbientExternalModuleDeclaration(node);
-        case 96:
+        case 97:
           if (this.state.containsEsc) {
             return;
           }
@@ -13863,14 +13922,14 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
             const: true,
             declare: true
           });
-        case 103:
+        case 104:
           if (this.isUsing()) {
             this.raise(TSErrors.InvalidModifierOnUsingDeclaration, this.state.startLoc, "declare");
             node.declare = true;
             return this.parseVarStatement(node, "using", true);
           }
           break;
-        case 92:
+        case 93:
           if (this.isAwaitUsing()) {
             this.raise(TSErrors.InvalidModifierOnAwaitUsingDeclaration, this.state.startLoc, "declare");
             node.declare = true;
@@ -13878,7 +13937,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
             return this.parseVarStatement(node, "await using", true);
           }
           break;
-        case 125: {
+        case 126: {
           const result = this.tsParseInterfaceDeclaration(node, {
             declare: true
           });
@@ -13896,23 +13955,23 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   tsParseDeclaration(node, type, next, decorators) {
     switch (type) {
-      case 120:
+      case 121:
         if (this.tsCheckLineTerminator(next) && (this.match(76) || tokenIsIdentifier(this.state.type))) {
           return this.tsParseAbstractDeclaration(node, decorators);
         }
         break;
-      case 123:
+      case 124:
         if (this.tsCheckLineTerminator(next)) {
           return this.tsParseAmbientExternalModuleDeclaration(node);
         }
         break;
-      case 124:
+      case 125:
         if (this.tsCheckLineTerminator(next) && tokenIsIdentifier(this.state.type)) {
           node.kind = "namespace";
           return this.tsParseNamespaceDeclaration(node);
         }
         break;
-      case 126:
+      case 127:
         if (this.tsCheckLineTerminator(next) && tokenIsIdentifier(this.state.type)) {
           return this.tsParseTypeAliasDeclaration(node);
         }
@@ -14123,7 +14182,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
           return this.finishCallExpression(node2, state.optionalChainMember);
         }
         const tokenType = this.state.type;
-        if (tokenType === 44 || tokenType === 48 || tokenType !== 6 && tokenType !== 89 && tokenType !== 116 && tokenCanStartExpression(tokenType) && !this.hasPrecedingLineBreak()) {
+        if (tokenType === 44 || tokenType === 48 || tokenType !== 6 && tokenType !== 90 && tokenType !== 117 && tokenCanStartExpression(tokenType) && !this.hasPrecedingLineBreak()) {
           return;
         }
         const node = this.startNodeAt(startLoc);
@@ -14160,7 +14219,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   parseExprOp(left, leftStartLoc, minPrec) {
     let isSatisfies;
-    if (tokenOperatorPrecedence(54) > minPrec && !this.hasPrecedingLineBreak() && (this.isContextual(89) || (isSatisfies = this.isContextual(116)))) {
+    if (tokenOperatorPrecedence(54) > minPrec && !this.hasPrecedingLineBreak() && (this.isContextual(90) || (isSatisfies = this.isContextual(117)))) {
       const node = this.startNodeAt(leftStartLoc);
       node.expression = left;
       node.typeAnnotation = this.tsInType(() => {
@@ -14190,7 +14249,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   isPotentialImportPhase(isExport) {
     if (super.isPotentialImportPhase(isExport)) return true;
-    if (this.isContextual(126)) {
+    if (this.isContextual(127)) {
       const ch = this.lookaheadCharCode();
       return isExport ? ch === 123 || ch === 42 : ch !== 61;
     }
@@ -14205,7 +14264,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
   }
   parseImport(node) {
-    if (this.match(130)) {
+    if (this.match(131)) {
       node.importKind = "value";
       if (this.scope.inTSNamespace) {
         this.raise(TSErrors.ImportInTSNamespace, node);
@@ -14220,7 +14279,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         this.raise(TSErrors.ImportInTSNamespace, node);
       }
       return result;
-    } else if (this.isContextual(126)) {
+    } else if (this.isContextual(127)) {
       const maybeDefaultIdentifier = this.parseMaybeImportPhase(node, false);
       if (this.lookaheadCharCode() === 61) {
         if (this.scope.inTSNamespace) {
@@ -14245,7 +14304,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       const nodeImportEquals = this.startNode();
       this.next();
       let maybeDefaultIdentifier = null;
-      if (this.isContextual(126) && this.isPotentialImportPhase(false)) {
+      if (this.isContextual(127) && this.isPotentialImportPhase(false)) {
         maybeDefaultIdentifier = this.parseMaybeImportPhase(nodeImportEquals, false);
       } else {
         nodeImportEquals.importKind = "value";
@@ -14266,9 +14325,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         this.raise(TSErrors.ExportAssignmentInTSNamespace, assign);
       }
       return this.finishNode(assign, "TSExportAssignment");
-    } else if (this.eatContextual(89)) {
+    } else if (this.eatContextual(90)) {
       const decl = node;
-      this.expectContextual(124);
+      this.expectContextual(125);
       decl.id = this.parseIdentifier();
       this.checkIdentifier(decl.id, 8201);
       this.semicolon();
@@ -14285,7 +14344,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
   }
   isAbstractClass() {
-    return this.isContextual(120) && this.isLookaheadContextual("class");
+    return this.isContextual(121) && this.isLookaheadContextual("class");
   }
   parseExportDefaultExpression() {
     if (this.isAbstractClass()) {
@@ -14294,7 +14353,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       cls.abstract = true;
       return this.parseClass(cls, true, true);
     }
-    if (this.match(125)) {
+    if (this.match(126)) {
       const result = this.tsParseInterfaceDeclaration(this.startNode());
       if (result) return result;
     }
@@ -14346,29 +14405,29 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
           }
           break;
         }
-        case 120:
-        case 121: {
+        case 121:
+        case 122: {
           if (this.nextTokenIsIdentifierAndNotTSRelationalOperatorOnSameLine()) {
             const token = this.state.type;
             const node = this.startNode();
             this.next();
-            const declaration = token === 121 ? this.tsTryParseDeclare(node) : this.tsParseAbstractDeclaration(node, decorators);
+            const declaration = token === 122 ? this.tsTryParseDeclare(node) : this.tsParseAbstractDeclaration(node, decorators);
             if (declaration) {
-              if (token === 121) {
+              if (token === 122) {
                 declaration.declare = true;
               }
               return declaration;
             } else {
-              node.expression = this.createIdentifier(this.startNodeAtNode(node), token === 121 ? "declare" : "abstract");
+              node.expression = this.createIdentifier(this.startNodeAtNode(node), token === 122 ? "declare" : "abstract");
               this.semicolon(false);
               return this.finishNode(node, "ExpressionStatement");
             }
           }
           break;
         }
-        case 122:
+        case 123:
           return this.tsParseEnumDeclaration(this.startNode());
-        case 108: {
+        case 109: {
           const nextCh = this.lookaheadCharCode();
           if (nextCh === 123) {
             const node = this.startNode();
@@ -14376,7 +14435,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
           }
           break;
         }
-        case 125: {
+        case 126: {
           const result = this.tsParseInterfaceDeclaration(this.startNode());
           if (result) {
             if (!allowDeclaration) {
@@ -14386,28 +14445,28 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
           }
           break;
         }
-        case 123: {
+        case 124: {
           if (this.nextTokenIsStringLiteralOnSameLine()) {
             const node = this.startNode();
             this.next();
-            return this.tsParseDeclaration(node, 123, false, decorators);
+            return this.tsParseDeclaration(node, 124, false, decorators);
           } else if (this.nextTokenIsIdentifierOnSameLine()) {
             this.raise(TSErrors.InlineModuleDeclarationMustUseString, this.state.startLoc);
             const node = this.startNode();
             this.next();
-            return this.tsParseDeclaration(node, 124, false, decorators);
+            return this.tsParseDeclaration(node, 125, false, decorators);
           }
           break;
         }
-        case 124: {
+        case 125: {
           if (this.nextTokenIsIdentifierOnSameLine()) {
             const node = this.startNode();
             this.next();
-            return this.tsParseDeclaration(node, 124, false, decorators);
+            return this.tsParseDeclaration(node, 125, false, decorators);
           }
           break;
         }
-        case 126: {
+        case 127: {
           if (this.nextTokenIsIdentifierOnSameLine()) {
             const node = this.startNode();
             if (!allowDeclaration) {
@@ -14434,7 +14493,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     });
   }
   tsIsStartOfStaticBlocks() {
-    return this.isContextual(102) && this.lookaheadCharCode() === 123;
+    return this.isContextual(103) && this.lookaheadCharCode() === 123;
   }
   parseClassMember(classBody, member, state) {
     this.tsParseModifiers(ClassMemberModifiers, TSErrors.InvalidModifierOnTypeParameterPositions, member, true);
@@ -14546,12 +14605,12 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return node;
   }
   parseExportDeclaration(node) {
-    if (!this.state.isAmbientContext && this.isContextual(121)) {
+    if (!this.state.isAmbientContext && this.isContextual(122)) {
       return this.tsInAmbientContext(() => this.parseExportDeclaration(node));
     }
     const startLoc = this.state.startLoc;
-    const isDeclare = this.eatContextual(121);
-    if (isDeclare && (this.isContextual(121) || !this.shouldParseExportDeclaration())) {
+    const isDeclare = this.eatContextual(122);
+    if (isDeclare && (this.isContextual(122) || !this.shouldParseExportDeclaration())) {
       throw this.raise(TSErrors.ExpectedAmbientAfterExportDeclare, this.state.startLoc);
     }
     const isIdentifier = tokenIsIdentifier(this.state.type);
@@ -14567,7 +14626,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return declaration;
   }
   parseClassId(node, isStatement, optionalId, bindingType) {
-    if ((!isStatement || optionalId) && this.isContextual(109)) {
+    if ((!isStatement || optionalId) && this.isContextual(110)) {
       node.id = null;
       return;
     }
@@ -14671,7 +14730,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         node.superTypeArguments = this.tsParseTypeArgumentsInExpression();
       }
     }
-    if (this.eatContextual(109)) {
+    if (this.eatContextual(110)) {
       node.implements = this.tsParseHeritageClause("implements");
     }
   }
@@ -14706,7 +14765,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     let state;
     let jsx2;
     let typeCast;
-    if (this.hasPlugin("jsx") && (this.match(138) || this.match(43))) {
+    if (this.hasPlugin("jsx") && (this.match(139) || this.match(43))) {
       state = this.state.clone();
       jsx2 = this.tryParse(() => super.parseMaybeAssign(refExpressionErrors, isParenItem), state);
       if (!jsx2.error) return jsx2.node;
@@ -15038,7 +15097,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     if (this.match(76)) {
       node.abstract = true;
       return this.maybeTakeDecorators(decorators, this.parseClass(node, true, false));
-    } else if (this.isContextual(125)) {
+    } else if (this.isContextual(126)) {
       if (!this.hasFollowingLineBreak()) {
         node.abstract = true;
         this.raise(TSErrors.NonClassMethodPropertyHasAbstractModifier, node);
@@ -15102,9 +15161,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   parseTypeOnlyImportSpecifier(node, isInTypeOnly) {
     let leftOfAs = node.imported;
     let hasTypeSpecifier = false;
-    if (this.isContextual(89)) {
+    if (this.isContextual(90)) {
       const firstAs = this.parseIdentifier();
-      if (this.isContextual(89)) {
+      if (this.isContextual(90)) {
         const secondAs = this.parseIdentifier();
         if (tokenIsKeywordOrIdentifier(this.state.type)) {
           hasTypeSpecifier = true;
@@ -15122,7 +15181,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
       hasTypeSpecifier = true;
       leftOfAs = this.parseIdentifier(true);
-      if (!this.isContextual(89)) {
+      if (!this.isContextual(90)) {
         this.checkReservedWord(leftOfAs.name, leftOfAs.start, true, true);
       }
     }
@@ -15131,14 +15190,14 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     node.imported = leftOfAs;
     node.importKind = hasTypeSpecifier ? "type" : "value";
-    this.checkIdentifier(node.local ??= this.eatContextual(89) ? this.parseIdentifier() : this.cloneIdentifier(node.imported), hasTypeSpecifier ? 4098 : 4096);
+    this.checkIdentifier(node.local ??= this.eatContextual(90) ? this.parseIdentifier() : this.cloneIdentifier(node.imported), hasTypeSpecifier ? 4098 : 4096);
   }
   parseTypeOnlyExportSpecifier(node, isInTypeOnly) {
     const local = node.local;
     let hasTypeSpecifier = false;
-    if (this.isContextual(89)) {
+    if (this.isContextual(90)) {
       const firstAs = this.parseIdentifier();
-      if (this.isContextual(89)) {
+      if (this.isContextual(90)) {
         const secondAs = this.parseIdentifier();
         if (tokenIsKeywordOrIdentifier(this.state.type)) {
           hasTypeSpecifier = true;
@@ -15161,7 +15220,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       this.raise(TSErrors.TypeModifierIsUsedInTypeExports, local);
     }
     node.exportKind = hasTypeSpecifier ? "type" : "value";
-    node.exported ??= this.eatContextual(89) ? this.parseModuleExportName() : this.cloneIdentifier(node.local);
+    node.exported ??= this.eatContextual(90) ? this.parseModuleExportName() : this.cloneIdentifier(node.local);
   }
   fillOptionalPropertiesForTSESLint(node) {
     switch (node.type) {
@@ -15385,13 +15444,13 @@ var PlaceholderErrorTemplates = {
 var PlaceholderErrors = ParseErrorEnum`placeholders`(PlaceholderErrorTemplates);
 var placeholders = (superClass) => class PlaceholdersParserMixin extends superClass {
   parsePlaceholder(expectedNode) {
-    if (this.match(129)) {
+    if (this.match(130)) {
       const node = this.startNode();
       this.next();
       this.assertNoSpace();
       node.name = super.parseIdentifier(true);
       this.assertNoSpace();
-      this.expect(129);
+      this.expect(130);
       return this.finishPlaceholder(node, expectedNode);
     }
   }
@@ -15405,7 +15464,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
   }
   getTokenFromCode(code2) {
     if (code2 === 37 && this.input.charCodeAt(this.state.pos + 1) === 37) {
-      this.finishOp(129, 2);
+      this.finishOp(130, 2);
     } else {
       super.getTokenFromCode(code2);
     }
@@ -15461,15 +15520,15 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
     if (node.label?.type === "Placeholder") return;
     super.verifyBreakContinue(node, isBreak);
   }
-  parseExpressionStatement(node, expr) {
+  parseExpressionStatement(node, expr, flags) {
     if (expr.type !== "Placeholder" || expr.extra?.parenthesized) {
-      return super.parseExpressionStatement(node, expr);
+      return super.parseExpressionStatement(node, expr, flags);
     }
     if (this.match(10)) {
       const stmt = node;
       stmt.label = this.finishPlaceholder(expr, "Identifier");
       this.next();
-      stmt.body = super.parseStatementOrSloppyAnnexBFunctionDeclaration();
+      stmt.body = flags & 8 ? super.parseStatementOrSloppyAnnexBFunctionDeclaration(true) : super.parseStatement();
       return this.finishNode(stmt, "LabeledStatement");
     }
     this.semicolon();
@@ -15489,7 +15548,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
     const oldStrict = this.state.strict;
     const placeholder = this.parsePlaceholder("Identifier");
     if (placeholder) {
-      if (this.match(77) || this.match(129) || this.match(2)) {
+      if (this.match(77) || this.match(130) || this.match(2)) {
         node.id = placeholder;
       } else if (optionalId || !isStatement) {
         node.id = null;
@@ -15509,7 +15568,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
     const placeholder = this.parsePlaceholder("Identifier");
     if (!placeholder) return super.parseExport(node, decorators);
     const node2 = node;
-    if (!this.isContextual(94) && !this.match(8)) {
+    if (!this.isContextual(95) && !this.match(8)) {
       node2.specifiers = [];
       node2.source = null;
       node2.declaration = this.finishPlaceholder(placeholder, "Declaration");
@@ -15525,7 +15584,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
     if (this.match(61)) {
       const next = this.nextTokenStart();
       if (this.isUnparsedContextual(next, "from")) {
-        if (this.input.startsWith(tokenLabelName(129), this.nextTokenStartSince(next + 4))) {
+        if (this.input.startsWith(tokenLabelName(130), this.hasPlugin("exportDefaultFrom") ? this.nextTokenStartSince(next + 4) : this.nextTokenInLineStartSince(next + 4))) {
           return true;
         }
       }
@@ -15544,7 +15603,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
     const placeholder = this.parsePlaceholder("Identifier");
     if (!placeholder) return super.parseImport(node);
     node.specifiers = [];
-    if (!this.isContextual(94) && !this.match(8)) {
+    if (!this.isContextual(95) && !this.match(8)) {
       node.source = this.finishPlaceholder(placeholder, "StringLiteral");
       this.semicolon();
       return this.finishNode(node, "ImportDeclaration");
@@ -15556,7 +15615,7 @@ var placeholders = (superClass) => class PlaceholdersParserMixin extends superCl
       const hasStarImport = this.maybeParseStarImportSpecifier(node);
       if (!hasStarImport) this.parseNamedImportSpecifiers(node);
     }
-    this.expectContextual(94);
+    this.expectContextual(95);
     node.source = this.parseImportSource();
     this.semicolon();
     return this.finishNode(node, "ImportDeclaration");
