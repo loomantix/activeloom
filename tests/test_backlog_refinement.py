@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import threading
 from datetime import timezone
@@ -598,7 +599,7 @@ def apply_mod() -> ModuleType:
 
 REPO_LABELS = {
     "dev: agent", "agent: refined", "agent-bail: stale", "agent-bail: epic",
-    "agent-bail: open-decision", "agent-bail: sensitive-domain", "needs: grill",
+    "agent-bail: open-decision", "agent-bail: spec-gap", "agent-bail: sensitive-domain", "needs: grill",
     "needs: product-grill", "status: blocked", "release: ship", *PRIORITIES.split(", "),
 }
 PRIORITY_TUPLE = tuple(PRIORITIES.split(", "))
@@ -1356,11 +1357,11 @@ class ExistingChildRemote:
 def _existing_child_setup(
     mod: ModuleType, monkeypatch: pytest.MonkeyPatch, directory: Path,
     *, mode: str = 'edit', auto: str = 'ask', flags: tuple[str, ...] = ('--confirm-summary', '--confirm-handback'),
-    child_verdict: str = 'exclude',
+    child_verdict: str = 'exclude', bail_labels: list[str] | None = None, carry: bool = False,
 ) -> tuple[dict[str, Any], Path, Path, ExistingChildRemote]:
     """Bind a new plan to a previous private split receipt and native link."""
     original = directory / 'original.json'
-    child_labels = ['dev: agent'] if child_verdict == 'ready' else ['agent-bail: credential-gate']
+    child_labels = ['dev: agent'] if child_verdict == 'ready' else bail_labels or ['agent-bail: credential-gate']
     original_assessment = _entry(verdict=child_verdict, add_labels=child_labels,
                                  body='Old child specification.' if child_verdict == 'ready' else None)
     original_assessment.pop('number')
@@ -1381,6 +1382,8 @@ def _existing_child_setup(
     child = _entry(number=102, verdict=child_verdict, add_labels=child_labels, handback_parent=101,
                    body='Revised evidence specification; approval still owed.\n\n' + marker + '\n',
                    expected_body_sha256=hashlib.sha256(bodies[102].encode()).hexdigest())
+    if carry:
+        child.update(body=None, comment=None)
     plan = {'issues': [parent, child]}
     path = directory / 'follow-up.json'
     path.write_text(json.dumps(plan))
@@ -1442,7 +1445,7 @@ def test_existing_child_handback_rejects_malformed_parent_bindings(
     {'handback_parent': 999}, {'handback_parent': True}, {'handback_parent': 102},
     {'body': ''}, {'expected_body_sha256': None},
     {'verdict': 'ready', 'add_labels': ['dev: agent', 'priority: low']},
-    {'verdict': 'exclude', 'add_labels': ['agent-bail: spec-gap']},
+    {'verdict': 'exclude', 'add_labels': ['agent-bail: stale']},
     {'add_labels': ['agent-bail: credential-gate', 'priority: low']},
     {'remove_labels': ['priority: high']}, {'decision_comment': _decision()},
 ])
@@ -1644,3 +1647,391 @@ def test_existing_child_handback_rejects_scope_expansion_and_cycles(
         other = dict(plan['issues'][0], number=103)
         plan['issues'].append(other)
     assert apply_mod.validate(plan, REPO_LABELS | {'agent-bail: credential-gate'}, PRIORITY_TUPLE)
+
+
+CARRY_LABELS = REPO_LABELS | {'agent-bail: credential-gate', 'agent-bail: grill-review', 'needs: human'}
+GRILL_BAILS = ['agent-bail: epic', 'agent-bail: open-decision', 'agent-bail: spec-gap']
+PENDING_STATES = [
+    ['agent-bail: open-decision', 'needs: grill'],
+    ['agent-bail: open-decision', 'needs: product-grill'],
+    ['agent-bail: spec-gap', 'needs: grill'],
+    ['agent-bail: epic', 'needs: grill'],
+]
+
+
+@pytest.mark.parametrize('bail', GRILL_BAILS)
+@pytest.mark.parametrize('mode', ['edit', 'suggest'])
+def test_later_pass_rewrites_a_grill_class_child_preserving_its_bail(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bail: str, mode: str
+) -> None:
+    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, mode=mode, bail_labels=[bail])
+    old_body, old_labels = remote.issues[102]['body'], remote.issues[102]['labels'][:]
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE) == []
+    assert apply_mod.main() == 0
+    assert remote.issues[102]['labels'] == old_labels
+    assert remote.issues[102]['body'] == (plan['issues'][1]['body'] if mode == 'edit' else old_body)
+    assert remote.mutations[-1] == (101, 'comment')
+    assert json.loads(Path(str(path) + '.existing-handback.json').read_text())['done'] == [102, 101]
+
+
+@pytest.mark.parametrize('labels', [[bail] for bail in GRILL_BAILS] + PENDING_STATES)
+def test_no_change_carry_writes_nothing_to_the_child_and_retries_exactly(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, labels: list[str]
+) -> None:
+    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=labels, carry=True)
+    before = json.dumps(remote.issues[102])
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE) == []
+    assert apply_mod.main() == 0
+    assert json.dumps(remote.issues[102]) == before
+    assert remote.mutations == [(101, 'comment')]
+    assert apply_mod.main() == 0
+    assert remote.mutations == [(101, 'comment')]
+    assert json.loads(Path(str(path) + '.existing-handback.json').read_text())['done'] == [102, 101]
+
+
+def test_no_change_carry_treats_omitted_body_and_comment_as_null(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, path, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    del plan['issues'][1]['body'], plan['issues'][1]['comment']
+    path.write_text(json.dumps(plan))
+    assert apply_mod.main() == 0
+    assert remote.mutations == [(101, 'comment')]
+
+
+@pytest.mark.parametrize('body,comment', [('Revised.', 'Backlog refinement: revised.'), ('Revised.', None),
+                                          (None, 'Backlog refinement: note.')])
+@pytest.mark.parametrize('mode', ['edit', 'suggest'])
+def test_child_with_a_pending_interview_refuses_a_rewrite_or_comment_and_names_the_owed_line(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    mode: str, body: str | None, comment: str | None,
+) -> None:
+    plan, path, _, remote = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path, mode=mode, bail_labels=PENDING_STATES[0], carry=True)
+    plan['issues'][1].update(body=body, comment=comment)
+    path.write_text(json.dumps(plan))
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+    err = capsys.readouterr().err
+    if comment is None and body is not None:
+        assert 'comment is required' in err
+    else:
+        assert 'Owed to #102: <change>' in err
+
+
+def test_owed_line_continues_the_handback_and_stays_on_the_parent_record(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, path, _, remote = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    decision = 'Owed to #102: use the confirmed retention period.\n' + plan['issues'][0]['decision_comment']
+    plan['issues'][0]['decision_comment'] = decision
+    remote.issues[101]['comments'][0]['body'] = decision
+    path.write_text(json.dumps(plan))
+    before = json.dumps(remote.issues[102])
+    assert apply_mod.main() == 0
+    assert json.dumps(remote.issues[102]) == before
+    assert remote.issues[101]['comments'][0]['body'].startswith('Owed to #102: ')
+
+
+@pytest.mark.parametrize('owed', ['Owed to #999: change.', 'Owed to #101: change.'])
+def test_owed_line_must_name_a_carried_child_of_this_parent(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owed: str
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    plan['issues'][0]['decision_comment'] = f"{owed}\n{plan['issues'][0]['decision_comment']}"
+    assert any('Owed to' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+def test_owed_line_cannot_defer_a_child_with_no_pending_interview(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=[GRILL_BAILS[1]], carry=True)
+    plan['issues'][0]['decision_comment'] = f"Owed to #102: change.\n{plan['issues'][0]['decision_comment']}"
+    assert any('Owed to #102' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+def _several_children_setup(
+    mod: ModuleType, monkeypatch: pytest.MonkeyPatch, directory: Path, *, rewrite: frozenset[int] = frozenset(),
+) -> tuple[dict[str, Any], ExistingChildRemote]:
+    """One parent with one child per state: 102 epic, 103 open-decision, 104 spec-gap, 105 pending."""
+    states = {102: ['agent-bail: epic'], 103: ['agent-bail: open-decision'], 104: ['agent-bail: spec-gap'],
+              105: ['agent-bail: open-decision', 'needs: grill']}
+    original = directory / 'original.json'
+    children = [{'key': f'part-{n}', 'title': f'Part {n}', 'body': f'Part {n}.',
+                 'assessment': {k: v for k, v in _entry(add_labels=labels).items() if k != 'number'}}
+                for n, labels in states.items()]
+    split = {'issues': [_entry(number=101, add_labels=['agent-bail: epic'], children=children,
+                               decision_comment=_decision('split'))]}
+    original.write_text(json.dumps(split))
+    Path(str(original) + '.applied.json').write_text('[101]')
+    Path(str(original) + '.children.json').write_text(json.dumps({
+        'plan_sha256': mod.plan_digest(split),
+        'children': {f'101:part-{n}': {'nonce': 'a' * 32, 'number': n} for n in states},
+    }))
+    bodies = {101: 'Coordination contract.\n'}
+    entries = [_entry(number=101, add_labels=['agent-bail: epic'], decision_comment=_decision(),
+                      existing_children=list(states), expected_body_sha256=hashlib.sha256(bodies[101].encode()).hexdigest())]
+    for n, labels in states.items():
+        marker = f'<!-- refinement-child parent: 101; key: part-{n}; nonce: {"a" * 32} -->'
+        bodies[n] = f'Part {n}.\n\n{marker}\n'
+        changed = n in rewrite
+        entries.append(_entry(number=n, add_labels=labels, handback_parent=101,
+                              body=f'Revised part {n}.\n\n{marker}\n' if changed else None,
+                              comment='Backlog refinement: revised, still excluded.' if changed else None,
+                              expected_body_sha256=hashlib.sha256(bodies[n].encode()).hexdigest()))
+    plan = {'issues': entries}
+    path = directory / 'follow-up.json'
+    path.write_text(json.dumps(plan))
+    issues: dict[int, dict[str, Any]] = {e['number']: {'state': 'OPEN', 'body': bodies[e['number']], 'assignees': [],
+                            'labels': [{'name': x} for x in ['agent: refined', *e['add_labels']]],
+                            'comments': []} for e in entries}
+    issues[101]['comments'].append({'body': entries[0]['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'})
+    remote = ExistingChildRemote(issues, Path(str(path) + '.existing-handback.json'))
+    remote.linked = list(states)
+    monkeypatch.setattr(mod, 'gh', remote)
+    monkeypatch.setattr(mod, 'repo_root', lambda: str(directory))
+    monkeypatch.setattr(mod, 'load_config', lambda root: _config(mod))
+    monkeypatch.setattr('sys.argv', ['apply-plan.py', str(path), '--apply', '--confirm-summary',
+                                     '--confirm-handback', '--existing-child-plan', str(original)])
+    return plan, remote
+
+
+def test_parent_with_several_children_carries_them_all_unchanged(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, remote = _several_children_setup(apply_mod, monkeypatch, tmp_path)
+    before = {n: json.dumps(remote.issues[n]) for n in (102, 103, 104, 105)}
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE) == []
+    assert apply_mod.main() == 0
+    assert {n: json.dumps(remote.issues[n]) for n in before} == before
+    assert remote.mutations == [(101, 'comment')]
+
+
+def test_parent_with_several_children_rewrites_those_it_changes_and_carries_the_pending_one(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, remote = _several_children_setup(apply_mod, monkeypatch, tmp_path, rewrite=frozenset({102, 103, 104}))
+    entries = {e['number']: e for e in plan['issues']}
+    labels = {n: remote.issues[n]['labels'][:] for n in (102, 103, 104, 105)}
+    pending = json.dumps(remote.issues[105])
+    assert apply_mod.main() == 0
+    assert all(remote.issues[n]['body'] == entries[n]['body'] for n in (102, 103, 104))
+    assert {n: remote.issues[n]['labels'] for n in labels} == labels
+    assert json.dumps(remote.issues[105]) == pending
+    assert not any(n == 105 for n, _ in remote.mutations)
+    assert remote.mutations[-1] == (101, 'comment')
+
+
+def test_parent_with_several_children_cannot_slip_a_rewrite_past_the_pending_one(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, remote = _several_children_setup(apply_mod, monkeypatch, tmp_path, rewrite=frozenset({102, 105}))
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+
+
+def _carry_with_unrelated_child(
+    mod: ModuleType, plan: dict[str, Any], path: Path, remote: ExistingChildRemote, marker_body: str,
+) -> None:
+    """Point the plan at #103: linked natively, carrying the given body, with no private proof."""
+    remote.issues[103] = {**json.loads(json.dumps(remote.issues[102])), 'body': marker_body}
+    remote.linked = [102, 103]
+    entry = {**plan['issues'][1], 'number': 103,
+             'expected_body_sha256': hashlib.sha256(marker_body.encode()).hexdigest()}
+    plan['issues'][0]['existing_children'] = [103]
+    plan['issues'][1] = entry
+    path.write_text(json.dumps(plan))
+    del remote.issues[102]
+
+
+@pytest.mark.parametrize('form', ['carry-pending', 'carry-bail', 'rewrite-bail'])
+@pytest.mark.parametrize('fault', ['unrelated-child', 'copied-public-marker', 'closed-child', 'assigned-child',
+                                   'body-drift', 'parent-unlinked', 'other-parent-proof', 'missing-proof',
+                                   'unfinished-split', 'needs-added', 'needs-removed', 'needs-swapped',
+                                   'bail-changed', 'parent-pending-interview'])
+def test_chain_child_refusals_still_hold_for_carried_grill_class_children(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    form: str, fault: str,
+) -> None:
+    pending = form == 'carry-pending'
+    plan, path, original, remote = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path,
+        bail_labels=PENDING_STATES[0] if pending else [GRILL_BAILS[1]], carry=form != 'rewrite-bail')
+    labels: list[dict[str, str]] = remote.issues[102]['labels']
+    public_marker = re.findall(r'<!-- refinement-child.*?-->', remote.issues[102]['body'])[0]
+    if fault == 'unrelated-child':
+        _carry_with_unrelated_child(apply_mod, plan, path, remote, 'Someone else\'s work.\n')
+    elif fault == 'copied-public-marker':
+        _carry_with_unrelated_child(apply_mod, plan, path, remote, f'Someone else\'s work.\n\n{public_marker}\n')
+    elif fault == 'closed-child':
+        remote.issues[102]['state'] = 'CLOSED'
+    elif fault == 'assigned-child':
+        remote.issues[102]['assignees'] = [{'login': 'owner'}]
+    elif fault == 'body-drift':
+        remote.issues[102]['body'] += 'Concurrent edit.\n'
+    elif fault == 'parent-unlinked':
+        remote.linked = []
+    elif fault == 'other-parent-proof':
+        recovery = Path(str(original) + '.children.json')
+        split = json.loads(original.read_text())
+        split['issues'][0]['number'] = 201
+        original.write_text(json.dumps(split))
+        record = json.loads(recovery.read_text())
+        record['plan_sha256'] = apply_mod.plan_digest(split)
+        record['children'] = {'201:evidence': record['children']['101:evidence']}
+        recovery.write_text(json.dumps(record))
+        Path(str(original) + '.applied.json').write_text('[201]')
+    elif fault == 'missing-proof':
+        Path(str(original) + '.children.json').unlink()
+    elif fault == 'unfinished-split':
+        Path(str(original) + '.applied.json').write_text('[]')
+    elif fault == 'needs-added':
+        labels.append({'name': 'needs: product-grill'})
+    elif fault == 'needs-removed':
+        labels[:] = [x for x in labels if not x['name'].startswith('needs:')]
+        if not pending:
+            labels.append({'name': 'needs: grill'})
+    elif fault == 'needs-swapped':
+        labels[:] = [x for x in labels if not x['name'].startswith('needs:')] + [{'name': 'needs: product-grill'}]
+    elif fault == 'bail-changed':
+        labels[:] = [x for x in labels if not x['name'].startswith('agent-bail:')] + [{'name': 'agent-bail: spec-gap'}]
+    else:
+        remote.issues[101]['labels'].append({'name': 'needs: grill'})
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+    expected = {
+        'unrelated-child': 'private creation proof', 'copied-public-marker': 'private creation proof',
+        'closed-child': 'existing handback requires OPEN', 'assigned-child': 'existing handback requires OPEN',
+        'body-drift': 'body changed outside', 'parent-unlinked': 'native parent-child relationship',
+        'other-parent-proof': 'private creation proof', 'missing-proof': 'Could not read',
+        'unfinished-split': 'completed original split', 'needs-added': 'existing handback requires OPEN',
+        'needs-removed': 'existing handback requires OPEN', 'needs-swapped': 'existing handback requires OPEN',
+        'bail-changed': 'existing handback requires OPEN', 'parent-pending-interview': 'existing handback requires OPEN',
+    }[fault]
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('labels', [['agent-bail: credential-gate'], ['agent-bail: grill-review'], ['agent-bail: stale'],
+                                    ['agent-bail: credential-gate', 'needs: grill'],
+                                    ['agent-bail: open-decision', 'needs: human'],
+                                    ['agent-bail: open-decision', 'agent-bail: grill-review']])
+def test_no_change_carry_stays_closed_outside_the_named_states(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, labels: list[str]
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=labels, carry=True)
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE)
+
+
+def test_no_change_carry_stays_closed_for_a_ready_child(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, child_verdict='ready', carry=True)
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE)
+
+
+@pytest.mark.parametrize('labels', [['agent-bail: credential-gate'], ['agent-bail: grill-review']])
+def test_other_bails_keep_their_replacement_body_handback(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, labels: list[str]
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=labels)
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE) == []
+
+
+def test_hold_label_beside_a_grill_bail_still_refuses_at_preflight(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=[GRILL_BAILS[1]], carry=True)
+    remote.issues[102]['labels'].append({'name': 'agent-bail: grill-review'})
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert remote.mutations == []
+
+
+class SplitThenHandbackRemote(ExistingChildRemote):
+    """Adds the creation surface so one parent can take a split and a later handback."""
+
+    def __init__(self, issues: dict[int, dict[str, Any]], journal: Path) -> None:
+        super().__init__(issues, journal)
+        self.linked = []
+
+    def __call__(self, args: list[str], *, stdin: str | None = None) -> str:
+        if args[:2] == ['issue', 'list']:
+            return json.dumps([{'number': n, 'body': i['body']} for n, i in self.issues.items()])
+        if args == ['api', 'repos/{owner}/{repo}/issues/101/sub_issues', '--paginate', '--slurp']:
+            return json.dumps([[{'id': n, 'number': n} for n in self.linked]])
+        if args[:2] == ['api', 'repos/{owner}/{repo}/issues'] and '--method' in args:
+            number = max(self.issues) + 1
+            self.issues[number] = {'state': 'OPEN', 'body': json.loads(stdin or '{}')['body'], 'assignees': [],
+                                   'labels': [], 'comments': []}
+            self.mutations.append((number, 'create'))
+            return json.dumps({'id': number, 'number': number})
+        if args[:2] == ['api', 'repos/{owner}/{repo}/issues/101/sub_issues'] and '--method' in args:
+            self.linked.append(json.loads(stdin or '{}')['sub_issue_id'])
+            return ''
+        if args[0] == 'api' and args[1].startswith('repos/{owner}/{repo}/issues/'):
+            number = int(args[1].rsplit('/', 1)[1])
+            return json.dumps({'id': number, 'number': number, 'body': self.issues[number]['body']})
+        if args[:2] == ['issue', 'edit'] and '--body-file' not in args:
+            labels = self.issues[int(args[2])]['labels']
+            for name in args[args.index('--add-label') + 1].split(',') if '--add-label' in args else []:
+                labels.append({'name': name})
+            removed = args[args.index('--remove-label') + 1].split(',') if '--remove-label' in args else []
+            labels[:] = [x for x in labels if x['name'] not in removed]
+            self.mutations.append((int(args[2]), 'labels'))
+            return ''
+        return super().__call__(args, stdin=stdin)
+
+
+@pytest.mark.parametrize('labels', [[bail] for bail in GRILL_BAILS] + [PENDING_STATES[0]])
+def test_split_then_existing_children_handback_on_one_parent_does_not_deadlock(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, labels: list[str]
+) -> None:
+    """Two real handbacks: the split's own output is what the later pass carries."""
+    split_decision = _decision('split')
+    assessment = {k: v for k, v in _entry(add_labels=labels, comment='Backlog refinement: child excluded.').items()
+                  if k != 'number'}
+    split = {'issues': [_entry(number=101, add_labels=['agent-bail: epic'], decision_comment=split_decision,
+                               children=[{'key': 'part', 'title': 'Bounded part', 'body': 'Part spec.',
+                                          'assessment': assessment}])]}
+    original = tmp_path / 'split.json'
+    original.write_text(json.dumps(split))
+    remote = SplitThenHandbackRemote(
+        {101: {'state': 'OPEN', 'body': 'Coordination contract.\n', 'assignees': [],
+               'labels': [{'name': 'agent: refined'}],
+               'comments': [{'body': split_decision, 'createdAt': '2026-01-02T00:00:00Z'}]}},
+        Path(str(tmp_path / 'follow-up.json') + '.existing-handback.json'))
+    monkeypatch.setattr(apply_mod, 'gh', remote)
+    monkeypatch.setattr(apply_mod, 'repo_root', lambda: str(tmp_path))
+    monkeypatch.setattr(apply_mod, 'load_config', lambda root: _config(apply_mod))
+    monkeypatch.setattr('sys.argv', ['apply-plan.py', str(original), '--apply', '--confirm-summary', '--confirm-handback'])
+    assert apply_mod.main() == 0
+    child = next(n for n in remote.issues if n != 101)
+    assert remote.linked == [child]
+    settled = _decision() + '\n'
+    remote.issues[101]['comments'].append({'body': settled, 'createdAt': '2026-01-04T00:00:00Z'})
+    parent = _entry(number=101, add_labels=['agent-bail: epic'], decision_comment=settled, existing_children=[child],
+                    comment='Backlog refinement: settled coordination.',
+                    expected_body_sha256=hashlib.sha256(remote.issues[101]['body'].encode()).hexdigest())
+    carried = _entry(number=child, add_labels=labels, handback_parent=101, body=None, comment=None,
+                     expected_body_sha256=hashlib.sha256(remote.issues[child]['body'].encode()).hexdigest())
+    follow_up = tmp_path / 'follow-up.json'
+    follow_up.write_text(json.dumps({'issues': [parent, carried]}))
+    before = json.dumps(remote.issues[child])
+    mutations = len(remote.mutations)
+    monkeypatch.setattr('sys.argv', ['apply-plan.py', str(follow_up), '--apply', '--confirm-summary',
+                                     '--confirm-handback', '--existing-child-plan', str(original)])
+    assert apply_mod.main() == 0
+    assert json.dumps(remote.issues[child]) == before
+    assert remote.mutations[mutations:] == [(101, 'comment')]
+
+
+@pytest.mark.parametrize('skill', ['grill', 'backlog-refinement'])
+def test_skill_text_names_the_bails_a_later_pass_preserves(skill: str) -> None:
+    text = ' '.join((REPO_ROOT / 'prompts/skills' / skill / 'SKILL.md').read_text().split())
+    assert all(bail in text for bail in ('agent-bail: epic', '`open-decision`', '`spec-gap`'))
+    assert 'Owed to #<child>: <change>' in text
+    assert 'out of date' in text

@@ -155,7 +155,21 @@ Done when every approved decision has a posted record and each plan entry has an
 ### Existing children in a later pass
 
 Use a dedicated plan containing only coordination parents and owned children
-being updated. It does not create, adopt, close or change a child's ready/exclusion state. Example schema (each child preserves its existing `ready` + `["dev: agent"]` or `exclude` + non-interview bail verdict):
+being carried. It does not create, adopt, close or change a child's ready/exclusion state, and it never starts or removes an interview. Each child preserves its existing verdict and labels:
+
+| Child's current state                                                      | Later pass                                                                   |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `ready` (`dev: agent`)                                                     | Replacement body.                                                            |
+| `agent-bail: epic`, `open-decision` or `spec-gap`, no `needs:` label       | Replacement body, or a no-change carry when the pass changes nothing for it. |
+| One of those three bails with `needs: grill` or `needs: product-grill`     | No-change carry only; a rewrite is refused.                                  |
+| Any other bail, including the hold label on its own                        | Replacement body.                                                            |
+| `agent-bail: stale`, or more than one bail                                 | Refused.                                                                     |
+
+A **no-change carry** sets both `"body": null` and `"comment": null`, and keeps `add_labels` equal to the child's current bail and any `needs:` label. The applier checks the same proof, links, body hash and state, then writes nothing to that child; a new refinement comment would displace its queued interview question.
+
+**A child with a pending interview keeps its body until that interview runs.** If the pass changes something it carries, record each change in the parent's decision comment on its own line, `Owed to #<child>: <change>`, and continue the handback. An owed line naming anything other than a carried child of that parent with a pending interview is refused. The child's body may be out of date until then: its reader learns that from the `Owed to #<child>:` lines in its parent's latest decision comment, reached through the native sub-issue link. The child's interview takes those lines as agenda, and its own handback applies them.
+
+Example schema:
 
 ```json
 {
@@ -168,8 +182,8 @@ being updated. It does not create, adopt, close or change a child's ready/exclus
       "comment": "Backlog refinement: settled coordination; child 102 remains excluded.",
       "body": null,
       "close_reason": null,
-      "decision_comment": "Confirmed contract; evidence remains owed by child 102.\n\n<!-- grill-decision kind: product-grill; outcome: settled; next: refine -->",
-      "existing_children": [102],
+      "decision_comment": "Confirmed contract; evidence remains owed by child 102.\nOwed to #103: use the confirmed retention period.\n\n<!-- grill-decision kind: product-grill; outcome: settled; next: refine -->",
+      "existing_children": [102, 103],
       "expected_body_sha256": "<sha256 of current parent body>"
     },
     {
@@ -179,6 +193,17 @@ being updated. It does not create, adopt, close or change a child's ready/exclus
       "remove_labels": [],
       "comment": "Backlog refinement: revised evidence specification, still excluded.",
       "body": "<complete approved replacement, retaining the exact child marker>",
+      "close_reason": null,
+      "handback_parent": 101,
+      "expected_body_sha256": "<sha256 of current child body>"
+    },
+    {
+      "number": 103,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: open-decision", "needs: grill"],
+      "remove_labels": [],
+      "comment": null,
+      "body": null,
       "close_reason": null,
       "handback_parent": 101,
       "expected_body_sha256": "<sha256 of current child body>"
@@ -197,8 +222,9 @@ a receipt or duplicate a child.
 
 Preview the exact new plan. This path always requires `--confirm-summary` and
 `--confirm-handback`, even with `grill-handback: auto`. Before any write, every
-participant must be OPEN, unassigned, still carry its current ready or non-interview
-bail state and have no pending interview label. Verify the parent's exact posted
+participant must be OPEN, unassigned, still carry its current ready or bail state
+and have exactly the `needs:` label its entry declares; a parent declares none.
+Verify the parent's exact posted
 current settled/refine decision. Body hashes cover exact UTF-8 text; preserve all
 child markers in the replacement. Priority, assignment, ready/exclusion state and
 issue state stay unchanged. Unresolved parent questions require their genuine next

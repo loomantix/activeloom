@@ -146,10 +146,18 @@ parent still owes from work owned by its children. A genuinely settled parent
 can use `settled; next: refine` and retain its epic exclusion through refinement's
 explicit existing-child handback. Its existing ready or excluded children can
 receive approved specification updates while preserving their current
-ready/exclusion state. Use original private split proof,
-matching native links and exact body hashes; always confirm the full existing-child
-preview, including in auto mode. Missing evidence, interviews or proof remain
-blocks, never invented readiness or a duplicate split.
+ready/exclusion state, including `agent-bail: epic`, `open-decision` and `spec-gap`,
+but not `stale`. A child with a pending `needs: grill` or `needs: product-grill`
+keeps its label, verdict and body, and you do not start its interview. Record any
+change it needs in the parent's decision comment as `Owed to #<child>: <change>`,
+and the handback continues. Until that interview runs the child's body may be out
+of date; a reader learns that from the parent's owed line. When your session's
+issue is such a child, take the `Owed to` lines naming it in its parent's latest
+decision comment as agenda, and apply them in your own handback. Use original
+private split proof, matching native links and exact body hashes; always confirm
+the full existing-child preview, including in auto mode. Missing evidence, a parent's
+unresolved interview or missing proof remain blocks, never invented readiness or a
+duplicate split.
 
 Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
 
