@@ -59,6 +59,11 @@ describe('package.json pnpm overrides', () => {
       overrides('1.0.1', 'example-lib@2'),
     ],
     [
+      'unchanged selector',
+      overrides('1.0.0', 'example-lib@1'),
+      overrides('1.0.1', 'example-lib@1'),
+    ],
+    [
       'selector value',
       overrides('1.0.0', 'parent>example-lib'),
       overrides('1.0.1', 'parent>example-lib'),
