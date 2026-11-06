@@ -330,7 +330,8 @@ Next:
   A fix invalidates only the attestations naming the superseded head; an engine
   that already attested this head does not re-run.
   Mark ready only after verify-coverage passes at the exact head, that round
-  produced no material fix, and every local-review thread is resolved.
+  has no material fix awaiting an independent non-material pass, and every
+  local-review thread is resolved.
 ```
 
 A clean convergence pass returns to the controller for remaining exact-head

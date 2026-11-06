@@ -220,9 +220,9 @@ than a two-engine one; a whole-round restart would spend passes re-confirming a
 commit that had already been read cold.
 
 A round is complete when every declared reviewer holds an attestation at the
-current head. Convergence additionally requires that the round produced no
-material fix and that every local-review thread carries a disposition reply and
-is resolved.
+current head. Convergence additionally requires a later non-material pass by a
+different engine after the last material fix, if any, and that every
+local-review thread carries a disposition reply and is resolved.
 
 ## Establish the PR boundary
 
@@ -512,8 +512,9 @@ nothing to an already deep backlog.
 
 The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
 round 1 is adversarial, and round 2 runs only if round 1 made a material fix, in
-convergence mode. At both tiers, stop as soon as a complete round produces no
-material fix — the cap is a ceiling, not a target.
+convergence mode. At both tiers, stop as soon as every participant covers the
+current head and any material fix has a later independent non-material pass.
+A clean first cycle is enough — the cap is a ceiling, not a target.
 
 Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
@@ -1115,7 +1116,9 @@ Run the relay until all of the following hold, then mark the PR ready:
 
 1. `verify-coverage` passes at the exact current head — a roster is declared and
    every declared reviewer holds an attestation naming that head.
-2. The round that produced those attestations contained no material fix.
+2. After the last material fix, if any, a different engine completed a clean or
+   minor pass at the current head. The fixing engine's final-lane attestation
+   remains valid evidence for that head; its material outcome is preserved.
 3. `verify-ledger` passes at the same head: every actor-owned thread carries a
    structured disposition and is resolved.
 
@@ -1123,8 +1126,10 @@ Classify committed fixes as `material` or `minor` by effect, not by path or by
 finding severity. `material` covers substantive correctness, security/privacy,
 data-safety, compatibility, deployment/sync, or review-integrity changes,
 including tests or workflows needed to prevent a false green. `minor` is
-low-risk non-behavioral cleanup or polish. A material fix means the round did
-not converge; a minor fix is kept and does not by itself prevent convergence.
+low-risk non-behavioral cleanup or polish. A material fix requires a later
+independent non-material pass; it does not permanently disqualify the fixing
+engine's post-fix attestation. A minor fix is kept and does not by itself prevent
+convergence.
 
 Each engine pass remains evidence for the exact head it reviewed, and a later
 minor commit does not rewrite that historical fact. A round may converge on a
