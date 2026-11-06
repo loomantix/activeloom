@@ -258,7 +258,7 @@ What you type: `/horch ./push-notes.md` in a fresh session in the workspace you 
 It inventories every tab and session in the workspace, checks your instruction file against GitHub, and then:
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
-- starts builds you scheduled on the engines `builds.engines` allows; each ends at a draft PR;
+- dispatches requested work and confirmed in-scope repairs on the engines `builds.engines` allows (in the PR's existing worktree and branch when repairing an open PR; each new build ends at a draft PR);
 - watches `hreview` dispatch and finish `auto-glance` for glance-sized PRs (or alerts you when `glance.auto` is off);
 - dispatches `hgrill`, `hloop` and `hpromote` when you ask;
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
@@ -266,11 +266,26 @@ It inventories every tab and session in the workspace, checks your instruction f
 - offers a [manual test plan](#manual-test-plans) for a converged PR that touches a UX glob or declares manual checks, once per converged head;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
 
-Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one.
+Invocation grants standing authority within your repository, workspace and instruction scope. A completed diagnosis with a reproducible in-scope defect proceeds to a focused repair without another build go-ahead. Scoped issues or refinement, local implementation, synthetic or non-sensitive tests, draft PRs and configured review lead to integration shipment only after the existing gates. Read-only access to a restricted environment limits operations there; it does not block an independently authorized local repair. Whole-task read-only, review-only and do-nothing-else instructions remain binding.
+
+When current work cannot advance, `horch` can select one bounded priority issue from an explicitly allowed queue using the existing `ready.py` policy and `hloop` screens. Direction must be settled; assignment, exclusion, refinement, dependency, open `Closes`/`Refs` PR and workspace file-overlap checks still apply. Missing scope grants no authority over arbitrary backlog. Necessary prerequisites within scope can proceed; new product choices and unrelated work need your decision. A blocked unit does not pause independent authorized work or expand a finite batch.
+
+Use the local instruction file or consumer instructions to narrow or disable this behavior. For example:
+
+```markdown
+Allowed scope: the named tasks and confirmed defects in their implementation.
+Ready-queue scope: only issues in the named milestone; no open design choices.
+Override: stop at draft PR; do not start review or ship.
+Reserved decisions: new product behavior and changes to external systems.
+```
+
+`scheduled-builds-only` is another instruction override when each build should wait for explicit scheduling. These are instruction boundaries, not new configuration keys or changes to tool permissions. Holds, workspace isolation, concurrency limits and author/non-author independence remain in force. Production or restricted-environment mutations, deployment or promotion activation, destructive or external irreversible actions, live-data migrations or reconciliation, and reserved decisions still require repository policy and explicit owner approval. Promotion dispatch remains an explicit user request; production merge authority is never granted.
+
+Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one. Standing authority changes neither this approval nor review caps and exact-head evidence. Red CI or review failure grants no gate bypass or ad hoc retries.
 
 When a chain or build stops on a missing or stale skill, helper or reference, it works out where the gap is (herdr.md, _Missing or stale skills_). A gap in your install or the repository's sync is yours to fix, and it gives you the one command or PR. A gap upstream it fixes there, unless your instruction file says not to: it finds or opens an upstream issue, starts a build tab in your upstream clone that ends at a draft PR, and tells you the PR and the resync step. That PR is reviewed and merged in a workspace for the upstream repository; `horch` never ships outside its own.
 
-It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
+It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and reports the repair being dispatched or the evidence or decision still needed. It reconciles the queue at startup, on watcher events and after completions or blocks, recording scope, next actions and watcher identities in local state. When you end the push it writes a handoff for the next session, including which watchers remain active and what needs a resumed session. A final reply does not keep an orchestrator running indefinitely.
 
 ### `hloop next <k>` — batch loop
 

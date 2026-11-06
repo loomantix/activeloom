@@ -896,7 +896,9 @@ rather than a licence for another round. Say which, and stop.
 A round spent only on integrating the base is neither. When an engine already
 attested the PR's diff against its base clean, and the current diff against the
 current base is byte-identical, that engine runs the round as the convergence
-round instead of stopping.
+round instead of stopping. Under agent-loop the runner makes this comparison
+itself and sets `$AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1` when it holds; an engine
+that sees it set runs the convergence round without recomputing the diff.
 
 ### Escalate and de-escalate on evidence
 

@@ -93,6 +93,42 @@ The unfiltered review gating suite in this repository is the **fast lane**.
 See [Testing architecture](docs/testing.md) for classification, prerequisites,
 timing budgets, and regression maintenance.
 
+## This repository's review metrics
+
+ActiveLoom publishes its own review metrics to its locked
+`activeloom:review-metrics` issue. New herd panes receive the store from
+`.activeloom-herd.json` on `origin/main`; a branch-only edit does not activate it,
+and an existing pane keeps its original environment.
+
+For standalone sessions, launch from your task worktree with one of:
+
+```bash
+bash scripts/review-session.sh claude
+bash scripts/review-session.sh codex
+bash scripts/review-session.sh agy
+```
+
+The manifest's `gemini` harness uses the `agy` CLI and the `.agents/` bundle.
+
+The wrapper supplies `LOOM_REVIEW_TELEMETRY_STORE=issue` when unset or empty,
+preserves arguments and the working directory, and refuses a different checkout.
+An explicit environment value takes precedence at launch; the CLI's own settings
+can still override it. The existing repository-local `.claude/settings.json`
+and `.codex/config.toml` also configure ordinary Claude and Codex sessions.
+Codex uses its [shell environment policy](https://developers.openai.com/codex/config-advanced#shell-environment-policy)
+for spawned commands. Standalone Agy needs the wrapper or an explicit launch
+environment; running plain `agy` does not acquire this repository default.
+Emission and extraction opt-outs remain independent of the destination.
+
+Do not add a `review-telemetry.json` beside the upstream bundles:
+`scripts/install-skills.sh` links those directories into personal installations,
+so that would select this repository's default in unrelated repositories.
+Consumers instead declare `telemetry.store` in their own `.activeloom-config.yml`;
+`scripts/sync-targets.yml` renders `scripts/review-telemetry.json.template` beside
+each selected harness's bundle. ActiveLoom itself is an upstream, not a sync
+consumer. See [metrics migration and export](packages/review-ledger/README.md#move-review-metrics-out-of-pr-conversations)
+for verifying real records without duplicating or moving old comments.
+
 ## Find the source before editing
 
 Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`. Migrated review documents use separate engine templates in `prompts/review/` and shared policy in `prompts/partials/review/`. Edit those sources and regenerate rather than hand-editing outputs. Harness-specific review methods remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.
