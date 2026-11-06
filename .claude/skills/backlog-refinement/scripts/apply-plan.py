@@ -78,6 +78,7 @@ BAIL_PREFIX = "agent-bail:"
 NEEDS_PREFIX = "needs:"
 PENDING_INTERVIEWS = frozenset({"needs: grill", "needs: product-grill"})
 OWED_LINE = re.compile(r"^Owed to #(\d+):[ \t]*\S", re.MULTILINE)
+OWED_NEAR_MISS = re.compile(r"[\s>*_`+\-\d.)]*owed to\s*#?\d", re.IGNORECASE)
 GRILL_CLASS_BAILS = frozenset({
     "agent-bail: open-decision",
     "agent-bail: spec-gap",
@@ -159,7 +160,7 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
             errors.append(f"{where}: a label is both added and removed")
         comment = entry.get("comment")
         body = entry.get("body")
-        carried = "handback_parent" in entry and body is None and comment is None
+        carried = entry.get("handback_parent") is not None and body is None and comment is None
         if not carried and (not isinstance(comment, str) or not comment.strip()):
             errors.append(f"{where}: comment is required — every assessment explains itself")
         if body is not None and ((verdict != "ready" and not entry.get("handback_parent")) or not isinstance(body, str) or not body.strip()):
@@ -265,6 +266,9 @@ def validate_existing_children(plan: dict[str, Any]) -> list[str]:
     pending = {e['number'] for e in bound if any(x.startswith(NEEDS_PREFIX) for x in e.get('add_labels', []))}
     for entry in bound:
         text = entry.get('decision_comment')
+        lines = text.splitlines() if isinstance(text, str) else []
+        if any(OWED_NEAR_MISS.match(x) and not OWED_LINE.match(x) for x in lines):
+            errors.append(f'#{entry["number"]}: write each owed change on its own line as "Owed to #<child>: <change>"')
         for owed in OWED_LINE.findall(text) if isinstance(text, str) else []:
             if int(owed) not in pending or entries[int(owed)].get('handback_parent') != entry['number']:
                 errors.append(f"#{entry['number']}: Owed to #{owed} must name a child of this parent carried with a pending interview")

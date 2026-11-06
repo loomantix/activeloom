@@ -159,15 +159,15 @@ being carried. It does not create, adopt, close or change a child's ready/exclus
 
 | Child's current state                                                      | Later pass                                                                   |
 | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `ready` (`dev: agent`)                                                     | Replacement body.                                                            |
+| `ready` (`dev: agent`)                                                     | Replacement body, or leave it out when the pass changes nothing for it.      |
 | `agent-bail: epic`, `open-decision` or `spec-gap`, no `needs:` label       | Replacement body, or a no-change carry when the pass changes nothing for it. |
 | One of those three bails with `needs: grill` or `needs: product-grill`     | No-change carry only; a rewrite is refused.                                  |
-| Any other bail, including the hold label on its own                        | Replacement body.                                                            |
-| `agent-bail: stale`, or more than one bail                                 | Refused.                                                                     |
+| Any other bail with no `needs:` label, including the hold label on its own | Replacement body, or leave it out when the pass changes nothing for it. |
+| `agent-bail: stale`, more than one bail, or any other `needs:` state | Refused. Leave it out, and record any change it needs as prose in the parent's decision comment. |
 
-A **no-change carry** sets both `"body": null` and `"comment": null`, and keeps `add_labels` equal to the child's current bail and any `needs:` label. The applier checks the same proof, links, body hash and state, then writes nothing to that child; a new refinement comment would displace its queued interview question.
+A **no-change carry** sets both `"body": null` and `"comment": null`, and keeps `add_labels` equal to the child's current bail and any `needs:` label. The applier checks the same proof, links, body hash and state, then writes nothing to that child; a new refinement comment would displace its queued interview question. A linked child left out of `existing_children` is neither checked nor touched.
 
-**A child with a pending interview keeps its body until that interview runs.** If the pass changes something it carries, record each change in the parent's decision comment on its own line, `Owed to #<child>: <change>`, and continue the handback. An owed line naming anything other than a carried child of that parent with a pending interview is refused. The child's body may be out of date until then: its reader learns that from the `Owed to #<child>:` lines in its parent's latest decision comment, reached through the native sub-issue link. The child's interview takes those lines as agenda, and its own handback applies them.
+**A child with a pending interview keeps its body until that interview runs.** If the pass changes something it carries, record each change in the parent's decision comment on its own line, `Owed to #<child>: <change>`, and continue the handback. An owed line naming anything other than a carried child of that parent with a pending interview is refused, and so is any other spelling of an owed line. The child's body may be out of date until then: its reader learns that from the `Owed to #<child>:` lines in every parent decision comment newer than the child's own latest decision, reached through the native sub-issue link, and from any changes that decision lists as still owed. A later parent decision does not repeat them. The child's interview takes all of those as agenda. A handback that makes the child `ready` applies them in its new body. One that leaves it excluded cannot change its body, so the child's decision comment lists each change still owed.
 
 Example schema:
 

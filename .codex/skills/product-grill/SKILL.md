@@ -151,9 +151,11 @@ keeps its label, verdict and body, and you do not start its interview. Record an
 change it needs in the parent's decision comment as `Owed to #<child>: <change>`,
 and the handback continues. Until that interview runs the child's body may be out
 of date; a reader learns that from the parent's owed line. When your session's
-issue is such a child, take the `Owed to` lines naming it in its parent's latest
-decision comment as agenda, and apply them in your own handback. Use original
-private split proof, matching native links and exact body hashes; always confirm
+issue is such a child, take as agenda the `Owed to` lines naming it in every parent
+decision comment newer than its own latest decision, plus any changes that decision
+lists as still owed. A handback that makes it `ready` applies them in its new body.
+One that leaves it excluded cannot change its body, so list each change still owed
+in your decision comment. Use original private split proof, matching native links and exact body hashes; always confirm
 the full existing-child preview, including in auto mode. Missing evidence, a parent's
 unresolved interview or missing proof remain blocks, never invented readiness or a
 duplicate split.

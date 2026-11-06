@@ -1744,6 +1744,45 @@ def test_owed_line_must_name_a_carried_child_of_this_parent(
     assert any('Owed to' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
 
 
+@pytest.mark.parametrize('owed', ['- Owed to #102: change.', '**Owed to #102:** change.', 'owed to #102: change.',
+                                  'Owed to #102 : change.', 'Owed to #102:', 'Owed to 102: change.',
+                                  '  Owed to #102: change.', '1. Owed to #102: change.'])
+def test_owed_line_near_miss_is_refused(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owed: str
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    plan['issues'][0]['decision_comment'] = f"Confirmed.\n{owed}\n{plan['issues'][0]['decision_comment']}"
+    assert any('on its own line' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+def test_owed_line_cannot_name_another_parents_pending_child(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    parent, child = plan['issues']
+    other_parent = {**parent, 'number': 201, 'existing_children': [202],
+                    'decision_comment': f"Confirmed.\nOwed to #102: change.\n{parent['decision_comment']}"}
+    plan['issues'] = [parent, child, other_parent, {**child, 'number': 202, 'handback_parent': 201}]
+    assert any('#201: Owed to #102' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+def test_coordination_parent_cannot_use_the_child_carry_form(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=[GRILL_BAILS[1]], carry=True)
+    plan['issues'][0].update(handback_parent=None, comment=None)
+    assert any('#101: comment is required' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+def test_linked_child_left_out_of_the_plan_is_not_touched(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=[GRILL_BAILS[1]], carry=True)
+    remote.linked = [102, 555]
+    assert apply_mod.main() == 0
+    assert remote.mutations == [(101, 'comment')]
+
+
 def test_owed_line_cannot_defer_a_child_with_no_pending_interview(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1851,7 +1890,7 @@ def _carry_with_unrelated_child(
 @pytest.mark.parametrize('fault', ['unrelated-child', 'copied-public-marker', 'closed-child', 'assigned-child',
                                    'body-drift', 'parent-unlinked', 'other-parent-proof', 'missing-proof',
                                    'unfinished-split', 'needs-added', 'needs-removed', 'needs-swapped',
-                                   'bail-changed', 'parent-pending-interview'])
+                                   'bail-changed', 'parent-pending-interview', 'forged-marker'])
 def test_chain_child_refusals_still_hold_for_carried_grill_class_children(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     form: str, fault: str,
@@ -1866,6 +1905,11 @@ def test_chain_child_refusals_still_hold_for_carried_grill_class_children(
         _carry_with_unrelated_child(plan, path, remote, 'Someone else\'s work.\n')
     elif fault == 'copied-public-marker':
         _carry_with_unrelated_child(plan, path, remote, f'Someone else\'s work.\n\n{public_marker}\n')
+    elif fault == 'forged-marker':
+        forged = remote.issues[102]['body'].replace('a' * 32, 'b' * 32)
+        remote.issues[102]['body'] = forged
+        plan['issues'][1]['expected_body_sha256'] = hashlib.sha256(forged.encode()).hexdigest()
+        path.write_text(json.dumps(plan))
     elif fault == 'closed-child':
         remote.issues[102]['state'] = 'CLOSED'
     elif fault == 'assigned-child':
@@ -1911,6 +1955,7 @@ def test_chain_child_refusals_still_hold_for_carried_grill_class_children(
         'unfinished-split': 'completed original split', 'needs-added': 'existing handback requires OPEN',
         'needs-removed': 'existing handback requires OPEN', 'needs-swapped': 'existing handback requires OPEN',
         'bail-changed': 'existing handback requires OPEN', 'parent-pending-interview': 'existing handback requires OPEN',
+        'forged-marker': 'exact privately recorded child marker',
     }[fault]
     assert expected in capsys.readouterr().err
 
@@ -2029,9 +2074,11 @@ def test_split_then_existing_children_handback_on_one_parent_does_not_deadlock(
     assert remote.mutations[mutations:] == [(101, 'comment')]
 
 
-@pytest.mark.parametrize('skill', ['grill', 'backlog-refinement'])
+@pytest.mark.parametrize('skill', ['grill', 'product-grill', 'backlog-refinement'])
 def test_skill_text_names_the_bails_a_later_pass_preserves(skill: str) -> None:
     text = ' '.join((REPO_ROOT / 'prompts/skills' / skill / 'SKILL.md').read_text().split())
     assert all(bail in text for bail in ('agent-bail: epic', '`open-decision`', '`spec-gap`'))
     assert 'Owed to #<child>: <change>' in text
     assert 'out of date' in text
+    assert 'newer than' in text
+    assert 'latest decision comment' not in text.split('Owed to #<child>: <change>')[1]
