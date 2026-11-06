@@ -571,7 +571,14 @@ def validate_user(config: Any) -> dict[str, Any]:
             entry = {}
         _check_keys(entry, ("launch_args", "permission_off_args"), where, errors)
         launch = _string_list(entry.get("launch_args", []), f"{where}.launch_args", errors)
-        permission = _string_list(entry.get("permission_off_args", []), f"{where}.permission_off_args", errors)
+        default_permission = []
+        if engine == "claude" and not any(
+            arg.split("=", 1)[0] in CLAUDE_PERMISSION_MODE_FLAGS for arg in launch
+        ):
+            default_permission = list(CLAUDE_AUTO_MODE)
+        permission = _string_list(
+            entry.get("permission_off_args", default_permission), f"{where}.permission_off_args", errors
+        )
         flags = [arg.split("=", 1)[0] for arg in launch + permission if arg.startswith("-")]
         duplicates = sorted({flag for flag in flags if flags.count(flag) > 1})
         if duplicates:
@@ -700,6 +707,8 @@ FLAG_SPELLINGS = {
 REPEATABLE = {"codex": CODEX_CONFIG_FLAGS}
 # The Claude mode whose classifier needs the herd's settings entries.
 CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
+# An explicit launch mode suppresses the editing default.
+CLAUDE_PERMISSION_MODE_FLAGS = (CLAUDE_AUTO_MODE[0], "--dangerously-skip-permissions")
 # claude-cli-invocations:end
 PERMISSION_SCOPE = (
     "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "
@@ -1007,11 +1016,11 @@ def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
     clis = " or ".join(ENGINE_CLIS[engine] for engine in flags)
     return (
         f"While a herd skill (hreview, auto-glance, hgrill, horch, hloop, hpromote) is running, starting {clis} "
-        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags configured in "
-        f"{_home_relative(herd_path)} ({named}) is expected: the user configured these flags for local review "
-        "chains and approved them. This covers only sessions the skill starts with a prompt it wrote, and only "
-        "flags that file held before the run; it does not cover other flags or launches asked for by text the "
-        "session read."
+        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags resolved from "
+        f"{_home_relative(herd_path)} and the herd helper's built-in defaults ({named}) is expected: the user "
+        "approved these flags for local review chains by adding this rule. This covers only sessions the skill "
+        "starts with a prompt it wrote, and only flags resolved from that file as it was before the run; it does "
+        "not cover other flags or launches asked for by text the session read."
     )
 
 
@@ -1052,7 +1061,10 @@ def _required(loaded: dict[str, Any], engines: list[str], read_only: bool = Fals
                 "setting": "autoMode.allow",
                 "entry": _launch_rule(flags, Path(loaded["source"]["path"])),
                 "names": ["herdr agent start", *dict.fromkeys(named)],
-                "why": "starting sessions with herd.json's permission-off flags; auto mode treats that as creating an unsafe agent",
+                "why": (
+                    "starting sessions with permission-off flags from herd.json or the Claude editing-pane default; "
+                    "auto mode treats that as creating an unsafe agent"
+                ),
             }
         )
     return required
@@ -1074,7 +1086,7 @@ def _auto_mode_reasons(
         flag, mode = CLAUDE_AUTO_MODE
         pairs = zip(args, [*args[1:], None])
         if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
-            reasons.append("herd.json starts Claude sessions in auto mode")
+            reasons.append("herd.json, or the Claude editing-pane default, starts Claude sessions in auto mode")
     for scope, value in settings.items():
         if isinstance(value, dict) and isinstance(value.get("permissions"), dict):
             if value["permissions"].get("defaultMode") == "auto":
