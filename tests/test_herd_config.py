@@ -925,6 +925,7 @@ def test_default_claude_auto_mode_drafts_required_settings_without_writing_them(
     assert "--permission-mode auto for claude" in rule
     assert "built-in defaults" in rule
     assert "flags that file held" not in rule
+    assert "Claude editing-pane default" in report["missing"][-1]["why"]
     assert json.loads((tmp_path / "claude/settings.json").read_text()) == {}
     draft = json.loads(Path(report["draft"]["path"]).read_text())
     rerun = claude_settings(tmp_path, capsys, monkeypatch, draft, "--engine", "claude", engines={})

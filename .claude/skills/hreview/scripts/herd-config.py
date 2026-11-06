@@ -1061,7 +1061,10 @@ def _required(loaded: dict[str, Any], engines: list[str], read_only: bool = Fals
                 "setting": "autoMode.allow",
                 "entry": _launch_rule(flags, Path(loaded["source"]["path"])),
                 "names": ["herdr agent start", *dict.fromkeys(named)],
-                "why": "starting sessions with herd.json's permission-off flags; auto mode treats that as creating an unsafe agent",
+                "why": (
+                    "starting sessions with permission-off flags from herd.json or the Claude editing-pane default; "
+                    "auto mode treats that as creating an unsafe agent"
+                ),
             }
         )
     return required
