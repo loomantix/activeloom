@@ -40,6 +40,8 @@ attestation, and bounded progression. Existing handoff sessions and the separate
 issue-implementation `agent-loop` keep their own contracts. An active legacy run
 is not silently converted to a new plan or granted a fresh budget.
 
+{{> review/chain-entry-point}}
+
 ## PR-First Rule
 
 Open a draft pull request before any structured review cleanup such as
@@ -476,7 +478,7 @@ apply to it. There, convergence is the hosted lane's own contract: every hosted
 finding disposed and resolved, and a final iteration that produced no fix. A
 roster-less PR converges on that rule and must not claim relay coverage.
 
-Invocation:
+Invocation, only when the user asks for hosted review:
 
 - **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
   loop. It verifies and deduplicates their findings, fixes confirmed issues,

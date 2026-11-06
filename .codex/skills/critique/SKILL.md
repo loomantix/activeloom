@@ -405,6 +405,6 @@ End with:
   missing declared reviewer (defaulting to Agy only when declaring a new
   relay); in handoff mode post
   `local-review-handoff:v1` and stop — and add `reviewit <pr>` /
-  `reviewit <pr> deep` whenever a hosted pass is wanted. When recommending
+  `reviewit <pr> deep` only when the user asks for a hosted pass. When recommending
   `reviewit`, recommend a fresh session; the current one has absorbed critique
   findings, fix commits, and coverage of the selected review scope.
