@@ -634,6 +634,12 @@ def test_sandbox_without_approval_is_codex_only(tmp_path: Path, capsys: pytest.C
     assert permissions(tmp_path, capsys, engines, "claude")["claude"]["sandbox_without_approval"] is False
 
 
+def test_codex_alias_without_approval_is_flagged(tmp_path: Path) -> None:
+    loaded = herd.read_user(tmp_path / "missing.json")
+    report = herd.permission_report(loaded, ["codex"], {"codex": "codex is an alias for codex -a never"})
+    assert report["engines"]["codex"]["sandbox_without_approval"] is True
+
+
 def test_sandbox_only_flag_does_not_disable_approval_prompts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

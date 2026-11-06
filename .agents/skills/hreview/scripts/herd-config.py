@@ -802,13 +802,14 @@ def permission_report(
         entry = loaded["config"]["engines"][engine]
         turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
         in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
+        alias = alias_report(engine, entry, (type_texts or {}).get(engine))
         report[engine] = {
             "stops_at_prompts": not (ends_off or ends_launch),
-            "sandbox_without_approval": _sandbox_without_approval(engine, turned_off + in_launch),
+            "sandbox_without_approval": _sandbox_without_approval(engine, turned_off + in_launch + alias["turned_off"]),
             "turned_off": turned_off,
             "unrecognized": unknown_launch + unrecognized,
             "turned_off_in_read_only": in_launch,
-            "alias": alias_report(engine, entry, (type_texts or {}).get(engine)),
+            "alias": alias,
         }
     return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
 
