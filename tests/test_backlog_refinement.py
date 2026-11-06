@@ -1746,13 +1746,24 @@ def test_owed_line_must_name_a_carried_child_of_this_parent(
 
 @pytest.mark.parametrize('owed', ['- Owed to #102: change.', '**Owed to #102:** change.', 'owed to #102: change.',
                                   'Owed to #102 : change.', 'Owed to #102:', 'Owed to 102: change.',
-                                  '  Owed to #102: change.', '1. Owed to #102: change.'])
+                                  '  Owed to #102: change.', '1. Owed to #102: change.',
+                                  'Owed to child #102: change.', 'Owed to issue #102: change.',
+                                  'Owed to sub-issue #102: change.', 'Owed to: #102 change.'])
 def test_owed_line_near_miss_is_refused(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owed: str
 ) -> None:
     plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
     plan['issues'][0]['decision_comment'] = f"Confirmed.\n{owed}\n{plan['issues'][0]['decision_comment']}"
     assert any('on its own line' in e for e in apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE))
+
+
+@pytest.mark.parametrize('line', ['### Owed to other issues', 'Owed to other issues: #102 needs a note.'])
+def test_owed_section_heading_is_not_a_near_miss(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line: str
+) -> None:
+    plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=PENDING_STATES[0], carry=True)
+    plan['issues'][0]['decision_comment'] = f"Confirmed.\n{line}\n{plan['issues'][0]['decision_comment']}"
+    assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE) == []
 
 
 def test_owed_line_cannot_name_another_parents_pending_child(
@@ -1969,6 +1980,16 @@ def test_no_change_carry_stays_closed_outside_the_named_states(
 ) -> None:
     plan, _, _, _ = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=labels, carry=True)
     assert apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE)
+
+
+def test_grill_class_child_cannot_take_a_comment_without_a_body(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _, _, _ = _existing_child_setup(
+        apply_mod, monkeypatch, tmp_path, bail_labels=['agent-bail: open-decision'], carry=True)
+    plan['issues'][1].update(body=None, comment='Backlog refinement: note.')
+    errors = apply_mod.validate(plan, CARRY_LABELS, PRIORITY_TUPLE)
+    assert any('only a grill-class exclusion can be carried unchanged' in e for e in errors)
 
 
 def test_no_change_carry_stays_closed_for_a_ready_child(

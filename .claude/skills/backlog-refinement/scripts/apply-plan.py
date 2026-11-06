@@ -78,7 +78,7 @@ BAIL_PREFIX = "agent-bail:"
 NEEDS_PREFIX = "needs:"
 PENDING_INTERVIEWS = frozenset({"needs: grill", "needs: product-grill"})
 OWED_LINE = re.compile(r"^Owed to #(\d+):[ \t]*\S", re.MULTILINE)
-OWED_NEAR_MISS = re.compile(r"[\s>*_`+\-\d.)]*owed to\s*#?\d", re.IGNORECASE)
+OWED_NEAR_MISS = re.compile(r"[\s>*_`+\-\d.)]*owed to\s*(?:(?:child|issue|sub-?issue)\s*)?:?\s*#?\d", re.IGNORECASE)
 GRILL_CLASS_BAILS = frozenset({
     "agent-bail: open-decision",
     "agent-bail: spec-gap",
