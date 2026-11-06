@@ -480,7 +480,13 @@ def test_engine_without_permission_flags_stops_at_prompts(tmp_path: Path, capsys
     report = permissions(tmp_path, capsys, {}, "codex")
     report["codex"].pop("alias")
     assert report == {
-        "codex": {"stops_at_prompts": True, "turned_off": [], "unrecognized": [], "turned_off_in_read_only": []}
+        "codex": {
+            "stops_at_prompts": True,
+            "sandbox_without_approval": False,
+            "turned_off": [],
+            "unrecognized": [],
+            "turned_off_in_read_only": [],
+        }
     }
 
 
@@ -597,6 +603,41 @@ def test_unknown_flag_in_launch_args_is_unrecognized(
     assert report["turned_off_in_read_only"] == []
     assert report["unrecognized"] == ["--verbose"]
     assert report["stops_at_prompts"] is opt_out
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"permission_off_args": ["-a", "never", "-s", "workspace-write"]}, True),
+        ({"permission_off_args": ["-c", "approval_policy=never"]}, True),
+        ({"launch_args": ["-a", "never"], "permission_off_args": []}, True),
+        (
+            {"permission_off_args": ["-a", "never", "-c", "sandbox_workspace_write.network_access=true"]},
+            True,
+        ),
+        ({"permission_off_args": ["-a", "never", "-s", "danger-full-access"]}, False),
+        ({"permission_off_args": ["-a", "never", "-c", "sandbox_mode=danger-full-access"]}, False),
+        ({"permission_off_args": ["--yolo"]}, False),
+        ({"permission_off_args": ["--approve-for-me"]}, False),
+        ({"permission_off_args": ["-s", "workspace-write"]}, False),
+    ],
+)
+def test_codex_approvals_off_with_sandbox_kept_is_flagged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], entry: dict[str, Any], expected: bool
+) -> None:
+    report = permissions(tmp_path, capsys, {"codex": entry}, "codex")["codex"]
+    assert report["sandbox_without_approval"] is expected
+
+
+def test_sandbox_without_approval_is_codex_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    engines = {"claude": {"permission_off_args": ["--permission-mode", "auto"]}}
+    assert permissions(tmp_path, capsys, engines, "claude")["claude"]["sandbox_without_approval"] is False
+
+
+def test_codex_alias_without_approval_is_flagged(tmp_path: Path) -> None:
+    loaded = herd.read_user(tmp_path / "missing.json")
+    report = herd.permission_report(loaded, ["codex"], {"codex": "codex is an alias for codex -a never"})
+    assert report["engines"]["codex"]["sandbox_without_approval"] is True
 
 
 def test_sandbox_only_flag_does_not_disable_approval_prompts(
