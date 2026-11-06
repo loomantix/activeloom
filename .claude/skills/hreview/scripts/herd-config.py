@@ -571,7 +571,14 @@ def validate_user(config: Any) -> dict[str, Any]:
             entry = {}
         _check_keys(entry, ("launch_args", "permission_off_args"), where, errors)
         launch = _string_list(entry.get("launch_args", []), f"{where}.launch_args", errors)
-        permission = _string_list(entry.get("permission_off_args", []), f"{where}.permission_off_args", errors)
+        default_permission = []
+        if engine == "claude" and not any(
+            arg.split("=", 1)[0] in CLAUDE_PERMISSION_MODE_FLAGS for arg in launch
+        ):
+            default_permission = list(CLAUDE_AUTO_MODE)
+        permission = _string_list(
+            entry.get("permission_off_args", default_permission), f"{where}.permission_off_args", errors
+        )
         flags = [arg.split("=", 1)[0] for arg in launch + permission if arg.startswith("-")]
         duplicates = sorted({flag for flag in flags if flags.count(flag) > 1})
         if duplicates:
@@ -700,6 +707,8 @@ FLAG_SPELLINGS = {
 REPEATABLE = {"codex": CODEX_CONFIG_FLAGS}
 # The Claude mode whose classifier needs the herd's settings entries.
 CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
+# An explicit launch mode suppresses the editing default.
+CLAUDE_PERMISSION_MODE_FLAGS = (CLAUDE_AUTO_MODE[0], "--dangerously-skip-permissions")
 # claude-cli-invocations:end
 PERMISSION_SCOPE = (
     "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "

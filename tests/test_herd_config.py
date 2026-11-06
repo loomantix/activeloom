@@ -363,7 +363,77 @@ def test_absent_user_config_uses_defaults(tmp_path: Path) -> None:
     config = loaded["config"]
     assert config["push_notifications"] is True
     assert config["worktree_root"] == str(Path("~/wt").expanduser())
+    assert config["engines"]["claude"] == {"launch_args": [], "permission_off_args": ["--permission-mode", "auto"]}
     assert config["engines"]["codex"] == {"launch_args": [], "permission_off_args": []}
+    assert config["engines"]["gemini"] == {"launch_args": [], "permission_off_args": []}
+
+
+@pytest.mark.parametrize("entry", [{}, {"launch_args": []}, {"launch_args": ["--verbose"]}])
+def test_claude_default_applies_only_to_omitted_permission_args(entry: dict[str, Any]) -> None:
+    original = json.loads(json.dumps(entry))
+    config = herd.validate_user({"schema_version": 1, "engines": {"claude": entry}})
+    assert config["engines"]["claude"] == {
+        "launch_args": entry.get("launch_args", []),
+        "permission_off_args": ["--permission-mode", "auto"],
+    }
+    assert entry == original
+    assert herd.validate_user(config) == config
+
+
+@pytest.mark.parametrize(
+    "args",
+    [[], ["--permission-mode", "acceptEdits"], ["--permission-mode=auto"], ["--dangerously-skip-permissions"]],
+)
+def test_claude_explicit_permission_args_are_preserved(args: list[str]) -> None:
+    config = herd.validate_user({"schema_version": 1, "engines": {"claude": {"permission_off_args": args}}})
+    assert config["engines"]["claude"] == {"launch_args": [], "permission_off_args": args}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--permission-mode", "auto"],
+        ["--permission-mode=auto"],
+        ["--permission-mode", "plan"],
+        ["--permission-mode=acceptEdits"],
+        ["--permission-mode", "bypassPermissions"],
+        ["--dangerously-skip-permissions"],
+        ["--permission-mode"],
+        ["--permission-mode=custom"],
+    ],
+)
+def test_claude_launch_mode_suppresses_default_without_duplicate_flags(args: list[str]) -> None:
+    config = herd.validate_user({"schema_version": 1, "engines": {"claude": {"launch_args": args}}})
+    assert config["engines"]["claude"] == {"launch_args": args, "permission_off_args": []}
+
+
+@pytest.mark.parametrize("invalid", [None, "auto", 1, [""]])
+def test_claude_invalid_explicit_permission_args_are_rejected(invalid: Any) -> None:
+    with pytest.raises(herd.ConfigError, match="permission_off_args: must be an array"):
+        herd.validate_user({"schema_version": 1, "engines": {"claude": {"permission_off_args": invalid}}})
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_fresh_claude_user_args_and_permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], present: bool) -> None:
+    path = tmp_path / "herd.json"
+    if present:
+        path.write_text('{"schema_version": 1}')
+    before = path.read_bytes() if present else None
+    for read_only, expected in [(False, ["--permission-mode", "auto"]), (True, [])]:
+        argv = ["user-args", "--engine", "claude", "--path", str(path)]
+        assert herd.main(argv + (["--read-only"] if read_only else [])) == 0
+        assert json.loads(capsys.readouterr().out) == expected
+    assert herd.main(["permissions", "--engine", "claude", "--path", str(path), "--no-alias-check"]) == 0
+    report = json.loads(capsys.readouterr().out)["engines"]["claude"]
+    assert report["stops_at_prompts"] is False
+    assert report["turned_off"] == [
+        {
+            "arg": "--permission-mode auto",
+            "turns_off": "approval prompts; a classifier allows or refuses each action instead",
+        }
+    ]
+    assert report["unrecognized"] == report["turned_off_in_read_only"] == []
+    assert (path.read_bytes() if path.exists() else None) == before
 
 
 def test_duplicate_launch_flag_is_rejected() -> None:
@@ -516,11 +586,17 @@ def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "Claude settings are not read" in scope
 
 
-def test_unknown_flag_in_launch_args_is_unrecognized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    report = permissions(tmp_path, capsys, {"claude": {"launch_args": ["--verbose"]}}, "claude")["claude"]
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_unknown_flag_in_launch_args_is_unrecognized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], opt_out: bool
+) -> None:
+    entry = {"launch_args": ["--verbose"]}
+    if opt_out:
+        entry["permission_off_args"] = []
+    report = permissions(tmp_path, capsys, {"claude": entry}, "claude")["claude"]
     assert report["turned_off_in_read_only"] == []
     assert report["unrecognized"] == ["--verbose"]
-    assert report["stops_at_prompts"] is True
+    assert report["stops_at_prompts"] is opt_out
 
 
 def test_sandbox_only_flag_does_not_disable_approval_prompts(
@@ -837,6 +913,39 @@ def test_default_mode_in_settings_counts_as_auto_mode(
 ) -> None:
     report = claude_settings(tmp_path, capsys, monkeypatch, {"permissions": {"defaultMode": "auto"}})
     assert report["auto_mode"]["in_use"] is True
+
+
+def test_default_claude_auto_mode_drafts_required_settings_without_writing_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines={})
+    assert report["auto_mode"]["because"] == ["herd.json starts Claude sessions in auto mode"]
+    assert report["ready"] is False
+    assert "--permission-mode auto for claude" in report["missing"][-1]["entry"]
+    assert json.loads((tmp_path / "claude/settings.json").read_text()) == {}
+    draft = json.loads(Path(report["draft"]["path"]).read_text())
+    rerun = claude_settings(tmp_path, capsys, monkeypatch, draft, "--engine", "claude", engines={})
+    assert rerun["ready"] is True
+    assert rerun["missing"] == []
+
+
+@pytest.mark.parametrize("entry", [{"permission_off_args": []}, {"launch_args": ["--permission-mode", "plan"]}])
+def test_claude_opt_out_does_not_offer_auto_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any]
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines={"claude": entry})
+    assert report["auto_mode"]["in_use"] is False
+    assert report["ready"] is True
+    assert report["draft"] is None
+
+
+def test_read_only_claude_default_does_not_offer_auto_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", "--read-only", engines={})
+    assert report["auto_mode"]["in_use"] is False
+    assert report["ready"] is True
+    assert report["draft"] is None
 
 
 def test_launch_rule_must_name_every_configured_flag(

@@ -38,7 +38,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "claude": { "$ref": "#/$defs/engine" },
+        "claude": {
+          "$ref": "#/$defs/engine",
+          "description": "Editing sessions default to --permission-mode auto when permission_off_args is omitted and launch_args contains neither --permission-mode nor --dangerously-skip-permissions. An explicit permission_off_args array, including [], is preserved."
+        },
         "codex": { "$ref": "#/$defs/engine" },
         "gemini": { "$ref": "#/$defs/engine" }
       }
