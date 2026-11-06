@@ -1834,7 +1834,7 @@ def test_parent_with_several_children_cannot_slip_a_rewrite_past_the_pending_one
 
 
 def _carry_with_unrelated_child(
-    mod: ModuleType, plan: dict[str, Any], path: Path, remote: ExistingChildRemote, marker_body: str,
+    plan: dict[str, Any], path: Path, remote: ExistingChildRemote, marker_body: str,
 ) -> None:
     """Point the plan at #103: linked natively, carrying the given body, with no private proof."""
     remote.issues[103] = {**json.loads(json.dumps(remote.issues[102])), 'body': marker_body}
@@ -1863,9 +1863,9 @@ def test_chain_child_refusals_still_hold_for_carried_grill_class_children(
     labels: list[dict[str, str]] = remote.issues[102]['labels']
     public_marker = re.findall(r'<!-- refinement-child.*?-->', remote.issues[102]['body'])[0]
     if fault == 'unrelated-child':
-        _carry_with_unrelated_child(apply_mod, plan, path, remote, 'Someone else\'s work.\n')
+        _carry_with_unrelated_child(plan, path, remote, 'Someone else\'s work.\n')
     elif fault == 'copied-public-marker':
-        _carry_with_unrelated_child(apply_mod, plan, path, remote, f'Someone else\'s work.\n\n{public_marker}\n')
+        _carry_with_unrelated_child(plan, path, remote, f'Someone else\'s work.\n\n{public_marker}\n')
     elif fault == 'closed-child':
         remote.issues[102]['state'] = 'CLOSED'
     elif fault == 'assigned-child':
