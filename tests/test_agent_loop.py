@@ -2356,6 +2356,128 @@ def test_base_advance_before_the_codex_hook_starts_keeps_the_round(
     assert "round=3" not in comments
 
 
+def _recording_diff_signal(engine: str, hook: str) -> str:
+    return (
+        f"printf '{engine} round=%s unchanged=%s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" "
+        '"${AGENT_LOOP_REVIEW_DIFF_UNCHANGED:-}" >> "$AGENT_STATE_DIR/diff-signal.log"; '
+        + hook
+    )
+
+
+def _claude_hook_advancing_base_after_its_review(updater: Path) -> str:
+    # The PR keeps reporting the round's base until the next fresh-base merge
+    # is validated, so the move surfaces at the round decision, not at the
+    # Claude boundary.
+    return _recording_diff_signal(
+        "claude",
+        'if [ ! -e "$AGENT_STATE_DIR/round-end-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/round-end-advance"; '
+        'printf \'%s\\n\' "$AGENT_LOOP_REVIEW_BASE_SHA" > "$AGENT_STATE_DIR/pr-base-oid"; '
+        f"{updater}; fi; " + _clean_v3_hook("claude"),
+    )
+
+
+_UNPIN_PR_BASE_AFTER_MERGE = (
+    "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+    'if [ -e "$AGENT_STATE_DIR/round-end-advance" ] && '
+    '[ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]; then '
+    'rm -f "$AGENT_STATE_DIR/pr-base-oid"; fi'
+)
+
+
+def test_a_base_only_round_tells_reviewers_the_diff_is_unchanged(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Round 1 is clean but the base advances during it; round 2 only merges
+    # that base, so the PR's diff is the one round 1 reviewed.
+    updater = tmp_path / "advance-base-round-end.sh"
+    _advance_base_script(updater, "round-end-base")
+    result = _run(
+        consumer,
+        ["--issues", "105"],
+        issues=[_issue(105)],
+        config=_config_v3(
+            tmp_path,
+            validation_hook=_UNPIN_PR_BASE_AFTER_MERGE,
+            codex_review_hook=_recording_diff_signal("codex", _clean_v3_hook("codex")),
+            claude_review_hook=_claude_hook_advancing_base_after_its_review(updater),
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1])},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Base advanced during the round" in result.stdout
+    assert "this round only integrated the base" in result.stdout
+    signals = (consumer[3] / "diff-signal.log").read_text(encoding="utf-8").splitlines()
+    assert signals == [
+        "codex round=1 unchanged=",
+        "claude round=1 unchanged=",
+        "codex round=2 unchanged=1",
+        "claude round=2 unchanged=1",
+    ]
+
+
+def test_a_base_merge_that_changes_the_diff_gives_no_signal(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The base edits a line inside the context of the PR's hunk, so the PR's
+    # diff against the new base differs from the one round 1 reviewed.
+    repo, remote = consumer[0], consumer[1]
+    lines = [f"value_{n} = {n}" for n in range(1, 11)]
+    (repo / "values.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _run_git("add", "values.py", cwd=repo)
+    _run_git("commit", "-m", "test: values", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+    base_lines = list(lines)
+    base_lines[6] = "value_7 = 70"
+    updater = tmp_path / "advance-base-context.sh"
+    _write_executable(
+        updater,
+        f"""#!/usr/bin/env bash
+set -e
+clone="$AGENT_STATE_DIR/base-clone-context"
+/usr/bin/git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
+/usr/bin/git -C "$clone" config user.name Test
+/usr/bin/git -C "$clone" config user.email test@example.invalid
+printf '%s\\n' {" ".join(repr(line) for line in base_lines)} > "$clone/values.py"
+/usr/bin/git -C "$clone" commit -am 'chore: advance base' >/dev/null
+/usr/bin/git -C "$clone" push origin main >/dev/null 2>&1
+""",
+    )
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; "
+        "sed 's/^value_5 = 5$/value_5 = 50/' values.py > values.new; "
+        "mv values.new values.py; git commit -am 'fix: worker'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "106"],
+        issues=[_issue(106)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker,
+            validation_hook=_UNPIN_PR_BASE_AFTER_MERGE,
+            codex_review_hook=_recording_diff_signal("codex", _clean_v3_hook("codex")),
+            claude_review_hook=_claude_hook_advancing_base_after_its_review(updater),
+        ),
+        extra_env={"REMOTE_PATH": str(remote)},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Base advanced during the round" in result.stdout
+    assert "this round only integrated the base" not in result.stdout
+    signals = (consumer[3] / "diff-signal.log").read_text(encoding="utf-8").splitlines()
+    assert signals == [
+        "codex round=1 unchanged=",
+        "claude round=1 unchanged=",
+        "codex round=2 unchanged=",
+        "claude round=2 unchanged=",
+    ]
+
+
 def test_fresh_base_push_waits_for_the_pr_head_to_catch_up(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

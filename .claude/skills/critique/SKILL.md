@@ -100,10 +100,14 @@ The stance follows the tier's schedule, not the round ordinal alone:
 - **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
   convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
   converging; report which and stop rather than opening it. The exception is a
-  round spent only on integrating the base: when Claude's latest
-  `local-review-pass:v3` marker names `base=B head=H` and `git diff B H` is
-  byte-identical to `git diff` from the recorded PR base to the recorded head,
-  the change has already converged. Run the round as the convergence round.
+  round spent only on integrating the base. When
+  `$AGENT_LOOP_REVIEW_DIFF_UNCHANGED` is `1`, the runner has already found the
+  PR's diff byte-identical to one both engines reported clean: run the round as
+  the convergence round without recomputing it. Without the runner, check it
+  yourself: when Claude's latest `local-review-pass:v3` marker names
+  `base=B head=H` and `git diff B H` is byte-identical to `git diff` from the
+  recorded PR base to the recorded head, the change has already converged. Run
+  the round as the convergence round.
 - **The first round after an escalation is adversarial whatever its ordinal**,
   per the workflow doc's escalation rule.
 
