@@ -23,6 +23,7 @@ Plan shape::
         "remove_labels": [],
         "comment": "Backlog refinement (...): ...",
         "body": "ready rewrite or explicitly bound existing-child update, or null",
+        # An existing child with a null body and comment is carried unchanged.
         "close_reason": "completed" | "not planned" (stale/dont-build), or null,
         "evidence": ["file:line, commit or PR that shows the work shipped"],
         "validated": true   # stale only: the orchestrator re-ran the evidence
@@ -75,6 +76,9 @@ STALE = "agent-bail: stale"
 BLOCKED = "status: blocked"
 BAIL_PREFIX = "agent-bail:"
 NEEDS_PREFIX = "needs:"
+PENDING_INTERVIEWS = frozenset({"needs: grill", "needs: product-grill"})
+OWED_LINE = re.compile(r"^Owed to #(\d+):[ \t]*\S", re.MULTILINE)
+OWED_NEAR_MISS = re.compile(r"[\s>*_`+\-\d.)]*owed to\s*(?:(?:child|issue|sub-?issue)\s*)?:?\s*#?\d", re.IGNORECASE)
 GRILL_CLASS_BAILS = frozenset({
     "agent-bail: open-decision",
     "agent-bail: spec-gap",
@@ -155,9 +159,10 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
         if set(add) & set(remove):
             errors.append(f"{where}: a label is both added and removed")
         comment = entry.get("comment")
-        if not isinstance(comment, str) or not comment.strip():
-            errors.append(f"{where}: comment is required — every assessment explains itself")
         body = entry.get("body")
+        carried = entry.get("handback_parent") is not None and body is None and comment is None
+        if not carried and (not isinstance(comment, str) or not comment.strip()):
+            errors.append(f"{where}: comment is required — every assessment explains itself")
         if body is not None and ((verdict != "ready" and not entry.get("handback_parent")) or not isinstance(body, str) or not body.strip()):
             errors.append(f"{where}: body is only for a ready verdict, and must be non-empty text")
         close_reason = entry.get("close_reason")
@@ -236,9 +241,10 @@ def validate_existing_children(plan: dict[str, Any]) -> list[str]:
             siblings = entries.get(parent, {}).get('existing_children') if type(parent) is int else None
             if not isinstance(siblings, list) or number not in siblings:
                 errors.append(f'#{number}: handback_parent needs its matching coordination entry')
-            if entry.get('decision_comment') is not None or not isinstance(entry.get('body'), str) or not entry['body'].strip():
-                errors.append(f'#{number}: existing child needs its exact replacement body, not a separate decision')
+            if entry.get('decision_comment') is not None:
+                errors.append(f'#{number}: existing child takes no separate decision')
         add = entry.get('add_labels', [])
+        needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
         verdict = entry.get('verdict')
         expected = (['agent-bail: epic'] if children is not None
                     else [READY] if verdict == 'ready'
@@ -246,14 +252,43 @@ def validate_existing_children(plan: dict[str, Any]) -> list[str]:
         if ((verdict != 'exclude' if children is not None else verdict not in ('ready', 'exclude'))
                 or entry.get('children') or entry.get('close_reason') is not None
                 or entry.get('remove_labels') or len(expected) != 1
-                or set(add) - {REFINED, *expected} or not set(expected) <= set(add)
-                or (children is None and verdict == 'exclude' and expected[0] in GRILL_CLASS_BAILS | {STALE})):
+                or set(add) - {REFINED, *expected, *needs} or not set(expected) <= set(add)
+                or expected == [STALE]):
             errors.append(f'#{number}: existing handback preserves its ready or excluded state, with no new interview, priority or close')
+        if children is None:
+            errors.extend(validate_child_carry(entry, expected, needs))
+        elif needs:
+            errors.append(f'#{number}: a pending parent interview needs its own next route')
         if not isinstance(entry.get('expected_body_sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', entry['expected_body_sha256']):
             errors.append(f'#{number}: existing handback needs the reviewed current body SHA256')
     if len(bound) != len(entries):
         errors.append('Existing-child handbacks contain only their explicit parents and owned children')
+    pending = {e['number'] for e in bound if any(x.startswith(NEEDS_PREFIX) for x in e.get('add_labels', []))}
+    for entry in bound:
+        text = entry.get('decision_comment')
+        lines = text.splitlines() if isinstance(text, str) else []
+        if any(OWED_NEAR_MISS.match(x) and not OWED_LINE.match(x) for x in lines):
+            errors.append(f'#{entry["number"]}: write each owed change on its own line as "Owed to #<child>: <change>"')
+        for owed in OWED_LINE.findall(text) if isinstance(text, str) else []:
+            if int(owed) not in pending or entries[int(owed)].get('handback_parent') != entry['number']:
+                errors.append(f"#{entry['number']}: Owed to #{owed} must name a child of this parent carried with a pending interview")
     return errors
+
+
+def validate_child_carry(entry: dict[str, Any], expected: list[str], needs: list[str]) -> list[str]:
+    """Only a grill-class exclusion may be carried, and a pending interview always is."""
+    number = entry['number']
+    grill_class = entry.get('verdict') == 'exclude' and len(expected) == 1 and expected[0] in GRILL_CLASS_BAILS
+    unchanged = entry.get('body') is None and entry.get('comment') is None
+    if needs and not unchanged:
+        return [f'#{number}: a child with a pending interview keeps its body and gets no comment; '
+                f'record any change in the parent decision as "Owed to #{number}: <change>"']
+    if needs and (not grill_class or needs[0] not in PENDING_INTERVIEWS):
+        return [f'#{number}: only a grill-class bail with needs: grill or needs: product-grill can carry a pending interview']
+    if entry.get('body') is None and (not unchanged or not grill_class):
+        return [f'#{number}: existing child needs its exact replacement body and comment; '
+                'only a grill-class exclusion can be carried unchanged, with a null body and comment']
+    return []
 
 
 def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple[str, ...]) -> list[str]:
@@ -632,12 +667,13 @@ class ExistingHandback:
             labels = {x['name'] for x in issue.get('labels', [])}
             bails = {x for x in labels if x.startswith(BAIL_PREFIX)}
             expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX)}
+            needs = {x for x in labels if x.startswith(NEEDS_PREFIX)}
             is_ready = entry['verdict'] == 'ready'
             if (issue.get('state') != 'OPEN' or issue.get('assignees') or bails != expected
                     or REFINED not in labels or (READY in labels) != is_ready
                     or (is_ready and BLOCKED in labels)
-                    or any(x.startswith(NEEDS_PREFIX) for x in labels)):
-                fail(f'#{number}: existing handback requires OPEN, unassigned, unchanged ready or excluded state and no pending interview')
+                    or needs != {x for x in entry['add_labels'] if x.startswith(NEEDS_PREFIX)}):
+                fail(f'#{number}: existing handback requires OPEN, unassigned, unchanged ready or excluded state and no pending interview it does not carry')
             body = issue.get('body')
             if not isinstance(body, str):
                 fail(f'#{number}: missing current body precondition')
@@ -663,9 +699,10 @@ class ExistingHandback:
                     fail(f'#{number}: existing native parent-child relationship changed')
             else:
                 marker = self.markers[number]
-                if body.count(marker) != 1 or entry['body'].count(marker) != 1:
+                replacement = entry.get('body')
+                if body.count(marker) != 1 or (replacement is not None and replacement.count(marker) != 1):
                     fail(f'#{number}: exact privately recorded child marker must be preserved')
-                if re.findall(r'<!-- refinement-child\b.*?-->', body) != re.findall(r'<!-- refinement-child\b.*?-->', entry['body']):
+                if replacement is not None and re.findall(r'<!-- refinement-child\b.*?-->', body) != re.findall(r'<!-- refinement-child\b.*?-->', replacement):
                     fail(f'#{number}: replacement must preserve all child markers exactly')
 
     def begin(self, number: int) -> None:
@@ -681,7 +718,7 @@ class ExistingHandback:
         entry = self.entries[number]
         issue = json.loads(gh(['issue', 'view', str(number), '--json', 'body,comments']))
         comments = {c.get('body', '').strip() for c in issue.get('comments', [])}
-        if entry['comment'].strip() not in comments:
+        if entry.get('comment') is not None and entry['comment'].strip() not in comments:
             fail(f'#{number}: refinement comment readback did not match')
         if entry.get('body'):
             prefix = ('Suggested agent-ready body (rewrite mode: suggest):\n\n'
@@ -765,6 +802,8 @@ def apply_entry(
         if entry != existing_handback.entries.get(entry['number']):
             fail('Entry differs from the exact preflighted handback')
         existing_handback.begin(entry['number'])
+        if entry.get('comment') is None:
+            return 'carried unchanged'
     number = str(entry["number"])
     fields = 'state,labels,comments,assignees' + (',body' if bound else '')
     issue = json.loads(gh(["issue", "view", number, "--json", fields]))
@@ -856,6 +895,8 @@ def preview(plan: dict[str, Any], config: RubricConfig, done: set[int]) -> None:
                 notes.append("recommend close (not validated)")
             else:
                 notes.append("recommend close")
+        if 'handback_parent' in entry and entry.get('comment') is None:
+            notes.append('carried unchanged')
         if entry["number"] in done:
             notes.append("already applied")
         print(f"#{entry['number']:<6}{entry['verdict']:<14}{labels[:58]:<60}{', '.join(notes)}")

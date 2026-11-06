@@ -21,7 +21,7 @@ python3 .claude/skills/backlog-refinement/scripts/candidates.py --grill --json
 
 For `next`, use the matching queue, point out related queue issues, and ask before adding any to the session. An empty queue is a completed lookup, not permission to invent work. Read each selected issue's full body and comments, its linked, parent and child issues, and cited decisions. Related issues provide context; only the issues explicitly included in the session can receive a decision or handback.
 
-Open the agenda with the refinement question. The queue exposes `question` and `newer_decision`; [`rubric.py`](../backlog-refinement/scripts/rubric.py) reads the fixed final line `Question for /product-grill: …`, older bold question lines, body sections, and a refinement comment's final question. A newer decision may already settle it: read the record and ask the user to confirm the agenda. With no question, infer one, label it **inferred**, and confirm it. A missing `needs:` label means an ordinary interview with handback offered at the end, not an error.
+Open the agenda with the refinement question. The queue exposes `question` and `newer_decision`; [`rubric.py`](../backlog-refinement/scripts/rubric.py) reads the fixed final line `Question for /product-grill: …`, older bold question lines, body sections, and a refinement comment's final question. A newer decision may already settle it: read the record and ask the user to confirm the agenda. When the issue is a child carried with a pending interview, also take as agenda the `Owed to` lines naming it in every parent decision comment newer than its own latest decision, plus any changes that decision lists as still owed. With no question, infer one, label it **inferred**, and confirm it. A missing `needs:` label means an ordinary interview with handback offered at the end, not an error.
 
 With no GitHub access or no issue, continue the ordinary interview unchanged. With no `.backlog/refinement.local.md`, offer only the confirmed decision comment and point to `/backlog-refinement setup`; do not apply a plan using default settings.
 
@@ -147,10 +147,18 @@ parent still owes from work owned by its children. A genuinely settled parent
 can use `settled; next: refine` and retain its epic exclusion through refinement's
 explicit existing-child handback. Its existing ready or excluded children can
 receive approved specification updates while preserving their current
-ready/exclusion state. Use original private split proof,
-matching native links and exact body hashes; always confirm the full existing-child
-preview, including in auto mode. Missing evidence, interviews or proof remain
-blocks, never invented readiness or a duplicate split.
+ready/exclusion state, including `agent-bail: epic`, `open-decision` and `spec-gap`,
+but not `stale`. A child with a pending `needs: grill` or `needs: product-grill`
+keeps its label, verdict and body, and you do not start its interview. Record any
+change it needs in the parent's decision comment as `Owed to #<child>: <change>`,
+and the handback continues. Until that interview runs the child's body may be out
+of date; a reader learns that from the parent's owed line. When your session's
+issue is such a child, a handback that makes it `ready` applies its owed changes in
+its new body. One that leaves it excluded cannot change its body, so list each change still owed
+in your decision comment. Use original private split proof, matching native links and exact body hashes; always confirm
+the full existing-child preview, including in auto mode. Missing evidence, a parent's
+unresolved interview or missing proof remain blocks, never invented readiness or a
+duplicate split.
 
 Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
 

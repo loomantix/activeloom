@@ -4,7 +4,7 @@
 >
 > This file is synced from upstream and overwritten on every sync. A rule that names this repository's paths, labels, or past incidents belongs in `.backlog/refinement.local.md`; a rule that would hold in any repository belongs here, proposed upstream.
 >
-> **Core rubric version: 7.** (v7: explicit existing-child handbacks and settled decomposed coordination parents. v6: verified-stale issues close by default once the orchestrator validates the evidence. v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
+> **Core rubric version: 8.** (v8: later passes carry a split's grill-class children, and a child with a pending interview stays unchanged with changes recorded as owed. v7: explicit existing-child handbacks and settled decomposed coordination parents. v6: verified-stale issues close by default once the orchestrator validates the evidence. v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
 
 ## The two questions (the continuous-improvement contract)
 
@@ -86,10 +86,16 @@ A later pass can retain a **settled decomposed coordination parent** as
 `exclude` + `agent-bail: epic`, `settled; next: refine`, with explicit
 `existing_children` and matching `handback_parent` entries. It creates no children
 and changes no ready/exclusion state: existing `ready` (`dev: agent`) children
-stay `ready` and existing `exclude` children retain their current non-interview
-exclusions while their superseded specifications are updated. This exception requires an
+stay `ready` and existing `exclude` children retain their current exclusions,
+including `epic`, `open-decision` and `spec-gap`, while their superseded
+specifications are updated. `stale` is not preserved. This exception requires an
 exact confirmed plan, original private creation proof, native links, current body
-hashes and OPEN/unassigned participants with no pending interview. A public marker
+hashes, OPEN/unassigned participants and a parent with no pending interview.
+A child with a pending `needs: grill` or `needs: product-grill` is carried with its
+label, verdict and body unchanged: a rewrite is refused, and any change it needs is
+recorded in the parent's decision comment as `Owed to #<child>: <change>`. Its
+interview stays pending, unstarted, and owns that update; until it runs, the
+parent's owed line tells a reader the child's body may be out of date. A public marker
 or a settled marker alone is not proof. If the parent still owes an interview,
 use its matching next-interview route instead; unavailable evidence stays
 unavailable. See refinement's existing-child schema and preflight.

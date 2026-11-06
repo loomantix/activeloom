@@ -76,15 +76,15 @@ Split one row below the driver's pane with one pane per engine, titled by engine
    Automated grill chain for <repo>#<n>, pass <k> of <total> (<engine>), kind <kind>. An orchestrator answers for the issue owner under their standing approval.
    - Interviewee: <persona>. Do not save an interviewee profile.
    - Earlier passes in this chain: <decision comment URLs, or "none">. Treat them as proposals to stress-test, not settled decisions. A newer decision does not settle the agenda; reopen any call you disagree with and put it in a round.
-   - Children an earlier pass created: <issue numbers, or "none">. If you change a decision they carry, your handback updates their bodies too, so no child keeps a superseded spec.
-   - Existing children use refinement's explicit existing_children/handback_parent plan (preserving each child's existing ready or excluded verdict), not a duplicate split. Keep the original split plan/private child recovery and pass --existing-child-plan. Preview current body hashes and full replacements; confirm this handback even in auto mode. Missing proof, a pending parent interview, assignment or drift blocks this pass without altering its lock or starting another engine.
+   - Children an earlier pass created: <issue numbers, or "none">. If you change a decision they carry, your handback updates their bodies too, except an epic, open-decision or spec-gap child with a pending `needs: grill` or `needs: product-grill` label: it keeps its label, verdict and body, you do not start its interview, and the parent's decision comment records each change as `Owed to #<child>: <change>`, which tells a reader that body may be out of date until its interview runs.
+   - Existing children use refinement's explicit existing_children/handback_parent plan (preserving each child's existing ready or excluded verdict, including agent-bail: epic, open-decision and spec-gap; one of those you do not change, and every one of those with that pending label, is carried with a null body and comment; any other child you do not change is left out of existing_children, as is one with a permanent bail and a needs: label, whose change goes under the heading below), not a duplicate split. Keep the original split plan/private child recovery and pass --existing-child-plan. Preview current body hashes and full replacements; confirm this handback even in auto mode. Missing proof, a pending parent interview, assignment or drift blocks this pass without altering its lock or starting another engine.
    - End every message that waits for an answer with exactly one final line:
      HGRILL-WAIT: round <r>   (a question round)
      HGRILL-WAIT: summary     (the summary, awaiting confirmation)
      HGRILL-WAIT: handback    (the handback preview, awaiting approval)
      HGRILL-WAIT: other       (anything else)
    - After the handback is applied, end with one line: HGRILL-DONE: outcome=<outcome> next=<next> comment=<decision comment URL>. If it cannot complete, end with: HGRILL-FAILED: <reason>.
-   - Work another issue needs (a constraint, a correction, a follow-up) goes under an `### Owed to other issues` heading in your decision comment, one line each with the issue number. Do not edit those issues.
+   - Work another issue needs (a constraint, a correction, a follow-up) goes under an `### Owed to other issues` heading in your decision comment, one line each with the issue number. A carried child's change uses its own `Owed to #<child>: <change>` line instead. Do not edit those issues.
    - Touch only #<n>, the children listed above, and children your handback creates. No code, branches, worktrees, or PRs; read the repo where it is. Do not launch another engine.
    ```
 
@@ -119,8 +119,8 @@ After the last pass, the driver does this itself. Accepting every recommendation
 3. Sort each into technical or product (the product-call test in Assumptions step 2).
 4. **Technical dispute** — re-decide it on its merits. If it turns on a checkable fact, check it first under Assumptions step 3's rules. Which engine took a position, and whether it came first or last, count for nothing; when the reasons are equal, prefer the position that keeps more safety margin and is easier to reverse. Record `kept <position>` or `changed to <position>`, with a one-line reason.
 5. **Product dispute** — do not decide it. Record the options, the one currently applied, and your recommendation with its reason, judged as if none were applied. Give the strongest case for the option you do not recommend in one line. The owner chooses at sign-off.
-6. Collect every `Owed to other issues` line from the decisions and from step 4, deduplicated.
-7. If no dispute exists, skip to Assumptions. Otherwise post one decision comment, `## Reconcile — disputed calls (<yyyy-mm-dd>)`, listing each dispute and its result, ending with the marker (same kind; outcome and next as the last pass's unless a changed call changes them). If any technical call changed, run refinement's handback with it (`assess <n> --decision <comment file>`, then apply), confirming under the standing authorization. A product dispute changes nothing on GitHub until the owner picks.
+6. Collect every `Owed to other issues` line and every `Owed to #<child>:` line from the decisions and from step 4, deduplicated.
+7. If no dispute exists, skip to Assumptions. Otherwise post one decision comment, `## Reconcile — disputed calls (<yyyy-mm-dd>)`, listing each dispute and its result, with an `Owed to #<child>: <change>` line for each change a child with a pending interview carries, ending with the marker (same kind; outcome and next as the last pass's unless a changed call changes them). If any technical call changed, run refinement's handback with it (`assess <n> --decision <comment file>`, then apply), confirming under the standing authorization. A product dispute changes nothing on GitHub until the owner picks.
 
 ### Assumptions
 
