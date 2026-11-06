@@ -391,6 +391,29 @@ function jsonSkeleton(name: string, content: string): string | null {
         }
       }
     }
+    if (name === 'package.json') {
+      const pnpm = document.pnpm;
+      if (pnpm && typeof pnpm === 'object' && !Array.isArray(pnpm)) {
+        const overrides = (pnpm as Record<string, unknown>).overrides;
+        if (
+          overrides &&
+          typeof overrides === 'object' &&
+          !Array.isArray(overrides)
+        ) {
+          for (const [key, pin] of Object.entries(overrides)) {
+            // Only plain package keys and version ranges; selectors, aliases,
+            // references and removals retain their literal structure.
+            if (
+              /^(?:@[\w.-]+\/)?[\w.-]+$/.test(key) &&
+              typeof pin === 'string' &&
+              VERSION_VALUE.test(pin)
+            ) {
+              (overrides as Record<string, unknown>)[key] = '<pin>';
+            }
+          }
+        }
+      }
+    }
     if (
       name === 'package.json' &&
       typeof document.packageManager === 'string' &&

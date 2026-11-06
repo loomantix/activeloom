@@ -18038,6 +18038,19 @@ function jsonSkeleton(name, content) {
         }
       }
     }
+    if (name === "package.json") {
+      const pnpm = document.pnpm;
+      if (pnpm && typeof pnpm === "object" && !Array.isArray(pnpm)) {
+        const overrides = pnpm.overrides;
+        if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
+          for (const [key, pin] of Object.entries(overrides)) {
+            if (/^(?:@[\w.-]+\/)?[\w.-]+$/.test(key) && typeof pin === "string" && VERSION_VALUE.test(pin)) {
+              overrides[key] = "<pin>";
+            }
+          }
+        }
+      }
+    }
     if (name === "package.json" && typeof document.packageManager === "string" && AT_VERSION_VALUE.test(document.packageManager)) {
       document.packageManager = maskVersionValue(document.packageManager);
     }

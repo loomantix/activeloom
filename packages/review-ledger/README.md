@@ -315,6 +315,16 @@ changed lines and is a best-effort heuristic, not a parser: a manifest with
 any non-version edit, a workflow with any line other than a `uses:` or `image:`
 pin, or a file of an unknown kind keeps the range on the normal route, but a
 line pattern cannot prove that a change is dependency-only.
+
+For `package.json`, classification also compares parsed before/after documents
+from the pinned Git range. Existing `pnpm.overrides` entries support string
+version pins and ranges under unchanged plain or scoped package names. Other
+pnpm settings, added/removed keys, selector keys (such as `parent>child` or
+`child@1`), aliases, dependency references, removal markers, paths, and malformed
+or non-string values are not normalized. Changes to those fields retain normal
+review routing. Context extraction uses the complete committed manifest, not
+the working copy; dependency analysis and shipping requirements still apply.
+
 `--force-review` is the review override: on a range that would be a
 dependency update it reports `dependencyUpdate: false` and
 `dependencyReviewForced: true`, keeps `dependencyPaths`, and so sends the range
