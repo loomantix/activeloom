@@ -152,10 +152,10 @@ function refuseSelfSync(repoDir, upstreamDir) {
  * @param {string[]} requested
  * @returns {{ids: string[], reason: string}}
  */
-function chooseHarnesses(facts, requested) {
+function chooseHarnesses(facts, requested, { interactive = false } = {}) {
   return sharedChooseHarnesses(facts, requested, {
     preferRepo: true,
-    noEvidenceReason: 'no evidence either way — defaulting to Claude Code',
+    allowEmpty: interactive,
   });
 }
 
@@ -183,11 +183,13 @@ async function confirmHarnesses(chosen, facts, options, prompts = ui) {
   }
   ui.info('');
 
-  const accepted = await prompts.confirm(
-    `  Write ${ui.bold(chosen.ids.join(', '))} into this repo?`,
-    true,
-  );
-  if (accepted) return chosen;
+  if (chosen.ids.length > 0) {
+    const accepted = await prompts.confirm(
+      `  Write ${ui.bold(chosen.ids.join(', '))} into this repo?`,
+      true,
+    );
+    if (accepted) return chosen;
+  }
 
   const known = new Set(HARNESSES.map((h) => h.id));
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -538,7 +540,9 @@ async function init(args) {
   if (keepingConfig) {
     ui.step(`harnesses: ${ui.dim('from .activeloom-config.yml')}`);
   } else {
-    const detected = chooseHarnesses(facts, args.harnesses);
+    const detected = chooseHarnesses(facts, args.harnesses, {
+      interactive: Boolean(process.stdin.isTTY) && args.assumeYes !== true,
+    });
     chosen = await confirmHarnesses(detected, facts, {
       assumeYes: args.assumeYes === true,
       explicit: args.harnesses.length > 0,

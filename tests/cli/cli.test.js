@@ -151,7 +151,7 @@ test('init prefers harnesses already checked into the repo', () => {
   assert.deepStrictEqual(chosen.ids, ['codex']);
 });
 
-test('init falls back to machine evidence, then to claude', () => {
+test('init falls back to machine evidence, then refuses to guess', () => {
   const onMachine = facts();
   onMachine.harnesses[2].onMachine = true;
   assert.deepStrictEqual(initLib.chooseHarnesses(onMachine, []).ids, [
@@ -159,9 +159,23 @@ test('init falls back to machine evidence, then to claude', () => {
   ]);
 
   const nothing = facts();
-  const chosen = initLib.chooseHarnesses(nothing, []);
-  assert.deepStrictEqual(chosen.ids, ['claude']);
-  assert.match(chosen.reason, /defaulting/);
+  assert.throws(
+    () => initLib.chooseHarnesses(nothing, []),
+    /no harness detected.*--harness <claude\|codex\|gemini>/s,
+  );
+  // An interactive caller may ask instead.
+  const asked = initLib.chooseHarnesses(nothing, [], { interactive: true });
+  assert.deepStrictEqual(asked.ids, []);
+});
+
+test('add refuses to guess a harness without evidence', () => {
+  assert.throws(
+    () => addLib.chooseHarnesses(facts(), []),
+    /no harness detected.*--harness/s,
+  );
+  assert.deepStrictEqual(addLib.chooseHarnesses(facts(), ['codex']).ids, [
+    'codex',
+  ]);
 });
 
 test('an unknown harness is refused by name', () => {
@@ -506,7 +520,10 @@ test('init --yes recommends auto-glance setup without opting the repository in',
   const lines = [];
   t.mock.method(console, 'log', (line) => lines.push(line));
   try {
-    assert.strictEqual(await initLib.init(initArgs(repo)), 0);
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { harnesses: ['claude'] })),
+      0,
+    );
     const output = lines.join('\n');
     assert.match(output, /review-setup.*auto-glance/);
     assert.match(output, /recommended with herdr/);
@@ -588,7 +605,10 @@ test('a pre-sync-v2 per-harness config no longer stands in for the config', asyn
       path.join(repo, '.platform-config.yml'),
       'substitutions: {}\n',
     );
-    assert.strictEqual(await initLib.init(initArgs(repo)), 0);
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { harnesses: ['claude'] })),
+      0,
+    );
     assert.strictEqual(
       fs.existsSync(path.join(repo, '.activeloom-config.yml')),
       true,
@@ -657,7 +677,9 @@ test('init rolls back newly written config when the sync engine exits non-zero',
       { mode: 0o755 },
     );
     assert.strictEqual(
-      await initLib.init(initArgs(repo, { python: fakePython })),
+      await initLib.init(
+        initArgs(repo, { harnesses: ['claude'], python: fakePython }),
+      ),
       1,
     );
     assert.strictEqual(
@@ -681,7 +703,9 @@ test('init rolls back newly written config when the sync engine fails to spawn',
       { mode: 0o755 },
     );
     assert.strictEqual(
-      await initLib.init(initArgs(repo, { python: fakePython })),
+      await initLib.init(
+        initArgs(repo, { harnesses: ['claude'], python: fakePython }),
+      ),
       1,
     );
     assert.strictEqual(
