@@ -209,8 +209,13 @@ def test_restricted_unavailable_and_explicit_open_gate(installation: Path, monke
 
 
 @pytest.mark.parametrize("failure", ["syntax", "inclusion", "none"])
-def test_installer_activates_only_after_complete_sudoers_validation(installation: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_installer_activates_only_after_complete_sudoers_validation(installation: Path, monkeypatch: pytest.MonkeyPatch, failure: str, platform: str) -> None:
     writes: list[tuple[Path, int]] = []
+    owners: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(policy, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(policy.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=80))
+    monkeypatch.setattr(policy.os, "chown", lambda path, uid, gid: owners.append((path, uid, gid)))
     monkeypatch.setattr(policy, "protected", lambda *a, **kw: None)
     def atomic(path: Path, data: bytes, mode: int) -> None:
         writes.append((path, mode))
@@ -231,8 +236,10 @@ def test_installer_activates_only_after_complete_sudoers_validation(installation
         assert writes[-1] == (policy.POLICY, 0o644)
         assert (policy.SETTER, 0o755) in writes and (policy.DROP_IN, 0o444) in writes
         assert json.loads(policy.POLICY.read_text()) == policy.DEFAULT
+    assert owners == ([(policy.POLICY.parent, 0, 80)] if platform == "darwin" else [])
     with pytest.raises(policy.PolicyError, match="already exists"):
         policy.install()
+    assert owners == ([(policy.POLICY.parent, 0, 80)] if platform == "darwin" else [])
 
 
 def test_atomic_failure_preserves_previous_policy(installation: Path, monkeypatch: pytest.MonkeyPatch) -> None:
