@@ -1638,23 +1638,31 @@ def _sequence_decision(
         "max_rounds": run["max_rounds"],
         "mode": "chain" if fixed else "cycle",
     }
-    # A completed cycle plus a return leg is part of an alternating chain, even
-    # when the independent reviewer was clean on its first pass. The return leg
-    # is established by exact-head coverage, not by which engine attested last:
-    # requiring the initiator to be chronologically last adds no evidence over
-    # the head check below, and at the lean cap it makes convergence unreachable
-    # whenever the reviewer's pass was material.
+    # The fixing engine's final-lane attestation covers its post-fix head, but a
+    # different engine must finish a non-material pass after the last material fix.
+    last_material = next(
+        (index for index in range(len(events) - 1, -1, -1)
+         if events[index]["classification"] == "material"),
+        None,
+    )
+    independently_reviewed = last_material is None or any(
+        event["engine"] != events[last_material]["engine"]
+        and event["head"] == head
+        and event["classification"] in ("clean", "minor")
+        for event in events[last_material + 1:]
+    )
     clean = (
         len(latest) == len(set(sequence))
         and all(latest[engine]["head"] == head for engine in sequence)
-        and all(latest[engine]["classification"] in ("clean", "minor") for engine in sequence)
+        and all(latest[engine]["classification"] != "blocked" for engine in sequence)
+        and independently_reviewed
     )
     if fixed and len(events) == len(sequence):
         return {
             **result,
             "status": "converged" if clean and len(latest) > 1 else "plan-complete",
         }
-    if not fixed and len(events) > len(sequence) and clean:
+    if not fixed and clean:
         return {**result, "status": "converged"}
     engine = sequence[len(events) if fixed else len(events) % len(sequence)]
     number = 1 + sum(event["engine"] == engine for event in events)

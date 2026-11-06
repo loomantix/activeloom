@@ -2084,7 +2084,7 @@ def test_cycle_stops_on_verified_convergence(harness: Any) -> None:
     harness.args.chain, harness.args.cycle = None, "codex,claude"
     runner = harness.runner(harness.args, harness.directory)
     assert runner.run() == "converged"
-    assert harness.launches == ["codex", "claude", "codex"]
+    assert harness.launches == ["codex", "claude"]
 
 
 def test_tier_publication_reaches_real_ledger_dispatch(

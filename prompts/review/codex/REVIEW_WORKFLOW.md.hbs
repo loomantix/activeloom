@@ -303,7 +303,7 @@ engine in a fresh terminal.
 8. A sequenced run must first reach `next-pass` status `converged`. Also require
    `verify-coverage` to pass at the exact current head — a roster
    is declared and every declared reviewer holds an attestation naming that
-   head — the round that produced those attestations had no material fix, and
+   head — any material fix has a later independent non-material pass, and
    every local-review thread contains a disposition reply and is resolved.
    Revalidate the exact PR head, then end the run with
    `local-review-handoff.py finish-run --outcome converged` and mark the PR
@@ -316,8 +316,9 @@ A request for a full auto review chain means an outer orchestration loop, not
 one local skill invocation or several subagent lanes from the same engine.
 Resolve and report the engine sequence, tier, per-engine cap, mode, and tested
 launcher paths before spending a pass. Preserve a user-specified sequence.
-For Codex → Claude Code → Codex, start with `--sequence codex,claude`;
-the controller repeats that cycle and requires a return to Codex before stopping.
+For a repeating Codex → Claude Code cycle, start with `--sequence codex,claude`.
+A clean first cycle can converge. For a literal Codex → Claude Code → Codex
+plan, use the runner's finite `--chain codex,claude,codex`.
 The author engine is a required participant when named in the sequence, even
 though it does not count as an independent reviewer in the roster. Do not
 change authorship or shrink the roster to make coverage pass.
@@ -341,8 +342,9 @@ not necessarily the author. Supply the last completed pass as the handoff's
 from-engine, round, head, and outcome. A terminal sequence has no next handoff.
 
 `next-pass` derives completed passes only from the current authenticated run.
-It requires ordered participation, a return to the initiating engine, and every
-participant's latest attestation on the current head with no material outcome.
+It requires ordered participation and every participant's latest attestation
+on the current head. Any material fix requires a later clean or minor pass by
+a different engine; the fixing engine's post-fix attestation stays valid.
 `finish-run --outcome converged` additionally runs `verify-ledger` and
 `verify-coverage`; neither a green test suite nor coverage alone replaces the
 sequence check. Report `exhausted` at the tier cap and leave the PR draft.
@@ -656,9 +658,10 @@ A round is one complete pass per available engine at the same head.
   material fix, and runs in convergence mode.
 - **Deep — cap 4.** Rounds 1–2 adversarial, rounds 3–4 convergence.
 
-**Stop as soon as a complete round produces no material fix.** That is the
-stopping rule for both tiers, and it is a rule rather than a budget to spend: a
-Lean change that lands after one clean round has had enough review.
+**Stop as soon as every participant covers the current head and any material
+fix has a later independent non-material pass.** A clean first cycle is enough;
+the cap is a ceiling, not a target. Do not rerun an engine merely to replace its
+material outcome when its final-lane attestation already covers that head.
 
 A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
