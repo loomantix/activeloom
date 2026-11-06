@@ -903,7 +903,7 @@ def test_claude_panes_in_auto_mode_need_the_entries(
 ) -> None:
     engines = {**LAUNCH_FLAGS, "claude": {location: args}}
     report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines=engines)
-    assert report["auto_mode"]["because"] == ["herd.json starts Claude sessions in auto mode"]
+    assert report["auto_mode"]["because"] == ["herd.json, or the Claude editing-pane default, starts Claude sessions in auto mode"]
     assert report["ready"] is False
     assert report["draft"] is not None
 
@@ -919,9 +919,12 @@ def test_default_claude_auto_mode_drafts_required_settings_without_writing_them(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report = claude_settings(tmp_path, capsys, monkeypatch, {}, "--engine", "claude", engines={})
-    assert report["auto_mode"]["because"] == ["herd.json starts Claude sessions in auto mode"]
+    assert report["auto_mode"]["because"] == ["herd.json, or the Claude editing-pane default, starts Claude sessions in auto mode"]
     assert report["ready"] is False
-    assert "--permission-mode auto for claude" in report["missing"][-1]["entry"]
+    rule = report["missing"][-1]["entry"]
+    assert "--permission-mode auto for claude" in rule
+    assert "built-in defaults" in rule
+    assert "flags that file held" not in rule
     assert json.loads((tmp_path / "claude/settings.json").read_text()) == {}
     draft = json.loads(Path(report["draft"]["path"]).read_text())
     rerun = claude_settings(tmp_path, capsys, monkeypatch, draft, "--engine", "claude", engines={})

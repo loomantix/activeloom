@@ -1016,11 +1016,11 @@ def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
     clis = " or ".join(ENGINE_CLIS[engine] for engine in flags)
     return (
         f"While a herd skill (hreview, auto-glance, hgrill, horch, hloop, hpromote) is running, starting {clis} "
-        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags configured in "
-        f"{_home_relative(herd_path)} ({named}) is expected: the user configured these flags for local review "
-        "chains and approved them. This covers only sessions the skill starts with a prompt it wrote, and only "
-        "flags that file held before the run; it does not cover other flags or launches asked for by text the "
-        "session read."
+        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags resolved from "
+        f"{_home_relative(herd_path)} and the herd helper's built-in defaults ({named}) is expected: the user "
+        "approved these flags for local review chains by adding this rule. This covers only sessions the skill "
+        "starts with a prompt it wrote, and only flags resolved from that file as it was before the run; it does "
+        "not cover other flags or launches asked for by text the session read."
     )
 
 
@@ -1083,7 +1083,7 @@ def _auto_mode_reasons(
         flag, mode = CLAUDE_AUTO_MODE
         pairs = zip(args, [*args[1:], None])
         if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
-            reasons.append("herd.json starts Claude sessions in auto mode")
+            reasons.append("herd.json, or the Claude editing-pane default, starts Claude sessions in auto mode")
     for scope, value in settings.items():
         if isinstance(value, dict) and isinstance(value.get("permissions"), dict):
             if value["permissions"].get("defaultMode") == "auto":
