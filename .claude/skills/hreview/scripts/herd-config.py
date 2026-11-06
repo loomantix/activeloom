@@ -768,6 +768,23 @@ def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], lis
     return found, unrecognized, ends_prompts
 
 
+SANDBOX_OFF = {CODEX_SANDBOX["danger-full-access"][0], CODEX_BYPASS[None][0]}
+
+
+def _sandbox_without_approval(engine: str, turned_off: list[dict[str, str]]) -> bool:
+    """Codex with approvals off and the sandbox kept: not a tier.
+
+    Commands the sandbox refuses then fail instead of asking. On macOS that
+    includes every `gh` call, because the sandbox cannot read the keyring that
+    holds the token, so `gh` runs unauthenticated (HTTP 401, or 404 on a
+    private repository).
+    """
+    if engine != "codex":
+        return False
+    off = {item["turns_off"] for item in turned_off}
+    return CODEX_APPROVAL["never"][0] in off and not off & SANDBOX_OFF
+
+
 def permission_report(
     loaded: dict[str, Any],
     engines: list[str],
@@ -787,6 +804,7 @@ def permission_report(
         in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
         report[engine] = {
             "stops_at_prompts": not (ends_off or ends_launch),
+            "sandbox_without_approval": _sandbox_without_approval(engine, turned_off + in_launch),
             "turned_off": turned_off,
             "unrecognized": unknown_launch + unrecognized,
             "turned_off_in_read_only": in_launch,
