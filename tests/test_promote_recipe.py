@@ -36,6 +36,7 @@ FULL: dict[str, Any] = {
     "schema_version": 1,
     "integration_branch": "develop",
     "production_branch": "main",
+    "deploy_trigger": "merge",
     "guide": "docs/release/promotion.md",
     "rollback": "docs/runbooks/rollback.md",
     "blocker_issues": {"labels": ["type: bug"]},
@@ -121,8 +122,9 @@ def test_full_recipe_applies_defaults() -> None:
 def test_minimal_recipe() -> None:
     effective = recipe_mod.validate_recipe(
         {"schema_version": 1, "integration_branch": "develop", "production_branch": "main",
-         "steps": [{"id": "ci", "kind": "watch_checks", "phase": "pre_merge"}]}
+         "deploy_trigger": "merge", "steps": [{"id": "ci", "kind": "watch_checks", "phase": "pre_merge"}]}
     )
+    assert effective["deploy_runbook"] is None
     assert effective["guide"] is None and effective["blocker_issues"] is None
     assert effective["pull_request"]["surface"] == [] and effective["pull_request"]["merge_method"] is None
 
@@ -202,6 +204,89 @@ def test_title_renders_fields() -> None:
     assert recipe_mod.render_title(recipe_mod.validate_recipe(FULL), "2026-01-02") == "Promote develop → main — 2026-01-02"
 
 
+# --- deploy trigger -------------------------------------------------------------------
+
+
+MANUAL_STEPS = [
+    {"id": "ci", "kind": "watch_checks", "phase": "pre_merge"},
+    {"id": "landed", "kind": "command", "phase": "post_merge", "run": ["scripts/check-merge"]},
+    {"id": "deploy-app", "kind": "watch_workflow", "phase": "post_deploy", "workflow": "deploy.yml"},
+    {"id": "smoke", "kind": "command", "phase": "post_deploy", "lane": "verify", "run": ["scripts/smoke"]},
+]
+
+
+def test_missing_deploy_trigger_blocks_and_names_the_field() -> None:
+    value = recipe()
+    del value["deploy_trigger"]
+    errors = errors_of(value)
+    assert any(error.startswith("deploy_trigger: required") and '"merge"' in error and '"manual"' in error
+               for error in errors), errors
+    assert any("deploy_trigger: must be one of merge, manual" in e for e in errors_of(recipe(deploy_trigger="auto")))
+    assert any("deploy_trigger: required" in e for e in errors_of(recipe(deploy_trigger=None)))
+
+
+def test_merge_trigger_keeps_deploy_checks_in_post_merge() -> None:
+    effective = recipe_mod.validate_recipe(FULL)
+    assert effective["deploy_trigger"] == "merge" and effective["deploy_runbook"] is None
+    errors = errors_of(recipe(steps=MANUAL_STEPS))
+    assert any("post_deploy needs deploy_trigger manual" in error for error in errors), errors
+    errors = errors_of(recipe(deploy_runbook="docs/deploy.md"))
+    assert any("deploy_runbook: only a manual" in error for error in errors), errors
+
+
+def test_manual_trigger_splits_merge_checks_from_deploy_checks() -> None:
+    effective = recipe_mod.validate_recipe(
+        recipe(deploy_trigger="manual", deploy_runbook="Run the Deploy workflow with the release tag", steps=MANUAL_STEPS)
+    )
+    assert effective["deploy_trigger"] == "manual"
+    assert effective["deploy_runbook"] == "Run the Deploy workflow with the release tag"
+    phases = {step["id"]: step["phase"] for step in effective["steps"]}
+    assert phases == {"ci": "pre_merge", "landed": "post_merge", "deploy-app": "post_deploy", "smoke": "post_deploy"}
+    layout = recipe_mod.layout(effective)
+    assert [p["phase"] for p in layout["phases"]] == ["pre_merge", "post_merge", "post_deploy"]
+    assert lanes_of(layout, "post_deploy") == [["deploy-app"], ["verify"]]
+    assert next(p for p in layout["phases"] if p["phase"] == "post_deploy")["fix_slots"] == 0
+    # A manual recipe with no post_deploy step is valid: the deploy is checked by hand.
+    recipe_mod.validate_recipe(recipe(deploy_trigger="manual"))
+    errors = errors_of(recipe(deploy_trigger="manual", deploy_runbook="two\nlines"))
+    assert any("deploy_runbook: must be a non-empty single-line string" in e for e in errors), errors
+    fix = [{"id": "x", "kind": "command", "phase": "post_deploy", "run": ["t"], "fix": ["f"]}]
+    assert any("cannot carry a fix" in e for e in errors_of(recipe(deploy_trigger="manual", steps=fix)))
+
+
+def test_schema_accepts_a_manual_recipe_and_requires_the_trigger() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((SOURCE / "promote-recipe.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    validator.validate(recipe(deploy_trigger="manual", deploy_runbook="docs/deploy.md", steps=MANUAL_STEPS))
+    missing = recipe()
+    del missing["deploy_trigger"]
+    assert not validator.is_valid(missing)
+
+
+def test_validate_cli_reports_the_missing_trigger(tmp_path: Path) -> None:
+    value = recipe()
+    del value["deploy_trigger"]
+    path = tmp_path / "recipe.json"
+    path.write_text(json.dumps(value))
+    done = subprocess.run([sys.executable, "-I", str(SOURCE / "promote-recipe.py"), "validate", str(path)],
+                          capture_output=True, text=True, check=False)
+    assert done.returncode == 1 and "invalid: deploy_trigger: required" in done.stderr
+
+
+def test_run_accepts_the_post_deploy_phase(tmp_path: Path) -> None:
+    steps = [{"id": "smoke", "kind": "command", "phase": "post_deploy", "run": ["true"]}]
+    path = tmp_path / "recipe.json"
+    path.write_text(json.dumps(recipe(deploy_trigger="manual", steps=steps)))
+    done = subprocess.run(
+        [sys.executable, "-I", str(SOURCE / "promote-recipe.py"), "run", "--recipe", str(path), "--phase", "post_deploy",
+         "--lane", "main", "--cwd", str(tmp_path), "--sha", "a" * 40],
+        capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "PROMOTE-LANE post_deploy/main ok" in done.stdout
+
+
 # --- legacy herd config -------------------------------------------------------------
 
 
@@ -212,6 +297,7 @@ def test_recipe_from_legacy_herd_promotion_keys() -> None:
             "integration_branch": "develop",
             "promotion": {
                 "production_branch": "main",
+                "deploy_trigger": "merge",
                 "risk_engine": "codex",
                 "preflight": [["make", "check"], ["make", "audit"]],
                 "deploy_workflows": ["Deploy App", "deploy-app.yml"],
@@ -235,6 +321,42 @@ def test_recipe_from_legacy_herd_promotion_keys() -> None:
     post_layout = next(phase for phase in recipe_mod.layout(effective)["phases"] if phase["phase"] == "post_merge")
     assert post_layout["panes"][0]["lanes"][0]["steps"] == [step["id"] for step in post_steps]
     assert effective["integration_branch"] == "develop" and effective["production_branch"] == "main"
+
+
+def test_legacy_herd_manual_trigger_moves_deploy_checks_after_the_deploy() -> None:
+    config = herd.validate_repo(
+        {"schema_version": 1, "integration_branch": "develop",
+         "promotion": {"production_branch": "main", "deploy_trigger": "manual", "deploy_runbook": "docs/deploy.md",
+                       "deploy_workflows": ["deploy.yml"], "post_merge": [["scripts/smoke"]]}}
+    )
+    assert config["promotion"]["deploy_trigger"] == "manual"
+    effective = recipe_mod.from_herd({"config": config})
+    assert effective["deploy_trigger"] == "manual" and effective["deploy_runbook"] == "docs/deploy.md"
+    after = [(s["id"], s["phase"]) for s in effective["steps"] if s["phase"] in recipe_mod.AFTER_MERGE_PHASES]
+    assert after == [("post-deploy", "post_deploy"), ("post-merge-1", "post_deploy")]
+
+
+def test_legacy_herd_without_a_trigger_blocks_and_names_the_field() -> None:
+    config = herd.validate_repo({"schema_version": 1, "integration_branch": "develop",
+                                 "promotion": {"production_branch": "main"}})
+    assert config["promotion"]["deploy_trigger"] is None
+    with pytest.raises(recipe_mod.RecipeError) as caught:
+        recipe_mod.from_herd({"config": config})
+    assert caught.value.errors[0].startswith("promotion.deploy_trigger: required")
+
+
+@pytest.mark.parametrize(
+    ("promotion", "message"),
+    [
+        ({"deploy_trigger": "auto"}, "promotion.deploy_trigger: must be one of merge, manual"),
+        ({"deploy_trigger": "merge", "deploy_runbook": "docs/deploy.md"}, "promotion.deploy_runbook: only a manual"),
+        ({"deploy_trigger": "manual", "deploy_runbook": ""}, "promotion.deploy_runbook: must be a non-empty"),
+    ],
+)
+def test_herd_config_validates_the_trigger(promotion: dict[str, Any], message: str) -> None:
+    with pytest.raises(herd.ConfigError) as caught:
+        herd.validate_repo({"schema_version": 1, "promotion": {"production_branch": "main", **promotion}})
+    assert any(message in error for error in caught.value.errors), caught.value.errors
 
 
 def test_from_herd_needs_promotion() -> None:
@@ -555,7 +677,7 @@ def test_show_falls_back_to_the_herd_config_and_checks_agreement(remote: tuple[P
     _, work = remote
     herd_out = {"source": {"ref": "origin/develop", "commit": "c"}, "config": herd.validate_repo(
         {"schema_version": 1, "integration_branch": "develop",
-         "promotion": {"production_branch": "release", "preflight": [["make", "check"]]}}
+         "promotion": {"production_branch": "release", "deploy_trigger": "merge", "preflight": [["make", "check"]]}}
     )}
     done = show(work, "--herd", "-", stdin=json.dumps(herd_out))
     assert done.returncode == 0, done.stderr
@@ -574,7 +696,7 @@ def test_show_falls_back_to_the_herd_config_and_checks_agreement(remote: tuple[P
     git(work, "remote", "set-head", "origin", "main")
     herd_staging = {"source": {"ref": "origin/develop", "commit": "c"}, "config": herd.validate_repo(
         {"schema_version": 1, "integration_branch": "develop",
-         "promotion": {"production_branch": "main"}}
+         "promotion": {"production_branch": "main", "deploy_trigger": "merge"}}
     )}
     from_integration = subprocess.run(
         ["python3", "-I", str(SOURCE / "promote-recipe.py"), "show", "--repo-dir", str(work), "--herd", "-"],
