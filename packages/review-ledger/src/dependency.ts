@@ -662,13 +662,6 @@ function contentSkeleton(
           return raw.replace(/--hash=\S+/, '--hash=<pin>');
         return raw;
       }
-      if (isDockerfileFromLine(line)) {
-        return raw.replace(
-          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
-          (_, prefix: string, reference: string) =>
-            `${prefix}${maskImageReference(reference)}`,
-        );
-      }
       const workflow = isWorkflowPath(path, name);
       const keys = yamlPath.join('/');
       if (
