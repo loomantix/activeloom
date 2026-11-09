@@ -560,6 +560,67 @@ const cases: [string, string, string, string, boolean][] = [
     'node:23',
     false,
   ],
+  // A heredoc BuildKit would not open (or would) must not shift where the
+  // scanner thinks a later heredoc body ends; `FROM example:1` is body data.
+  ...[
+    'RUN echo << EOF',
+    'RUN cat<<EOF',
+    'RUN echo "x <<EOF y"',
+    'RUN cat <<<EOF',
+    'ENV A <<EOF',
+    'RUN echo a \\\n# <<EOF\n  && true',
+    'RUN cat <<DATA >> `f`\nDATA',
+  ].map((opener): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    `FROM node:22\n${opener}\nRUN cat <<OTHER\n${opener.includes('DATA') ? 'DATA' : 'EOF'}\nFROM example:1\nOTHER\n`,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    '# escape=`\nFROM node:22\nRUN cat <<DATA \\\nDATA\nRUN cat <<OTHER\nDATA\nFROM example:1\nOTHER\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN cat <\\\n<EOF > /etc/motd\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nCOPY <<A <<B /dst\na\nA\nFROM example:1\nB\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN <<-EOF\n  EOF\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN printf "%s" \\\n\nFROM example:1\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  // A heredoc opened on a continuation line, with a quoted delimiter, still
+  // lets a later `FROM` bump through.
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN \\\n  cat <<"EOF" > /x\nhi\nEOF\nFROM node:22 AS final\n',
+    'node:22 AS final',
+    'node:23 AS final',
+    true,
+  ],
   // An apostrophe in a trailing YAML comment is not an unclosed quote.
   [
     '.github/workflows/ci.yml',

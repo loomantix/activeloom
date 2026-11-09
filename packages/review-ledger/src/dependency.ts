@@ -432,51 +432,89 @@ function jsonSkeleton(name: string, content: string): string | null {
   }
 }
 
+/** BuildKit's line continuation for each escape token. */
+const DOCKERFILE_CONTINUATIONS: readonly RegExp[] = [
+  /(^|[^\\])\\[ \t]*$/,
+  /(^|[^`])`[ \t]*$/,
+];
+
+/** A heredoc word as BuildKit reads it: optional fd, `<<`, then the delimiter. */
+const HEREDOC_WORD = /^\d*<<(-?)(["']?)([A-Za-z_][\w.-]*)\2$/;
+
 /**
- * Mask only `FROM` instructions that occupy one physical line.
- *
- * Continued instructions and heredoc bodies stay literal, so a change inside
- * them keeps the skeletons different. Both `\\` and a backtick count as the
- * escape character, whichever the file declares: treating extra lines as
- * continuations only leaves more text literal. Comment and blank lines inside a
- * continuation do not end it, as in BuildKit. Returns null for a heredoc this
- * scanner cannot delimit.
+ * Heredocs BuildKit reads from one logical instruction, or null when this
+ * scanner cannot confirm them. Quotes, escapes and `${` can regroup shell
+ * words, so any of them beside a `<<` is unconfirmable.
  */
-function dockerfileSkeleton(content: string): string | null {
-  const lines = content.split('\n');
+function dockerfileHeredocs(
+  text: string,
+): { strip: boolean; word: string }[] | null {
+  if (/[^\S \t]/.test(text)) return null;
+  const words = text.trim().split(/[ \t]+/);
+  const keyword = words[0]!.toLowerCase();
+  if (keyword === 'onbuild') return null;
+  if (!['run', 'copy', 'add'].includes(keyword)) return [];
+  // JSON form carries no heredoc, but telling it apart needs BuildKit's parse.
+  if (words[1]?.startsWith('[')) return null;
+  const heredocs: { strip: boolean; word: string }[] = [];
+  for (const word of words.slice(1)) {
+    const match = HEREDOC_WORD.exec(word);
+    if (match) heredocs.push({ strip: match[1] === '-', word: match[3]! });
+    else if (/["'\\]|\$\{|<</.test(word)) return null;
+  }
+  return heredocs;
+}
+
+/**
+ * Mask only `FROM` instructions that occupy one physical line, under one
+ * escape token's continuation rule.
+ *
+ * Instruction and heredoc boundaries follow BuildKit. Reading a continuation
+ * or heredoc BuildKit does not would move where a later heredoc body ends and
+ * expose its data as instructions, so an opener this scanner cannot confirm
+ * returns null instead.
+ */
+function dockerfileSkeletonFor(
+  lines: readonly string[],
+  continuation: RegExp,
+): string | null {
   const output: string[] = [];
   let index = 0;
   while (index < lines.length) {
     const first = lines[index]!;
+    index += 1;
     const trimmed = first.trim();
     if (!trimmed || trimmed.startsWith('#')) {
       output.push(first);
-      index += 1;
       continue;
     }
+    // The logical line BuildKit parses: continuation tokens removed, comment
+    // and blank continuation lines dropped, physical lines concatenated.
     const instruction = [first];
-    index += 1;
-    let continued = /[\\`]\s*$/.test(first);
+    let text = first.replace(/[\r\n]+$/, '').trimStart();
+    let continued = continuation.test(text);
+    text = text.replace(continuation, '$1');
     while (continued && index < lines.length) {
       const next = lines[index]!;
       instruction.push(next);
       index += 1;
-      const text = next.trim();
-      if (text && !text.startsWith('#')) continued = /[\\`]\s*$/.test(next);
+      const physical = next.replace(/[\r\n]+$/, '');
+      const content = physical.trim();
+      if (!content || content.startsWith('#')) continue;
+      continued = continuation.test(physical);
+      text += physical.replace(continuation, '$1');
     }
-    const logical = instruction.join('\n');
-    if (logical.includes('<<')) {
-      const markers = [
-        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2(?=\s|$)/g),
-      ];
-      if (markers.length !== logical.split('<<').length - 1) return null;
-      for (const [, strip, , word] of markers) {
+    if (text.includes('<<')) {
+      const heredocs = dockerfileHeredocs(text);
+      if (heredocs === null) return null;
+      for (const { strip, word } of heredocs) {
         let closed = false;
         while (index < lines.length) {
           const body = lines[index]!;
           instruction.push(body);
           index += 1;
-          if ((strip ? body.replace(/^\t+/, '') : body) === word) {
+          const candidate = body.replace(/[\r\n]+$/, '');
+          if ((strip ? candidate.replace(/^\t+/, '') : candidate) === word) {
             closed = true;
             break;
           }
@@ -499,6 +537,19 @@ function dockerfileSkeleton(content: string): string | null {
     output.push(...instruction);
   }
   return output.join('\n');
+}
+
+/**
+ * Compare a Dockerfile under both escape tokens. This scanner does not read
+ * the `# escape=` directive, so it requires both readings to agree; the
+ * file's real one is always among them.
+ */
+function dockerfileSkeleton(content: string): string | null {
+  const lines = content.split('\n');
+  const skeletons = DOCKERFILE_CONTINUATIONS.map((continuation) =>
+    dockerfileSkeletonFor(lines, continuation),
+  );
+  return skeletons.includes(null) ? null : JSON.stringify(skeletons);
 }
 
 /** Drop a trailing YAML comment: a `#` after whitespace, outside quotes. */

@@ -18062,41 +18062,62 @@ function jsonSkeleton(name, content) {
     return null;
   }
 }
-function dockerfileSkeleton(content) {
-  const lines = content.split("\n");
+var DOCKERFILE_CONTINUATIONS = [
+  /(^|[^\\])\\[ \t]*$/,
+  /(^|[^`])`[ \t]*$/
+];
+var HEREDOC_WORD = /^\d*<<(-?)(["']?)([A-Za-z_][\w.-]*)\2$/;
+function dockerfileHeredocs(text) {
+  if (/[^\S \t]/.test(text)) return null;
+  const words = text.trim().split(/[ \t]+/);
+  const keyword = words[0].toLowerCase();
+  if (keyword === "onbuild") return null;
+  if (!["run", "copy", "add"].includes(keyword)) return [];
+  if (words[1]?.startsWith("[")) return null;
+  const heredocs = [];
+  for (const word of words.slice(1)) {
+    const match = HEREDOC_WORD.exec(word);
+    if (match) heredocs.push({ strip: match[1] === "-", word: match[3] });
+    else if (/["'\\]|\$\{|<</.test(word)) return null;
+  }
+  return heredocs;
+}
+function dockerfileSkeletonFor(lines, continuation) {
   const output = [];
   let index = 0;
   while (index < lines.length) {
     const first = lines[index];
+    index += 1;
     const trimmed = first.trim();
     if (!trimmed || trimmed.startsWith("#")) {
       output.push(first);
-      index += 1;
       continue;
     }
     const instruction = [first];
-    index += 1;
-    let continued = /[\\`]\s*$/.test(first);
+    let text = first.replace(/[\r\n]+$/, "").trimStart();
+    let continued = continuation.test(text);
+    text = text.replace(continuation, "$1");
     while (continued && index < lines.length) {
       const next = lines[index];
       instruction.push(next);
       index += 1;
-      const text = next.trim();
-      if (text && !text.startsWith("#")) continued = /[\\`]\s*$/.test(next);
+      const physical = next.replace(/[\r\n]+$/, "");
+      const content = physical.trim();
+      if (!content || content.startsWith("#")) continue;
+      continued = continuation.test(physical);
+      text += physical.replace(continuation, "$1");
     }
-    const logical = instruction.join("\n");
-    if (logical.includes("<<")) {
-      const markers = [
-        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2(?=\s|$)/g)
-      ];
-      if (markers.length !== logical.split("<<").length - 1) return null;
-      for (const [, strip, , word] of markers) {
+    if (text.includes("<<")) {
+      const heredocs = dockerfileHeredocs(text);
+      if (heredocs === null) return null;
+      for (const { strip, word } of heredocs) {
         let closed = false;
         while (index < lines.length) {
           const body = lines[index];
           instruction.push(body);
           index += 1;
-          if ((strip ? body.replace(/^\t+/, "") : body) === word) {
+          const candidate = body.replace(/[\r\n]+$/, "");
+          if ((strip ? candidate.replace(/^\t+/, "") : candidate) === word) {
             closed = true;
             break;
           }
@@ -18118,6 +18139,13 @@ function dockerfileSkeleton(content) {
     output.push(...instruction);
   }
   return output.join("\n");
+}
+function dockerfileSkeleton(content) {
+  const lines = content.split("\n");
+  const skeletons = DOCKERFILE_CONTINUATIONS.map(
+    (continuation) => dockerfileSkeletonFor(lines, continuation)
+  );
+  return skeletons.includes(null) ? null : JSON.stringify(skeletons);
 }
 function stripYamlComment(raw) {
   let quote;
