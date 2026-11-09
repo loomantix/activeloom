@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_hreview_returns_on_zero_files_before_any_glance_or_chain(root: str) -> None:
     body = " ".join((ROOT / root / "skills/hreview/SKILL.md").read_text().split())
     gate = body.split("6. Tier extensions first:", 1)[1].split("7. Settings", 1)[0]
-    zero, nonempty = gate.split("Otherwise, for a nonempty diff:", 1)
+    zero, nonempty = gate.split("Otherwise, for a nonempty diff or an empty one whose lifecycle is not `none`:", 1)
     for requirement in (
         "**Verified zero-file comparison**",
         "common PR-wide `run-state` inventory",
@@ -33,7 +33,11 @@ def test_hreview_returns_on_zero_files_before_any_glance_or_chain(root: str) -> 
 @pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
 def test_horch_checks_before_recommending_and_ships_without_ai_attestation(root: str) -> None:
     body = " ".join((ROOT / root / "skills/horch/SKILL.md").read_text().split())
-    route = body.split("**Review chain**", 1)[1].split("For a nonempty diff, start the herder", 1)[0]
+    route = body.split("**Review chain**", 1)[1].split(
+        "For a nonempty diff, or an empty one whose lifecycle is not `none`, start the herder", 1
+    )[0]
+    settled = "act on a PR only when it is open, its author session has finished, and its head is not about to move"
+    assert route.index(settled) < route.index("**Verified zero-file comparison**")
     for requirement in (
         "before recommending or launching a herder",
         "**Verified zero-file comparison**",
@@ -55,7 +59,7 @@ def test_horch_checks_before_recommending_and_ships_without_ai_attestation(root:
         "drift restores draft status and blocks shipment",
         "complete zero-file verification immediately before merge, after any wait",
         "requiring the same head and base",
-        "tree preservation and intended ancestry evidence before and after merge",
+        "tree preservation evidence before and after merge, and for an ancestry-only repair its intended ancestry evidence",
         "No existing run may be ended, restarted, replaced or rewritten",
     ):
         assert requirement in zero, requirement

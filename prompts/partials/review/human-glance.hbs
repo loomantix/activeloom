@@ -26,7 +26,10 @@ complete classification with `"skip": true`, `classifications: []`,
 is a candidate for no AI content review. Confirm it against fresh Git evidence:
 fetch the base and head refs successfully, resolve their full SHAs and merge
 base, classify that exact committed range, and require
-`git diff --name-status <merge-base sha> <head sha>` to exit 0 with empty stdout.
+`git diff --name-status <merge-base sha> <head sha>` to exit 0 with empty stdout
+and `git merge-tree --write-tree <base sha> <head sha>` to exit 0 with a tree
+equal to `git rev-parse <base sha>^{tree}`: with several merge bases, an empty
+diff against one of them does not show that the merge leaves the target unchanged.
 Zero line counts alone never qualify: binary, mode-only, rename and other
 nonempty file diffs retain normal routing. Missing fields, malformed output,
 failed commands, incomplete history or unavailable reads are blocks, never
@@ -54,12 +57,12 @@ Verified zero-file diff at <head sha>: no AI content review needed. Normal shipp
 This is not merge authority or an AI approval. Immediately before merge,
 including after any CI wait, repeat the complete verification and require the
 same head and base SHAs; changed refs invalidate the earlier conclusion. Keep
-normal CI, mergeability, tests and repository-authority gates. For an
-ancestry-only repair, also validate that the prospective merge preserves the
-target/integration tree and establishes the intended ancestry: record the
-target tree, candidate merge tree and intended ancestor commits, require equal
-trees and those commits reachable from the candidate merge, then validate the
-resulting tree and ancestry after merge. Failure or unavailable evidence blocks
+normal CI, mergeability, tests and repository-authority gates. Validate that the
+prospective merge preserves the target/integration tree: record the target tree
+and candidate merge tree, require equal trees, then validate the resulting tree
+after merge. For an ancestry-only repair, also record the intended ancestor
+commits, require them reachable from the candidate merge, and validate the
+resulting ancestry after merge. Failure or unavailable evidence blocks
 shipping. This route grants no restart, merge or deployment authority.
 
 When the output has `"skip": true` and a non-empty `classifications` array,

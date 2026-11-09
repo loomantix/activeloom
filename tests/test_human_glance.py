@@ -74,10 +74,14 @@ def test_zero_file_policy_requires_complete_local_remote_and_lifecycle_evidence(
         "Immediately before merge, including after any CI wait, repeat the complete verification",
         "same head and base SHAs",
         "normal CI, mergeability, tests and repository-authority gates",
-        "target tree, candidate merge tree and intended ancestor commits",
-        "require equal trees",
-        "reachable from the candidate merge",
-        "validate the resulting tree and ancestry after merge",
+        "`git merge-tree --write-tree <base sha> <head sha>` to exit 0 with a tree equal to `git rev-parse <base sha>^{tree}`",
+        "with several merge bases, an empty diff against one of them does not show",
+        "Validate that the prospective merge preserves the target/integration tree",
+        "record the target tree and candidate merge tree, require equal trees",
+        "validate the resulting tree after merge",
+        "For an ancestry-only repair, also record the intended ancestor commits",
+        "require them reachable from the candidate merge",
+        "validate the resulting ancestry after merge",
         "no restart, merge or deployment authority",
     ):
         assert requirement in rule, requirement
