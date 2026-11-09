@@ -39,13 +39,42 @@ protected parent. Sudo's [secure-path check](https://github.com/sudo-project/sud
 rejects unsafe ownership and write permissions, rather than public readability.
 Sites requiring a different drop-in mode remain unsupported by this reader.
 
+Public readability is not enough when the sudoers directory itself cannot be
+searched by the reader, as with the `root:root 0750` `/etc/sudoers.d` shipped by
+Debian and Ubuntu. There the reader cannot verify the drop-in at all, and it does
+not guess:
+
+- With no `/etc/activeloom/`, the report is never-installed: manual behavior,
+  network unenforced, not launch-blocked. The reason notes the unsearchable
+  directory. The installer creates `/etc/activeloom/` before the drop-in and a
+  failed install removes the drop-in before it, so the drop-in alone is not an
+  installation.
+- With `/etc/activeloom/` present, the report is installed, unprotected and
+  launch-blocked, with reason `sudoers drop-in unverifiable`. Automatic
+  authority stays disabled on such hosts until the drop-in can be verified.
+
 Each file is replaced atomically and synced. The installer checks the staged
-sudoers fragment and the complete sudoers configuration with `visudo`, including
+sudoers fragment and the complete sudoers configuration with `visudo -c`, including
 evidence that the fragment was included, before activating the initial policy.
+Inclusion evidence depends on the `visudo` in use, identified by `visudo -V`:
+
+- Classic sudo lists every file it parsed; the output must contain the line
+  `<drop-in path>: parsed OK`.
+- sudo-rs (`visudo-rs`) parses included files but prints only
+  `<sudoers path>: parsed OK`. The output must be exactly that line, and the
+  sudoers file must carry a top-level `@includedir` or `#includedir` directive
+  naming the drop-in's directory. A drop-in reached only through a nested or
+  single-file `@include` is refused.
+
 Initial values are `full`, no stops, restart budget 2, and `restricted` with an
 empty additional allowlist. Installation refuses to overwrite an existing or
-partial installation. A crash can leave protected partial artifacts; inspect and
-repair these explicitly before retrying. It never treats them as never installed.
+partial installation. A failed installation removes the drop-in first, then
+everything else it created. If that removal fails, or a crash interrupts the
+installer, it prints or leaves protected partial artifacts. The refusal names the
+exact cleanup (`sudo rm -f /etc/sudoers.d/activeloom-policy && sudo rm -rf
+/etc/activeloom`; `/private/etc` on macOS). Run it only after confirming the
+artifacts are a failed install. Partial artifacts are never treated as never
+installed.
 
 For a complete replacement on Linux (use `/private/etc` on macOS):
 
@@ -76,7 +105,9 @@ noninteractive probes: `sudo -n -l <setter> --check` and
 and disables automatic authority. A password-required diagnostic is accepted
 only with positive exact-command permission evidence from the former. Denials,
 missing executables, configuration errors, unfamiliar/localized diagnostics and
-inconclusive listing disable authority. Some sudo configurations cannot supply
+inconclusive listing disable authority. The accepted password-required
+diagnostics are exactly `sudo: a password is required` (classic sudo) and
+`sudo: interactive authentication is required` (sudo-rs). Some sudo configurations cannot supply
 that evidence noninteractively; those remain disabled. No cached-ticket claim is
 inferred from unit tests.
 
@@ -121,5 +152,9 @@ sudo, sudo-rs and macOS sudo: **unrun**. Offline fixtures exercise classificatio
 path protection and failed installation; they are not platform demonstrations.
 An unprivileged syntax-only check of the drop-in passed with local `visudo`
 (sudo-rs) and `visudo.ws`; it did not install the fragment or authenticate.
+The sudo-rs fixtures use strings and output shapes from sudo-rs 0.2.13 binaries
+and an unprivileged `visudo -c` run. Whether sudo-rs's `sudo -n -l <setter>
+--check` can list without a cached credential is **unrun**. Where it cannot, the
+reader reports authority disabled.
 Containment, scoped credentials and same-user tamper resistance are unimplemented
 and unavailable here.
