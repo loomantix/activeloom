@@ -17968,6 +17968,9 @@ function isImageTagLine(line) {
     line
   );
 }
+function isDockerfileName(name) {
+  return /^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name);
+}
 function isDockerfileFromLine(line) {
   const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
     line
@@ -17996,7 +17999,7 @@ function lineKind(path, name) {
       isAllowed: (line) => isRequirementPinLine(line) || isRequirementAuxiliaryLine(line)
     };
   }
-  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+  if (isDockerfileName(name)) {
     return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith(".yml") || name.endsWith(".yaml")) {
@@ -18059,13 +18062,87 @@ function jsonSkeleton(name, content) {
     return null;
   }
 }
+function dockerfileSkeleton(content) {
+  const lines = content.split("\n");
+  const output = [];
+  let index = 0;
+  while (index < lines.length) {
+    const first = lines[index];
+    const trimmed = first.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      output.push(first);
+      index += 1;
+      continue;
+    }
+    const instruction = [first];
+    index += 1;
+    let continued = /[\\`]\s*$/.test(first);
+    while (continued && index < lines.length) {
+      const next = lines[index];
+      instruction.push(next);
+      index += 1;
+      const text = next.trim();
+      if (text && !text.startsWith("#")) continued = /[\\`]\s*$/.test(next);
+    }
+    const logical = instruction.join("\n");
+    if (logical.includes("<<")) {
+      const markers = [
+        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/g)
+      ];
+      if (markers.length !== logical.split("<<").length - 1) return null;
+      for (const [, strip, , word] of markers) {
+        let closed = false;
+        while (index < lines.length) {
+          const body = lines[index];
+          instruction.push(body);
+          index += 1;
+          if ((strip ? body.replace(/^\t+/, "") : body) === word) {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) return null;
+      }
+      output.push(...instruction);
+      continue;
+    }
+    if (instruction.length === 1 && isDockerfileFromLine(trimmed)) {
+      output.push(
+        first.replace(
+          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+          (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+        )
+      );
+      continue;
+    }
+    output.push(...instruction);
+  }
+  return output.join("\n");
+}
+function stripYamlComment(raw) {
+  let quote;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (quote === '"') {
+      if (char === "\\") i += 1;
+      else if (char === '"') quote = void 0;
+    } else if (quote === "'") {
+      if (char === "'" && raw[i + 1] === "'") i += 1;
+      else if (char === "'") quote = void 0;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "#" && (i === 0 || /\s/.test(raw[i - 1]))) {
+      return raw.slice(0, i);
+    }
+  }
+  return raw;
+}
 function contentSkeleton(path, name, content) {
   if (name.endsWith(".json")) return jsonSkeleton(name, content);
   if (name.endsWith(".jsonc")) return null;
   if (name.startsWith("build.gradle") || ["gemfile", "podfile", "mix.exs"].includes(name))
     return null;
-  if ((/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) && (content.includes("<<") || /[\\`]\s*$/m.test(content)))
-    return null;
+  if (isDockerfileName(name)) return dockerfileSkeleton(content);
   if ((name.endsWith(".toml") || name === "pipfile") && /'''|"""/.test(content))
     return null;
   let section = "";
@@ -18085,7 +18162,12 @@ function contentSkeleton(path, name, content) {
         scalarIndent = void 0;
       }
       if (!line || line.startsWith("#")) return raw;
-      if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ""))) {
+      if (/["']/.test(
+        stripYamlComment(raw).replace(
+          /"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g,
+          ""
+        )
+      )) {
         unsupportedQuotes = true;
         return raw;
       }
@@ -18515,7 +18597,8 @@ function classifyFiles(files, options) {
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
     }
-    const dependencyPin = classification.reviewSignificant && !underTestOrFixture && isDependencyPinChange(file);
+    const testRunnerImage = isDockerfileName(name) && !isFixture(classification.path, name);
+    const dependencyPin = classification.reviewSignificant && (!underTestOrFixture || testRunnerImage) && isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
     } else {

@@ -293,6 +293,11 @@ function isImageTagLine(line: string): boolean {
   );
 }
 
+/** Whether a lowercased basename names a Dockerfile. */
+export function isDockerfileName(name: string): boolean {
+  return /^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name);
+}
+
 function isDockerfileFromLine(line: string): boolean {
   const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
     line,
@@ -339,7 +344,7 @@ function lineKind(
         isRequirementPinLine(line) || isRequirementAuxiliaryLine(line),
     };
   }
-  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+  if (isDockerfileName(name)) {
     return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith('.yml') || name.endsWith('.yaml')) {
@@ -427,6 +432,95 @@ function jsonSkeleton(name: string, content: string): string | null {
   }
 }
 
+/**
+ * Mask only `FROM` instructions that occupy one physical line.
+ *
+ * Continued instructions and heredoc bodies stay literal, so a change inside
+ * them keeps the skeletons different. Both `\\` and a backtick count as the
+ * escape character, whichever the file declares: treating extra lines as
+ * continuations only leaves more text literal. Comment and blank lines inside a
+ * continuation do not end it, as in BuildKit. Returns null for a heredoc this
+ * scanner cannot delimit.
+ */
+function dockerfileSkeleton(content: string): string | null {
+  const lines = content.split('\n');
+  const output: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const first = lines[index]!;
+    const trimmed = first.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      output.push(first);
+      index += 1;
+      continue;
+    }
+    const instruction = [first];
+    index += 1;
+    let continued = /[\\`]\s*$/.test(first);
+    while (continued && index < lines.length) {
+      const next = lines[index]!;
+      instruction.push(next);
+      index += 1;
+      const text = next.trim();
+      if (text && !text.startsWith('#')) continued = /[\\`]\s*$/.test(next);
+    }
+    const logical = instruction.join('\n');
+    if (logical.includes('<<')) {
+      const markers = [
+        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/g),
+      ];
+      if (markers.length !== logical.split('<<').length - 1) return null;
+      for (const [, strip, , word] of markers) {
+        let closed = false;
+        while (index < lines.length) {
+          const body = lines[index]!;
+          instruction.push(body);
+          index += 1;
+          if ((strip ? body.replace(/^\t+/, '') : body) === word) {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) return null;
+      }
+      output.push(...instruction);
+      continue;
+    }
+    if (instruction.length === 1 && isDockerfileFromLine(trimmed)) {
+      output.push(
+        first.replace(
+          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+          (_, prefix: string, reference: string) =>
+            `${prefix}${maskImageReference(reference)}`,
+        ),
+      );
+      continue;
+    }
+    output.push(...instruction);
+  }
+  return output.join('\n');
+}
+
+/** Drop a trailing YAML comment: a `#` after whitespace, outside quotes. */
+function stripYamlComment(raw: string): string {
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i]!;
+    if (quote === '"') {
+      if (char === '\\') i += 1;
+      else if (char === '"') quote = undefined;
+    } else if (quote === "'") {
+      if (char === "'" && raw[i + 1] === "'") i += 1;
+      else if (char === "'") quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '#' && (i === 0 || /\s/.test(raw[i - 1]!))) {
+      return raw.slice(0, i);
+    }
+  }
+  return raw;
+}
+
 /** Preserve every byte except a recognized pin in a dependency context. */
 function contentSkeleton(
   path: string,
@@ -443,13 +537,7 @@ function contentSkeleton(
     ['gemfile', 'podfile', 'mix.exs'].includes(name)
   )
     return null;
-  // Multiline bodies can contain instruction-shaped data. Unsupported syntax
-  // must not let the line scanner mistake that data for dependency declarations.
-  if (
-    (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) &&
-    (content.includes('<<') || /[\\`]\s*$/m.test(content))
-  )
-    return null;
+  if (isDockerfileName(name)) return dockerfileSkeleton(content);
   if ((name.endsWith('.toml') || name === 'pipfile') && /'''|"""/.test(content))
     return null;
   let section = '';
@@ -477,7 +565,15 @@ function contentSkeleton(
         if (!line || line.startsWith('#')) return raw;
         // Reject quotes that do not close on this physical line. Balanced
         // single-line strings remain supported; block scalar bodies stay literal.
-        if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) {
+        // A trailing comment may hold an apostrophe; it is not a scalar.
+        if (
+          /["']/.test(
+            stripYamlComment(raw).replace(
+              /"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g,
+              '',
+            ),
+          )
+        ) {
           unsupportedQuotes = true;
           return raw;
         }
