@@ -516,6 +516,15 @@ const cases: [string, string, string, string, boolean][] = [
     true,
   ],
   // A change inside a continued instruction or a heredoc body stays app code.
+  ...['EOF+', 'EOF/END', "'EOF'+", 'E"OF"'].map(
+    (delimiter): [string, string, string, string, boolean] => [
+      'Dockerfile',
+      `FROM node:22\nCOPY <<${delimiter} /payload\n${delimiter.startsWith('E"') ? 'E' : 'EOF'}\nFROM example:1\n${delimiter.replace(/["']/g, '')}\n`,
+      'example:1',
+      'example:2',
+      false,
+    ],
+  ),
   [
     'Dockerfile',
     'FROM node:22\nRUN printf "%s" \\\n  FROM example:1\n',

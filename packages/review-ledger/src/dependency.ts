@@ -467,7 +467,7 @@ function dockerfileSkeleton(content: string): string | null {
     const logical = instruction.join('\n');
     if (logical.includes('<<')) {
       const markers = [
-        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/g),
+        ...logical.matchAll(/<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2(?=\s|$)/g),
       ];
       if (markers.length !== logical.split('<<').length - 1) return null;
       for (const [, strip, , word] of markers) {
