@@ -9,10 +9,17 @@ description: PR-first adversarial code review for Codex. Use after implementatio
 
 Classify the range before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
-snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
-least one classified file, print that section's one-line message and stop, with
-no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
-record. On `smallChange: true`, print that section's small-change
+snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance".
+Apply that section's **Verified zero-file comparison** first: when
+verified, print its no-content line and return without a chain or auto-glance
+and with no draft PR, ledger result, attestation, tier or refactor marker, or
+telemetry record. Its PR-wide lifecycle check
+still applies; an existing run is not bypassed by an empty diff. Failed or
+unavailable reads block this route.
+
+On `skip: true` with at least one classified file, print that section's one-line
+message and stop with the same absence of review artifacts.
+On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop

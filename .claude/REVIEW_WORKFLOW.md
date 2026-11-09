@@ -114,7 +114,7 @@ tier re-derived from scratch each round drifts back to Deep.
 
 ### Human glance
 
-A changeset with no review-significant file needs a human to read the diff and
+A nonempty changeset with no review-significant file needs a human to read the diff and
 merge, not a review chain. So does one whose code and configuration change is
 short enough to read in full, unless a human asks for the chain. This outcome
 sits below Lean and is decided first:
@@ -133,6 +133,48 @@ base_sha=$(git merge-base "origin/<base-branch>" HEAD)
 node .claude/skills/critique/scripts/review-ledger.js classify-changeset \
   --base "$base_sha" --head "$(git rev-parse HEAD)"
 ```
+
+**Verified zero-file comparison.** Before the glance routes, a successful,
+complete classification with `"skip": true`, `classifications: []`,
+`dependencyPaths: []`, `reviewSignificantFiles: 0`, and every `files` count zero
+is a candidate for no AI content review. Confirm it against fresh Git evidence:
+fetch the base and head refs successfully, resolve their full SHAs and merge
+base, classify that exact committed range, and require
+`git diff --name-status <merge-base sha> <head sha>` to exit 0 with empty stdout.
+Zero line counts alone never qualify: binary, mode-only, rename and other
+nonempty file diffs retain normal routing. Missing fields, malformed output,
+failed commands, incomplete history or unavailable reads are blocks, never
+empty results.
+
+For an open PR, successfully read
+`gh pr view <n> --json state,headRefOid,baseRefName,baseRefOid,changedFiles`
+after the local checks. Require it open, `changedFiles: 0`, and head SHA, base
+branch and base SHA equal to the fetched refs used above; local HEAD must equal
+that head. A mismatch invalidates the evidence; fetch and classify again.
+Without a PR, only the local no-content conclusion applies; it supplies no
+shipping evidence. Before taking the PR route, read the common PR-wide
+`run-state` through `local-review-handoff.py`: only `none` qualifies. A failed
+inventory blocks; active runs stay with their controller, and foreign, ended or
+transitioned runs keep their existing ownership, restart and scope restrictions.
+Do not end, restart, replace or rewrite a run to obtain this exception.
+
+Once verified, print and return without a chain, auto-glance, roster, review
+result, attestation, tier/refactor marker or telemetry record:
+
+```text
+Verified zero-file diff at <head sha>: no AI content review needed. Normal shipping gates still apply.
+```
+
+This is not merge authority or an AI approval. Immediately before merge,
+including after any CI wait, repeat the complete verification and require the
+same head and base SHAs; changed refs invalidate the earlier conclusion. Keep
+normal CI, mergeability, tests and repository-authority gates. For an
+ancestry-only repair, also validate that the prospective merge preserves the
+target/integration tree and establishes the intended ancestry: record the
+target tree, candidate merge tree and intended ancestor commits, require equal
+trees and those commits reachable from the candidate merge, then validate the
+resulting tree and ancestry after merge. Failure or unavailable evidence blocks
+shipping. This route grants no restart, merge or deployment authority.
 
 When the output has `"skip": true` and a non-empty `classifications` array,
 print this line with N as that array's length, and stop:
@@ -209,8 +251,8 @@ No human-glance recommendation authorizes a merge. When the repository's own
 instructions gate merging the touched paths — a deploy on merge, an apply-before-merge order —
 state that gate on the line after.
 
-Otherwise continue the entry point unchanged. An empty range or a classifier
-that cannot run is not human glance; the entry point's own pre-flight handles it.
+Otherwise continue the entry point unchanged. An unverified empty range or a
+classifier that cannot run blocks the zero-file route; it is not human glance.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
   anyway overrides the gate; on a dependency update, that request is the

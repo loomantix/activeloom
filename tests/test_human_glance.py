@@ -43,6 +43,57 @@ ENTRY_POINTS = [
 
 HARNESS_ROOTS = [".claude", ".codex", ".agents"]
 
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_zero_file_policy_requires_complete_local_remote_and_lifecycle_evidence(root: str) -> None:
+    body = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text().split())
+    rule = body.split("**Verified zero-file comparison.**", 1)[1].split(
+        'When the output has `"skip": true` and a non-empty', 1
+    )[0]
+    for requirement in (
+        "successful, complete classification",
+        '`"skip": true`',
+        "`classifications: []`",
+        "`dependencyPaths: []`",
+        "`reviewSignificantFiles: 0`",
+        "every `files` count zero",
+        "fetch the base and head refs successfully",
+        "classify that exact committed range",
+        "`git diff --name-status <merge-base sha> <head sha>` to exit 0 with empty stdout",
+        "binary, mode-only, rename and other nonempty file diffs retain normal routing",
+        "failed commands, incomplete history or unavailable reads are blocks",
+        "state,headRefOid,baseRefName,baseRefOid,changedFiles",
+        "`changedFiles: 0`",
+        "base SHA equal to the fetched refs",
+        "local HEAD must equal that head",
+        "only `none` qualifies",
+        "active runs stay with their controller",
+        "foreign, ended or transitioned runs keep their existing ownership, restart and scope restrictions",
+        "without a chain, auto-glance, roster",
+        "no AI content review needed",
+        "Immediately before merge, including after any CI wait, repeat the complete verification",
+        "same head and base SHAs",
+        "normal CI, mergeability, tests and repository-authority gates",
+        "target tree, candidate merge tree and intended ancestor commits",
+        "require equal trees",
+        "reachable from the candidate merge",
+        "validate the resulting tree and ancestry after merge",
+        "no restart, merge or deployment authority",
+    ):
+        assert requirement in rule, requirement
+    assert "An empty range or a classifier that cannot run is not human glance" not in body
+
+
+@pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
+def test_direct_review_entries_return_on_verified_zero_files(root: str, skill: str) -> None:
+    body = " ".join(_skill(root, skill).split())
+    gate = body.split(GATE_HEADING, 1)[1].split("## ", 1)[0]
+    assert "**Verified zero-file comparison** first" in gate
+    assert "return without a chain or auto-glance" in gate
+    assert "existing run is not bypassed by an empty diff" in gate
+    assert "Failed or unavailable reads block this route" in gate
+    assert gate.index("**Verified zero-file comparison**") < gate.index("Continue when")
+
 # Side effects the gate must precede. Each is named in the gate's own text, so
 # a rewrite that quietly drops one from the ordering fails here.
 GATED_SIDE_EFFECTS = (
