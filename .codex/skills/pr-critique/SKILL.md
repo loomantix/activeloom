@@ -54,7 +54,8 @@ verified, print its no-content line and return without a chain or auto-glance
 and with no draft PR, ledger result, attestation, tier or refactor marker, or
 telemetry record. Its PR-wide lifecycle check
 still applies; an existing run is not bypassed by an empty diff. Failed or
-unavailable reads block this route.
+unavailable reads block this route. An empty range that fails verification
+with no existing run reports the block and stops the same way.
 
 On `skip: true` with at least one classified file, print that section's one-line
 message and stop with the same absence of review artifacts.

@@ -83,8 +83,18 @@ def test_zero_file_policy_requires_complete_local_remote_and_lifecycle_evidence(
         "require them reachable from the candidate merge",
         "validate the resulting ancestry after merge",
         "no restart, merge or deployment authority",
+        "`<base sha>` is the fetched base-branch tip",
+        "never the `$base_sha` merge base",
+        "`git rev-list <base sha>..<head sha>`",
+        "a merge commit, a commit that changes no files against its first parent, or an intended ancestor",
+        "any other commit blocks shipping",
     ):
         assert requirement in rule, requirement
+    assert (
+        "An empty merge-base diff that fails verification while the PR-wide lifecycle is `none`, or with no PR,"
+        in body
+    )
+    assert "blocks this range's path: report the block and start no chain or auto-glance, and do not ship" in body
     assert "An empty range or a classifier that cannot run is not human glance" not in body
 
 
@@ -96,6 +106,7 @@ def test_direct_review_entries_return_on_verified_zero_files(root: str, skill: s
     assert "return without a chain or auto-glance" in gate
     assert "existing run is not bypassed by an empty diff" in gate
     assert "Failed or unavailable reads block this route" in gate
+    assert "An empty range that fails verification with no existing run reports the block and stops" in gate
     assert gate.index("**Verified zero-file comparison**") < gate.index("Continue when")
 
 # Side effects the gate must precede. Each is named in the gate's own text, so

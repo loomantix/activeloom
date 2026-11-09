@@ -144,6 +144,8 @@ base, classify that exact committed range, and require
 and `git merge-tree --write-tree <base sha> <head sha>` to exit 0 with a tree
 equal to `git rev-parse <base sha>^{tree}`: with several merge bases, an empty
 diff against one of them does not show that the merge leaves the target unchanged.
+`<base sha>` is the fetched base-branch tip, `git rev-parse origin/<base-branch>`,
+never the `$base_sha` merge base used for classification above.
 Zero line counts alone never qualify: binary, mode-only, rename and other
 nonempty file diffs retain normal routing. Missing fields, malformed output,
 failed commands, incomplete history or unavailable reads are blocks, never
@@ -176,7 +178,13 @@ prospective merge preserves the target/integration tree: record the target tree
 and candidate merge tree, require equal trees, then validate the resulting tree
 after merge. For an ancestry-only repair, also record the intended ancestor
 commits, require them reachable from the candidate merge, and validate the
-resulting ancestry after merge. Failure or unavailable evidence blocks
+resulting ancestry after merge. List every commit the merge would introduce,
+`git rev-list <base sha>..<head sha>`: each must be a merge commit, a commit that
+changes no files against its first parent, or an intended ancestor of an
+ancestry-only repair that the PR or the user names. A commit that changes files
+and is undone later in the range still enters target history and can drop that
+change from a later merge of its source branch, so any other commit blocks
+shipping. Failure or unavailable evidence blocks
 shipping. This route grants no restart, merge or deployment authority.
 
 When the output has `"skip": true` and a non-empty `classifications` array,
@@ -256,6 +264,11 @@ state that gate on the line after.
 
 Otherwise continue the entry point unchanged. An unverified empty range or a
 classifier that cannot run blocks the zero-file route; it is not human glance.
+An empty merge-base diff that fails verification while the PR-wide lifecycle is
+`none`, or with no PR, including one whose candidate merge tree differs from the
+target tree, blocks this range's path: report the block and start no chain or
+auto-glance, and do not ship. An empty range whose lifecycle is not `none` stays
+on its run's existing lifecycle path.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
   anyway overrides the gate; on a dependency update, that request is the
