@@ -18141,6 +18141,8 @@ function dockerfileSkeletonFor(lines, continuation) {
   return output.join("\n");
 }
 function dockerfileSkeleton(content) {
+  if (content.includes("\x85") || content.indexOf("\uFEFF", 1) !== -1)
+    return null;
   const lines = content.split("\n");
   const skeletons = DOCKERFILE_CONTINUATIONS.map(
     (continuation) => dockerfileSkeletonFor(lines, continuation)

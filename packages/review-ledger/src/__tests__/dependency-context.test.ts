@@ -612,6 +612,49 @@ const cases: [string, string, string, string, boolean][] = [
     'example:2',
     false,
   ],
+  // Whitespace BuildKit trims differently must not expose heredoc data or
+  // continued text: Go counts U+0085 as space, JavaScript counts U+FEFF.
+  ...[
+    'FROM node:22\n\u0085RUN cat <<EOF > /x\nFROM example:1\nEOF\n',
+    'FROM node:22\n\u0085COPY <<EOF /x\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN cat \\\n\u0085# note\n<<EOF > /x\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN echo \\\n\u0085# note\nFROM example:1\n',
+    'FROM node:22\nLABEL a=b \\\n\uFEFF# note\nRUN cat <<EOF > /x\nFROM example:1\nEOF\n',
+  ].map((content): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    content,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    `\uFEFFFROM node:22@sha256:${'a'.repeat(64)}\nRUN <<EOF\napt-get update\nEOF\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  // Fail-closed branches that keep heredoc bodies and continued text literal.
+  ...[
+    'FROM node:22\nONBUILD RUN <<EOF\nFROM example:1\nEOF\n',
+    'FROM node:22\r\nRUN printf "%s" \\\r\n  x \\\r\n  FROM example:1\r\n',
+    'FROM node:22\r\nRUN <<EOF\r\nFROM example:1\r\nEOF\r\n',
+    'FROM node:22\nRUN <<EOF\nEOFX\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN <<EOF\n\tEOF\nFROM example:1\nEOF\n',
+  ].map((content): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    content,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    `FROM node:22@sha256:${'a'.repeat(64)}\r\nRUN <<EOF\r\napt-get update\r\nEOF\r\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
   // A heredoc opened on a continuation line, with a quoted delimiter, still
   // lets a later `FROM` bump through.
   [

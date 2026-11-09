@@ -444,7 +444,8 @@ const HEREDOC_WORD = /^\d*<<(-?)(["']?)([A-Za-z_][\w.-]*)\2$/;
 /**
  * Heredocs BuildKit reads from one logical instruction, or null when this
  * scanner cannot confirm them. Quotes, escapes and `${` can regroup shell
- * words, so any of them beside a `<<` is unconfirmable.
+ * words, so any of them anywhere in an instruction with a `<<` is
+ * unconfirmable.
  */
 function dockerfileHeredocs(
   text: string,
@@ -545,6 +546,11 @@ function dockerfileSkeletonFor(
  * file's real one is always among them.
  */
 function dockerfileSkeleton(content: string): string | null {
+  // BuildKit trims with Go's `unicode.IsSpace`, which counts U+0085 but not
+  // U+FEFF (outside a leading byte-order mark); JavaScript's `trim` does the
+  // opposite. Either can move an instruction or heredoc boundary.
+  if (content.includes('\u0085') || content.indexOf('\uFEFF', 1) !== -1)
+    return null;
   const lines = content.split('\n');
   const skeletons = DOCKERFILE_CONTINUATIONS.map((continuation) =>
     dockerfileSkeletonFor(lines, continuation),
