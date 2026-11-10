@@ -5930,7 +5930,9 @@ def test_abort_replays_interrupted_remote_write(
     rows: list[dict[str, Any]] = []
     original_command = h.module.command
     def command(argv: list[str], **kwargs: Any) -> str:
-        if argv[:2] == ['gh', 'api'] and argv[2].endswith('/comments'):
+        # Ledger reads go through the helper's `local-gh -- api <endpoint>`.
+        gh = argv[argv.index('--') + 1:] if 'local-gh' in argv else argv[1:]
+        if gh[:1] == ['api'] and gh[1].endswith('/comments'):
             return json.dumps([rows])
         return str(original_command(argv, **kwargs))
     monkeypatch.setattr(h.module, 'command', command)

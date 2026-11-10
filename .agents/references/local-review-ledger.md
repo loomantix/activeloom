@@ -576,7 +576,8 @@ the legacy marker and checks that the target thread contains an actor-owned
 finding with that fingerprint. Preserve the original comments; never infer a
 fixed outcome merely from the resolved flag.
 
-At the start of every pass, read:
+At the start of every pass, read the following. On a silent PR, read the
+ledger items with `read-ledger`, as [Silent mode](#silent-mode) describes.
 
 - the PR description and changed files;
 - the current PR diff and commit list;
@@ -1146,3 +1147,57 @@ instead of continuing an unbounded cycle.
 The next reviewer must read the ledger before reviewing the new head. That
 requirement is what carries prior rationale forward after local model context
 has been discarded.
+
+## Silent mode
+
+A silent PR keeps this ledger on the reviewer's machine. The helper holds every
+finding, reply, thread, resolution and marker in a local store, answers each
+ledger read and write from it in GitHub's shapes, and writes nothing to the
+PR. Every rule above still applies; only the ledger's location changes. The PR
+itself, its pushes, CI and `gh pr ready` are unchanged.
+
+**When a PR is silent.** Either of these makes it silent:
+
+- The user's review profile lists the repository
+  (`review-profile.py silent --add owner/name` or `owner/*`). The helper pins
+  the PR on first use.
+- The user passed `silent` to the entry skill. Pin before the first pass with
+  `<ledger-helper> silent-pin --repo <owner/repo> --pr <number>`, or pass
+  `--silent` to `start-run`.
+
+`<ledger-helper> silent-status --repo <owner/repo> --pr <number>` reports the
+mode and the scratchpad path. A pin is refused on a PR that already carries this
+actor's review-chain comments, and a pinned PR stays silent until its review
+ends.
+
+**Read the ledger through the helper.** In either mode,
+`<ledger-helper> read-ledger --repo <owner/repo> --pr <number>` returns
+`review_comments`, `issue_comments` and `threads`. Use it for every ledger read
+this protocol describes. On a silent PR, raw `gh` reads of PR comments see an
+empty ledger.
+
+**Write the ledger through the helper.** Post findings, replies, dispositions,
+resolutions, rosters, tier markers and attestations exactly as the steps above
+say, and the helper keeps them local. On a silent PR it refuses any other write:
+raw `gh pr comment`, `gh pr review`, or `gh api` writes to PR comments.
+Hosted reviewers keep posting their own reviews. Record your response to each
+of their findings in the scratchpad rather than as a thread reply. Resolving
+their threads is still allowed, because a resolution posts no comment.
+
+**Scratchpad.** `scratchpad.md` in the store gets a line for every finding,
+reply, resolution and marker as it is written, and the user can read it at any
+time. Put anything you would otherwise have said on the PR there too.
+
+**End of the loop.** After `finish-run` exits 0 with any outcome, the session
+the user is talking to:
+
+1. runs `<ledger-helper> summary --repo <owner/repo> --pr <number>` and shows its
+   `summary` text verbatim;
+2. asks the user whether to post that summary to the PR;
+3. on yes, runs `<ledger-helper> post-summary --repo <owner/repo> --pr <number>
+--expected-summary-sha256 <sha256 from step 1> --confirmed`. On no, it posts
+   nothing and gives the scratchpad path.
+
+The summary is the only text silent mode ever writes to GitHub. A launched pane,
+or a pass with `AGENT_LOOP_NONINTERACTIVE=1`, has no user to ask: it reports
+`silent-status` and leaves the question to the session that started it.

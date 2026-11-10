@@ -80,7 +80,18 @@ import { setupMetricsStore } from './telemetry-store.js';
 import { metricsReport } from './metrics-report.js';
 import type { ExportLine } from './export.js';
 import { formatFindings } from './format.js';
-import { readLifecycle, resetGitHubRunner } from './github.js';
+import {
+  DefaultGitHubRunner,
+  fetchReviewThreads,
+  getAllIssueComments,
+  getGitHubRunner,
+  getReviewComments,
+  readLifecycle,
+  resetGitHubRunner,
+  setGitHubRunner,
+} from './github.js';
+import { SilentRunner } from './silent-runner.js';
+import { postSummary, renderSummary } from './silent-summary.js';
 import type {
   Changeset,
   ChangesetReport,
@@ -175,6 +186,8 @@ interface CliArgs {
   since?: string | undefined;
   until?: string | undefined;
   allowedLogins?: string | undefined;
+  expectedSummarySha256?: string | undefined;
+  confirmed?: boolean | undefined;
 }
 
 function writeSortedJson(value: unknown): void {
@@ -371,6 +384,12 @@ function parseCliArgs(argv: string[]): CliArgs {
       continue;
     }
 
+    if (arg === '--confirmed') {
+      args.confirmed = true;
+      i++;
+      continue;
+    }
+
     const next = argv[i + 1];
     const parseVal = (name: string): string => {
       if (next === undefined || next.startsWith('--')) {
@@ -563,6 +582,9 @@ function parseCliArgs(argv: string[]): CliArgs {
         break;
       case '--allowed-logins':
         args.allowedLogins = parseVal(arg);
+        break;
+      case '--expected-summary-sha256':
+        args.expectedSummarySha256 = parseVal(arg);
         break;
       default:
         fail(`unknown argument: ${arg}`);
@@ -1492,10 +1514,102 @@ function runCliCommand(argv: string[]): number {
       process.stdout.write(formatted + '\n');
       break;
     }
+    case 'silent-pin':
+    case 'silent-status':
+    case 'summary':
+    case 'post-summary': {
+      if (!args.repo || args.pr === undefined)
+        fail(`${args.command} requires --repo and --pr`);
+      writeSortedJson(silentCommand(args.command, args.repo, args.pr, args));
+      break;
+    }
+    case 'read-ledger': {
+      if (!args.repo || args.pr === undefined)
+        fail('read-ledger requires --repo and --pr');
+      writeSortedJson({
+        mode: silentRunner().storeFor(args.repo, args.pr) ? 'silent' : 'loud',
+        review_comments: getReviewComments(args.repo, args.pr),
+        issue_comments: getAllIssueComments(args.repo, args.pr),
+        threads: fetchReviewThreads(args.repo, args.pr),
+      });
+      break;
+    }
     default:
       fail(`unknown command: ${args.command}`);
   }
 
+  return 0;
+}
+
+function silentRunner(): SilentRunner {
+  const runner = getGitHubRunner();
+  if (!(runner instanceof SilentRunner)) fail('silent runner is not installed');
+  return runner;
+}
+
+function silentCommand(
+  command: string,
+  repo: string,
+  pr: number,
+  args: CliArgs,
+): unknown {
+  const runner = silentRunner();
+  if (command === 'silent-pin') return runner.pin(repo, pr, 'run-arg');
+  const store = runner.storeFor(repo, pr);
+  if (command === 'silent-status') {
+    return store === null
+      ? { silent: false }
+      : { silent: true, pin: store.pin(), scratchpad: store.scratchpadPath };
+  }
+  if (store === null) fail(`${repo}#${pr} is not in silent mode`);
+  if (command === 'summary') return renderSummary(store, store.read());
+  if (!args.confirmed)
+    fail(
+      'post-summary requires --confirmed, given only after the user approved the summary',
+    );
+  if (
+    !args.expectedSummarySha256 ||
+    !SHA_64_RE.test(args.expectedSummarySha256)
+  )
+    fail('post-summary requires --expected-summary-sha256 from `summary`');
+  return postSummary(
+    new DefaultGitHubRunner(),
+    store,
+    args.expectedSummarySha256,
+  );
+}
+
+/** Read `--repo`/`--pr` without validating the rest of the command. */
+function scopeFromArgv(
+  argv: readonly string[],
+): { repo: string; pr: number } | undefined {
+  const repo = argv[argv.indexOf('--repo') + 1];
+  const pr = Number(argv[argv.indexOf('--pr') + 1]);
+  if (!argv.includes('--repo') || !argv.includes('--pr')) return undefined;
+  if (repo === undefined || !Number.isSafeInteger(pr) || pr < 1)
+    return undefined;
+  return { repo, pr };
+}
+
+/**
+ * `local-gh --repo R --pr P -- <gh args>`: run one gh call through the silent
+ * runner, for callers outside this package (the run controller). A JSON body,
+ * when the args carry `--input -`, is read from stdin.
+ */
+function localGh(argv: string[]): number {
+  const split = argv.indexOf('--');
+  if (split < 0) fail('local-gh requires -- before the gh arguments');
+  let ghArgs = argv.slice(split + 1);
+  let payload: unknown;
+  const input = ghArgs.indexOf('--input');
+  if (input >= 0 && ghArgs[input + 1] === '-') {
+    payload = parseJsonOrFail(
+      readFileSync(0, 'utf8'),
+      'local-gh stdin must be JSON',
+    );
+    ghArgs = [...ghArgs.slice(0, input), ...ghArgs.slice(input + 2)];
+  }
+  process.stdout.write(getGitHubRunner().runGh(ghArgs, payload));
   return 0;
 }
 
@@ -1507,6 +1621,8 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
     '--file-level',
     '--truncated',
     '--dry-run',
+    '--force-review',
+    '--confirmed',
   ]);
   for (let i = 0; i < argv.length; ) {
     const arg = argv[i]!;
@@ -1521,6 +1637,15 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
 /** Parse argv, dispatch the requested subcommand, and return an exit code. */
 export function runCli(argv: string[] = process.argv.slice(2)): number {
   resetGitHubRunner();
+  setGitHubRunner(
+    new SilentRunner(
+      getGitHubRunner() as DefaultGitHubRunner,
+      scopeFromArgv(
+        argv.slice(0, argv.includes('--') ? argv.indexOf('--') : argv.length),
+      ),
+    ),
+  );
+  if (argv[0] === 'local-gh') return localGh(argv);
   if (
     ![
       'emit-telemetry',

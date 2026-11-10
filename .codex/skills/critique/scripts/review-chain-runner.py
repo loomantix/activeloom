@@ -1128,6 +1128,14 @@ class Runner:
                     "pinned controller or launcher changed; reconcile, do not relaunch"
                 )
 
+    def ledger_gh(self, args: list[str]) -> str:
+        """Read the PR ledger through the helper, which keeps a silent PR local."""
+        self.verify_control()
+        return command(
+            ["node", str(self.control / "review-ledger.js"), "local-gh",
+             "--repo", self.args.repo, "--pr", str(self.args.pr), "--", *args]
+        )
+
     def helper(self, name: str, *args: str) -> dict[str, Any]:
         self.verify_control()
         executable = (
@@ -1239,9 +1247,8 @@ class Runner:
                 comments(first:100){nodes{databaseId body author{login}} pageInfo{hasNextPage}}}
               pageInfo{hasNextPage endCursor}}}}}"""
         pages = json.loads(
-            command(
+            self.ledger_gh(
                 [
-                    "gh",
                     "api",
                     "graphql",
                     "--paginate",
@@ -3579,9 +3586,8 @@ class Runner:
 
     def issue_comments(self) -> list[dict[str, Any]]:
         pages = json.loads(
-            command(
+            self.ledger_gh(
                 [
-                    "gh",
                     "api",
                     f"repos/{self.args.repo}/issues/{self.args.pr}/comments",
                     "--paginate",

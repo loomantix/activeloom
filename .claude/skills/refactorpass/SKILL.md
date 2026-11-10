@@ -1,7 +1,7 @@
 ---
 name: refactorpass
 description: PR-first refactor pass that gathers read-only cleanup proposals once against an open draft PR, posts verified findings before edits, and records validated fixes in the PR ledger. Runs at most once per PR for this engine.
-argument-hint: (optional PR number, optional "force"; always single-pass)
+argument-hint: (optional PR number, optional "force"; always single-pass; "silent" keeps the review off the PR)
 ---
 
 # Refactor pass — PR-first wrapper
@@ -35,6 +35,18 @@ overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
+
+## Silent mode
+
+A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
+helper's `silent-status --repo <owner/repo> --pr <number>` reports
+`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+first ledger read. A silent PR keeps its ledger local: follow
+[Silent mode](../../references/local-review-ledger.md#silent-mode) for every
+ledger read and for the end-of-loop summary. Every posting step below still
+runs through the helper exactly as written, and the helper keeps the post
+local. Where a step below replies to a hosted reviewer, write that reply into
+the scratchpad that `silent-status` names, then resolve the thread.
 
 ## Findings before telemetry emission
 

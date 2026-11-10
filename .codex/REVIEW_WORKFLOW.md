@@ -362,7 +362,9 @@ It requires ordered participation, a return to the initiating engine, and every
 participant's latest attestation on the current head with no material outcome.
 `finish-run --outcome converged` additionally runs `verify-ledger` and
 `verify-coverage`; neither a green test suite nor coverage alone replaces the
-sequence check. Report `exhausted` at the tier cap and leave the PR draft.
+sequence check. Report `exhausted` at the tier cap and leave the PR draft. On a
+silent PR, every `finish-run` is followed by the protocol's
+[end-of-loop summary](references/local-review-ledger.md#silent-mode).
 Existing unsequenced runs are not silently upgraded: preserve them or obtain
 explicit authorization to end and restart with a sequence.
 
