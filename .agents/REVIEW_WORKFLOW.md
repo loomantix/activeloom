@@ -155,7 +155,7 @@ Solo review is permitted but must be declared with a recorded reason.
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
 8. Converge when `verify-coverage` passes at the exact current head — a roster
    is declared and every declared reviewer holds an attestation naming that
-   head — the round that produced those attestations had no material fix, and
+   head — any material fix has a later independent non-material pass, and
    every local-review thread contains a disposition reply and is resolved.
    Revalidate the exact PR head, then mark the PR ready.
 
@@ -519,9 +519,10 @@ A round is one complete pass per available engine at the same head.
   material fix, and runs in convergence mode.
 - **Deep — cap 4.** Rounds 1–2 adversarial, rounds 3–4 convergence.
 
-**Stop as soon as a complete round produces no material fix.** That is the
-stopping rule for both tiers, and it is a rule rather than a budget to spend: a
-Lean change that lands after one clean round has had enough review.
+**Stop as soon as every participant covers the current head and any material
+fix has a later independent non-material pass.** A clean first cycle is enough;
+the cap is a ceiling, not a target. Do not rerun an engine merely to replace its
+material outcome when its final-lane attestation already covers that head.
 
 A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
@@ -567,16 +568,15 @@ coverage. Before each leg, call `next-pass --repo <owner/repo> --pr <number>
 --head <exact-head-sha>` and authorize its returned engine and per-engine round.
 Name each engine exactly once: the sequence must be two or three distinct
 engines, and the controller repeats that cycle rather than taking a spelled-out
-round trip. List the initiating engine first. A cycle must include its return
-pass, but that pass need not be chronologically last when every participant
-already holds non-material evidence at the exact current head. For literal
+round trip. List the initiating engine first. A clean first cycle can converge
+without a return pass when every participant holds evidence at the exact
+current head. For literal
 repeated steps, use the runner's finite `--chain` instead of `--sequence`.
 
-Convergence requires strictly more than one full cycle: a return to the
-initiating engine, and every participant's latest attestation on the current
-head with no material outcome. A two-engine chain therefore does not converge
-when the second engine comes back clean; it converges on the initiator's return
-pass. Coverage alone cannot complete a sequenced chain. `finish-run --outcome
+Convergence requires every participant's latest attestation on the current
+head. Any material fix requires a later clean or minor pass by a different
+engine; the fixing engine's post-fix attestation stays valid. Coverage alone
+cannot complete a sequenced chain. `finish-run --outcome
 converged` also runs `verify-ledger` and `verify-coverage`.
 
 In handoff mode, `post-handoff --to-engine` must name the engine `next-pass`
