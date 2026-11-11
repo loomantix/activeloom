@@ -332,7 +332,23 @@ down the mixed-range route. Entry points pass it under the workflow's durable
 dependency review override: a direct human request, a current or previously
 applied `review: full` label, or a matching always-Deep repository tier
 extension. A manifest under a test path
-is a fixture and is never a pin.
+is a fixture and is never a pin. A Dockerfile under a test path builds a test
+runner's image, so its `FROM` pin is still a dependency; under a fixture path it
+is not.
+
+A Dockerfile pin is a `FROM` instruction on one physical line. Continued
+instructions and heredoc bodies are compared literally, so an unchanged
+continuation or heredoc elsewhere in the file does not block a `FROM` update,
+while a change inside one keeps normal review routing. Instruction and heredoc
+boundaries follow BuildKit: a heredoc opens only on `RUN`, `COPY` or `ADD`, from
+a `<<` word with its delimiter attached, and the file must compare equal under
+both escape characters. Any other `<<` on such a line, a quote, escape or `${`
+anywhere in that instruction, an `ONBUILD` or JSON-form heredoc, a heredoc with
+no closing line, or a U+0085 or non-leading U+FEFF character (whitespace that
+BuildKit and this scanner read differently) keeps the whole file on that route.
+In YAML, a
+trailing `#` comment is ignored when checking for an unclosed quote, so an
+apostrophe in a comment does not block a pin update.
 
 YAML pins require a recognized schema location: workflow/composite-action
 steps, workflow containers and services, Docker actions, or Compose services.
