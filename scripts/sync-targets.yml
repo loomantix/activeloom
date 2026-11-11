@@ -248,6 +248,27 @@ harnesses:
         destination: .claude/references/house-tokens.css
         substitutions: []
 
+      # /manual-tests — a manual test plan as a portable plan file, rendered as
+      # an Artifact checklist whose database keeps every result. Claude-only,
+      # like /artifact, which it requires; `plan.py render` inlines
+      # house-tokens.css, so the four entries travel with the two above.
+      - source: .claude/skills/manual-tests/SKILL.md
+        destination: .claude/skills/manual-tests/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/manual-tests/scripts/plan.py
+        destination: .claude/skills/manual-tests/scripts/plan.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/manual-tests/scripts/plan.schema.json
+        destination: .claude/skills/manual-tests/scripts/plan.schema.json
+        substitutions: []
+
+      - source: .claude/skills/manual-tests/assets/page.html
+        destination: .claude/skills/manual-tests/assets/page.html
+        substitutions: []
+
       # /actions-usage-audit — read-only org Actions-minute cost analysis. Generic
       # by design; org-specific baselines live in a consumer-owned, non-synced
       # `.claude/actions-usage-audit.local.md` the skill reads if present.
@@ -340,6 +361,11 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .claude/skills/review-setup/scripts/cloud-launch.py
+        destination: .claude/skills/review-setup/scripts/cloud-launch.py
+        substitutions: []
+        mode: '0755'
+
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
       # hloop, hpromote, hred-team). The seven move together with the shared herdr
       # reference and the config helper beside hreview, which the others call. The
@@ -376,6 +402,15 @@ harnesses:
         destination: .claude/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .claude/skills/hreview/scripts/autonomy-policy.py
+        destination: .claude/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .claude/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .claude/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .claude/skills/hreview/scripts/herd-config.schema.json
         destination: .claude/skills/hreview/scripts/herd-config.schema.json
@@ -938,6 +973,11 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .codex/skills/review-setup/scripts/cloud-launch.py
+        destination: .codex/skills/review-setup/scripts/cloud-launch.py
+        substitutions: []
+        mode: '0755'
+
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
       # hloop, hpromote, hred-team). The seven move together with the shared herdr
       # reference and the config helper beside hreview, which the others call. The
@@ -974,6 +1014,15 @@ harnesses:
         destination: .codex/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .codex/skills/hreview/scripts/autonomy-policy.py
+        destination: .codex/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .codex/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .codex/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .codex/skills/hreview/scripts/herd-config.schema.json
         destination: .codex/skills/hreview/scripts/herd-config.schema.json
@@ -1483,6 +1532,11 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .agents/skills/review-setup/scripts/cloud-launch.py
+        destination: .agents/skills/review-setup/scripts/cloud-launch.py
+        substitutions: []
+        mode: '0755'
+
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
       # hloop, hpromote, hred-team). The seven move together with the shared herdr
       # reference and the config helper beside hreview, which the others call. The
@@ -1519,6 +1573,15 @@ harnesses:
         destination: .agents/skills/hreview/scripts/herd-config.py
         substitutions: []
         mode: '0755'
+      # Protected policy foundation; installation remains an explicit human action.
+      - source: .agents/skills/hreview/scripts/autonomy-policy.py
+        destination: .agents/skills/hreview/scripts/autonomy-policy.py
+        substitutions: []
+        mode: '0755'
+      - source: .agents/skills/hreview/scripts/autonomy-policy.schema.json
+        destination: .agents/skills/hreview/scripts/autonomy-policy.schema.json
+        substitutions: []
+        mode: '0644'
 
       - source: .agents/skills/hreview/scripts/herd-config.schema.json
         destination: .agents/skills/hreview/scripts/herd-config.schema.json

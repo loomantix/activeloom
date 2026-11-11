@@ -9,10 +9,18 @@ description: PR-first adversarial code review for Antigravity or Gemini CLI. Use
 
 Classify the range before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
-snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
-least one classified file, print that section's one-line message and stop, with
-no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
-record. On `smallChange: true`, print that section's small-change
+snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance".
+Apply that section's **Verified zero-file comparison** first: when
+verified, print its no-content line and return without a chain or auto-glance
+and with no draft PR, ledger result, attestation, tier or refactor marker, or
+telemetry record. Its PR-wide lifecycle check
+still applies; an existing run is not bypassed by an empty diff. Failed or
+unavailable reads block this route. An empty range that fails verification
+with no existing run reports the block and stops the same way.
+
+On `skip: true` with at least one classified file, print that section's one-line
+message and stop with the same absence of review artifacts.
+On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
@@ -383,7 +391,7 @@ End with:
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
 - the next step under `.agents/REVIEW_WORKFLOW.md`: hand back to the relay for
   the declared reviewers that have not attested this head, and add
-  `reviewit <pr>` / `reviewit <pr> deep` whenever a hosted pass is wanted. When
+  `reviewit <pr>` / `reviewit <pr> deep` only when the user asks for a hosted pass. When
   recommending `reviewit`, recommend a fresh session; the current one has
   absorbed critique findings, fix commits, and (in deep mode) the full review
   matrix.

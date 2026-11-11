@@ -10,10 +10,18 @@ argument-hint: (optional PR number and/or "deep")
 
 Classify the range before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
-snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
-least one classified file, print that section's one-line message and stop, with
-no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
-record. On `smallChange: true`, print that section's small-change
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance".
+Apply that section's **Verified zero-file comparison** first: when
+verified, print its no-content line and return without a chain or auto-glance
+and with no draft PR, ledger result, attestation, tier or refactor marker, or
+telemetry record. Its PR-wide lifecycle check
+still applies; an existing run is not bypassed by an empty diff. Failed or
+unavailable reads block this route. An empty range that fails verification
+with no existing run reports the block and stops the same way.
+
+On `skip: true` with at least one classified file, print that section's one-line
+message and stop with the same absence of review artifacts.
+On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
@@ -99,7 +107,15 @@ The stance follows the tier's schedule, not the round ordinal alone:
   convergence mode.**
 - **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
   convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
-  converging; report which and stop rather than opening it.
+  converging; report which and stop rather than opening it. The exception is a
+  round spent only on integrating the base. When
+  `$AGENT_LOOP_REVIEW_DIFF_UNCHANGED` is `1`, the runner has already found the
+  PR's diff byte-identical to one both engines reported clean: run the round as
+  the convergence round without recomputing it. Without the runner, check it
+  yourself: when Claude's latest `local-review-pass:v3` marker names
+  `base=B head=H` and `git diff B H` is byte-identical to `git diff` from the
+  recorded PR base to the recorded head, the change has already converged. Run
+  the round as the convergence round.
 - **The first round after an escalation is adversarial whatever its ordinal**,
   per the workflow doc's escalation rule.
 

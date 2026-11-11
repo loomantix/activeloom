@@ -8,12 +8,22 @@ import json
 import subprocess
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
+
 HEAD = "a" * 40
 BASE = "b" * 40
+pytestmark = pytest.mark.usefixtures("offline_github")
 
 
 @pytest.fixture
@@ -328,10 +338,11 @@ def test_start_binds_sequence_to_run_digest(
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Review the scoped change.")
     posted: list[dict[str, Any]] = []
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
-    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+    remote = ControllerRemote(controller, monkeypatch, tmp_path)
+    remote.rows = posted
 
-    def post(*args: Any) -> tuple[int, bool]:
+    def post(*args: Any, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
         posted.append({"id": 20, "body": args[-1]})
         return 20, False
 
@@ -524,20 +535,25 @@ def test_handoff_must_describe_the_attested_pass(
 
 
 def test_restart_preserves_a_declared_engine_sequence(
-    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A restart that omits --sequence must not silently downgrade a sequenced
     run to one where every alternation guard is skipped."""
-    previous = {**run(), "content": "prior authorization"}
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
-    monkeypatch.setattr(controller, "_run_records", lambda _: [previous])
-    monkeypatch.setattr(controller, "_run_end", lambda *_: {"outcome": "aborted"})
-    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+    remote = ControllerRemote(controller, monkeypatch, tmp_path)
+    content = "<!-- local-review-sequence:v1 engines=codex,claude -->\n\nprior authorization"
+    run_id = controller._run_digest(tier="deep", max_rounds=4, base=BASE,
+                                    start_head=HEAD, supersedes=None, content=content)
+    remote.rows = [
+        {"id": 20, "body": f"<!-- local-review-run:v1 id={run_id} tier=deep max-rounds=4 base={BASE} start-head={HEAD} supersedes=none content-sha256={run_id} -->\n{content}"},
+        {"id": 21, "body": f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"},
+    ]
     monkeypatch.setattr(controller, "_read_context", lambda *_: "restart reason")
     bodies: list[str] = []
 
-    def post(*args: Any) -> tuple[int, bool]:
+    def post(*args: Any, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
         bodies.append(args[-1])
+        remote.rows.append({"id": 40, "body": args[-1]})
         return 40, False
 
     monkeypatch.setattr(controller, "_post_issue_comment", post)

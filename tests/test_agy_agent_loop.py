@@ -205,6 +205,25 @@ with (state / 'gh.log').open('a') as handle:
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
 
 
+
+def lagging_pr_head(remote_head):
+    # GitHub moves a PR's head shortly after a push: report a pushed merge's
+    # first parent for the first few reads.
+    lag = int(os.environ.get('AGENT_PR_HEAD_LAG_READS', '0'))
+    if not lag:
+        return remote_head
+    parents = subprocess.run(
+        ['git', 'rev-list', '--parents', '-n', '1', remote_head],
+        capture_output=True, text=True,
+    ).stdout.split()
+    if len(parents) != 3:
+        return remote_head
+    reads_file = state / 'pr-head-lag-reads'
+    reads = int(reads_file.read_text()) if reads_file.exists() else 0
+    if reads >= lag:
+        return remote_head
+    reads_file.write_text(str(reads + 1))
+    return parents[1]
 def endpoint_pr_number(pattern):
     # A batch opens one PR per issue, so the stub cannot serve a single
     # hardcoded number: the ledger binds every attestation to (repo, PR), and
@@ -293,13 +312,17 @@ elif args[:2] == ['pr', 'view']:
         head = (
             raced_head.read_text()
             if raced_head.exists()
-            else os.environ.get('AGENT_PR_HEAD_OID', remote_head)
+            else os.environ.get('AGENT_PR_HEAD_OID', lagging_pr_head(remote_head))
         )
         base_branch = os.environ.get('AGENT_PR_BASE_REF_NAME', 'main')
         base_head = subprocess.run(
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
+        # A file overrides the remote so a hook can hold the PR's base still.
+        base_oid_file = state / 'pr-base-oid'
+        if base_oid_file.exists():
+            base_head = base_oid_file.read_text().strip()
         base_oid = os.environ.get('AGENT_PR_BASE_OID', base_head)
         draft = os.environ.get(
             'AGENT_PR_IS_DRAFT',
@@ -318,6 +341,9 @@ elif args[:2] == ['pr', 'view']:
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
+        base_oid_file = state / 'pr-base-oid'
+        if base_oid_file.exists():
+            base_head = base_oid_file.read_text().strip()
         print(os.environ.get('AGENT_PR_BASE_OID', base_head))
     elif 'headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
@@ -1628,3 +1654,177 @@ def test_v3_blocked_slip_does_not_hide_an_unrelated_blocker(
     assert "Claude review blocked in round 1: review lane did not finish" in result.stderr
     assert "recovered: blocked-round" not in result.stdout
     assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resume_after_a_published_fresh_base_merge_keeps_the_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Round 2 merges the base advanced during round 1, publishes it, and stops
+    # before Gemini starts; that round reviewed nothing, so resume keeps it.
+    clean = _config_v3(tmp_path).split("claude_review_hook = ", 1)[1].split("\n", 1)[0]
+    advance = (
+        'if [ ! -e "$AGENT_STATE_DIR/first-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/first-advance"; '
+        'clone="$AGENT_STATE_DIR/base-clone"; '
+        '/usr/bin/git clone -q "$(git remote get-url origin)" "$clone"; '
+        "/usr/bin/git -C \"$clone\" -c user.name=Test -c user.email=test@example.invalid "
+        "commit -q --allow-empty -m 'chore: advance base'; "
+        '/usr/bin/git -C "$clone" push -q origin main; fi; '
+    )
+    fail_marker = consumer[3] / "fail-fresh-base-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/first-advance" ] && '
+        '[ -e "$AGENT_STATE_DIR/fail-fresh-base-validation" ] && '
+        '[ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]; then exit 1; fi; '
+        "printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    config = _config_v3(
+        tmp_path, claude_review_hook=advance + clean, validation_hook=validation
+    )
+    first = _run(consumer, ["--issues", "51"], issues=[_issue(51)], config=config, timeout=60)
+    assert first.returncode != 0
+    assert "Fresh-base validation failed before review round 2" in first.stderr + first.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert (state["phase"], state["round"], state["reviewEngine"]) == ("reviewing", 2, "gemini")
+    worktree = Path(str(state["worktree"]))
+    fail_marker.unlink()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"HEAD:refs/heads/{state['branch']}"],
+        cwd=worktree, check=True,
+    )
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(51, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "integrated a fresh base and stopped before Gemini started" in resumed.stdout
+    assert "Local review convergence round 2/" in resumed.stdout
+    assert "Local review convergence round 3/" not in resumed.stdout
+
+
+def _agy_diff_signal_config(tmp_path: Path, **overrides: str) -> str:
+    # Claude advances the base after its review while the PR keeps reporting
+    # the round's base, so the move surfaces at the round decision. The fresh-
+    # base validation releases the pin before the merge is published.
+    clean = _config_v3(tmp_path).split("claude_review_hook = ", 1)[1].split("\n", 1)[0]
+    record = (
+        "printf '%s round=%s unchanged=%s\\n' \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        '"$AGENT_LOOP_REVIEW_ROUND" "${AGENT_LOOP_REVIEW_DIFF_UNCHANGED:-}" '
+        '>> "$AGENT_STATE_DIR/diff-signal.log"; '
+    )
+    advance = (
+        'if [ ! -e "$AGENT_STATE_DIR/round-end-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/round-end-advance"; '
+        'printf \'%s\\n\' "$AGENT_LOOP_REVIEW_BASE_SHA" > "$AGENT_STATE_DIR/pr-base-oid"; '
+        'clone="$AGENT_STATE_DIR/base-clone"; '
+        '/usr/bin/git clone -q "$(git remote get-url origin)" "$clone"; '
+        f"{overrides.pop('base_edit', '')}"
+        "/usr/bin/git -C \"$clone\" -c user.name=Test -c user.email=test@example.invalid "
+        "commit -q -a --allow-empty -m 'chore: advance base'; "
+        '/usr/bin/git -C "$clone" push -q origin main; fi; '
+    )
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/round-end-advance" ] && '
+        '[ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]; then '
+        'rm -f "$AGENT_STATE_DIR/pr-base-oid"; fi; '
+        "printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    return _config_v3(
+        tmp_path,
+        gemini_review_hook=record + clean,
+        claude_review_hook=record + advance + clean,
+        validation_hook=validation,
+        **overrides,
+    )
+
+
+def test_a_base_only_round_tells_reviewers_the_diff_is_unchanged(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer, ["--issues", "53"], issues=[_issue(53)],
+        config=_agy_diff_signal_config(tmp_path), timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Base advanced during the round" in result.stdout
+    assert "this round only integrated the base" in result.stdout
+    signals = (consumer[3] / "diff-signal.log").read_text().splitlines()
+    assert signals == [
+        "gemini round=1 unchanged=",
+        "claude round=1 unchanged=",
+        "gemini round=2 unchanged=1",
+        "claude round=2 unchanged=1",
+    ]
+
+
+def test_a_base_merge_that_changes_the_diff_gives_no_signal(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The base edits a line inside the context of the PR's hunk.
+    repo = consumer[0]
+    (repo / "values.py").write_text(
+        "".join(f"value_{n} = {n}\n" for n in range(1, 11)), encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "values.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "test: values"], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=repo, check=True)
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; "
+        "sed 's/^value_5 = 5$/value_5 = 50/' values.py > values.new; "
+        "mv values.new values.py; git commit -q -am 'fix: worker'"
+    )
+    base_edit = (
+        "sed 's/^value_7 = 7$/value_7 = 70/' \"$clone/values.py\" > \"$clone/values.new\"; "
+        'mv "$clone/values.new" "$clone/values.py"; '
+    )
+
+    result = _run(
+        consumer, ["--issues", "54"], issues=[_issue(54)],
+        config=_agy_diff_signal_config(tmp_path, worker_hook=worker, base_edit=base_edit),
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Base advanced during the round" in result.stdout
+    assert "this round only integrated the base" not in result.stdout
+    signals = (consumer[3] / "diff-signal.log").read_text().splitlines()
+    assert signals == [
+        "gemini round=1 unchanged=",
+        "claude round=1 unchanged=",
+        "gemini round=2 unchanged=",
+        "claude round=2 unchanged=",
+    ]
+
+
+def test_fresh_base_push_waits_for_the_pr_head_to_catch_up(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    clean = _config_v3(tmp_path).split("claude_review_hook = ", 1)[1].split("\n", 1)[0]
+    advance = (
+        'if [ ! -e "$AGENT_STATE_DIR/first-advance" ]; then '
+        'touch "$AGENT_STATE_DIR/first-advance"; '
+        'clone="$AGENT_STATE_DIR/base-clone"; '
+        '/usr/bin/git clone -q "$(git remote get-url origin)" "$clone"; '
+        "/usr/bin/git -C \"$clone\" -c user.name=Test -c user.email=test@example.invalid "
+        "commit -q --allow-empty -m 'chore: advance base'; "
+        '/usr/bin/git -C "$clone" push -q origin main; fi; '
+    )
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config_v3(tmp_path, claude_review_hook=advance + clean),
+        extra_env={"AGENT_PR_HEAD_LAG_READS": "2"},
+        timeout=90,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-head-lag-reads").read_text() == "2"
+    assert "PR head is" not in result.stderr

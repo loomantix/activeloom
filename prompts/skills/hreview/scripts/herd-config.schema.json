@@ -204,6 +204,17 @@
           "description": "Where this repository's review metrics go. Herd sets LOOM_REVIEW_TELEMETRY_STORE to it on every pane it opens, for every engine. Absent: herd sets nothing."
         }
       }
+    },
+    "manual_tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ux_globs": {
+          "$ref": "#/$defs/globs",
+          "default": [],
+          "description": "Paths whose changes need a person to test by hand. horch offers a manual test plan at convergence when a PR touches one (or its body has a Manual checks section); manual-tests uses them to decide which changes get cases."
+        }
+      }
     }
   }
 }

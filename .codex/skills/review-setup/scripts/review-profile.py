@@ -8,13 +8,15 @@ the recommended defaults only when explicitly asked to.
 
 Each engine holds reviewer settings (`model`, `effort`, and for Codex an
 optional `fallback` pair), worker settings under `worker` (`model`, `effort`,
-optional `fallback` pair), and an optional global `availability`. An engine
+optional `fallback` pair; Claude's also takes `execution`, `local` or `cloud`),
+and an optional global `availability`. An engine
 marked `unavailable` is never launched and cannot appear in an order. A key the
 profile does not hold yet is reported as missing rather than making the whole
 profile invalid; older schema_version profiles are read unchanged. The
 profile is shared by every repository's synced copy of this helper, so it is
 written at the oldest version that holds it: 1 without version 2 settings, 2
-without the version 3 `reviewit` setting. Older copies can read those.
+without the version 3 `reviewit` setting, 3 without the version 4 worker
+`execution` setting. Older copies can read those.
 
 Those copies are version-skewed by design, so reads are forward-tolerant and
 writes are not. A profile newer than this helper is read for the settings this
@@ -42,7 +44,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # The oldest schema this reader still understands. A profile NEWER than
 # SCHEMA_VERSION is read rather than rejected: the writer below stores the
 # lowest version that fits, so a bump means new content exists, not that old
@@ -67,6 +69,9 @@ PROFILE_OPTIONAL_KEYS = frozenset(
 )
 PROFILE_KEYS = PROFILE_REQUIRED_KEYS | PROFILE_OPTIONAL_KEYS
 ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
+# Where a build on the worker settings runs. Only Claude has a cloud runner.
+EXECUTION = ("local", "cloud")
+EXECUTION_ENGINES = ("claude",)
 REPO_OVERRIDE_KEYS = frozenset({"engines", "order"})
 
 
@@ -74,6 +79,13 @@ def engine_settings_keys(engine: str) -> frozenset[str]:
     """Settings keys one engine accepts. `fallback` is codex-only."""
     keys = frozenset({*PAIR, "worker", "availability"})
     return keys | {"fallback"} if engine == "codex" else keys
+
+
+def worker_keys(engine: str) -> frozenset[str]:
+    """Worker keys one engine accepts. `execution` is Claude-only."""
+    if engine in EXECUTION_ENGINES:
+        return ENGINE_WORKER_KEYS | {"execution"}
+    return ENGINE_WORKER_KEYS
 
 CLIS = {"claude": "claude", "codex": "codex", "gemini": "agy"}
 # Values each engine CLI accepts for its effort flag.
@@ -187,9 +199,14 @@ def validate_worker(engine: str, worker: Any) -> None:
     label = f"{engine}.worker"
     if not isinstance(worker, dict):
         _fail(f"{label}: settings must be an object")
-    unknown = set(worker) - ENGINE_WORKER_KEYS
+    unknown = set(worker) - worker_keys(engine)
     if unknown:
         _fail(f"{label}: unknown keys {sorted(unknown)}")
+    if "execution" in worker and worker["execution"] not in EXECUTION:
+        _fail(
+            f"{label}: invalid execution {worker['execution']!r}; "
+            f"expected one of {', '.join(EXECUTION)}"
+        )
     validate_pair(engine, label, worker)
     validate_fallback(engine, label, worker.get("fallback"))
 
@@ -285,10 +302,10 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
             if isinstance(worker, dict):
                 _foreign(
                     f"{label}engines.{engine}.worker.",
-                    set(worker) - ENGINE_WORKER_KEYS,
+                    set(worker) - worker_keys(engine),
                 )
                 settings["worker"] = {
-                    k: v for k, v in worker.items() if k in ENGINE_WORKER_KEYS
+                    k: v for k, v in worker.items() if k in worker_keys(engine)
                 }
             kept[engine] = settings
         return kept
@@ -477,12 +494,18 @@ def require_profile() -> dict[str, Any]:
 
 def storage_schema_version(document: dict[str, Any]) -> int:
     """The oldest schema that holds the document, so older readers keep accepting it."""
-    if "reviewit" in document:
-        return SCHEMA_VERSION
     engines = document.get("engines", {})
     scopes = [engines] + [
         override.get("engines", {}) for override in document.get("repos", {}).values()
     ]
+    if any(
+        "execution" in settings.get("worker", {})
+        for scope in scopes
+        for settings in scope.values()
+    ):
+        return 4
+    if "reviewit" in document:
+        return 3
     fits_v1 = (
         set(engines) == set(ENGINES)
         and all(set(PAIR) <= set(settings) for settings in engines.values())
@@ -665,6 +688,8 @@ def resolve(engine: str, repo: str | None, role: str = "reviewer") -> dict[str, 
     result = {"engine": engine, **role_settings(merged["engines"][engine], role)}
     if role == "worker":
         result["role"] = role
+        if engine in EXECUTION_ENGINES:
+            result.setdefault("execution", EXECUTION[0])
     return {**result, "source": source}
 
 
@@ -712,7 +737,7 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
             settings["fallback"] = None
         elif section == "codex" and field in ("fallback.model", "fallback.effort"):
             set_fallback_field(settings, field.split(".")[1], value)
-        elif field.startswith("worker.") and worker_field in PAIR:
+        elif field.startswith("worker.") and worker_field in (*PAIR, "execution"):
             validate_worker(section, {worker_field: value})
             settings.setdefault("worker", {})[worker_field] = value
         elif field == "worker.fallback" and value == "none":

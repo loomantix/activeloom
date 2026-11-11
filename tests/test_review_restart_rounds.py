@@ -10,12 +10,22 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
+
 
 VerifyCalls = list[tuple[str, tuple[Any, ...]]]
+pytestmark = pytest.mark.usefixtures("offline_github")
 
 
 @pytest.fixture
@@ -89,6 +99,21 @@ def real_handoff() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def lifecycle_handoff(
+    real_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, verify_calls: VerifyCalls,
+) -> ModuleType:
+    """Keep real run/lifecycle parsers and record the signed-history boundary."""
+    ControllerRemote(real_handoff, monkeypatch, tmp_path)
+    monkeypatch.setattr(real_handoff, "_scope_signals", lambda *_: {
+        "behaviour_commits": 0, "missing_patch_files": [],
+    })
+    monkeypatch.setattr(real_handoff, "_verify_signed_pr_history",
+                        lambda *args: verify_calls.append(("history", args)))
+    return real_handoff
 
 
 def marker(engine: str, round_number: int) -> str:
@@ -284,17 +309,21 @@ def test_historical_changed_attestations_do_not_consume_new_run_budget(
 
 
 def test_start_run_returns_first_round(
-    handoff: ModuleType,
+    lifecycle_handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
+    handoff = lifecycle_handoff
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit review authorization.\n")
     rows = [{"id": 10, "body": marker("codex", 3)}]
-    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
-    monkeypatch.setattr(handoff, "_run_records", lambda rows: [])
-    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: (20, False))
+    ControllerRemote.for_controller(handoff).rows = rows
+    def post(*args: Any, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
+        rows.append({"id": 20, "body": args[-1]})
+        return 20, False
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
     args = SimpleNamespace(
         repo="example/repo",
         pr=7,
@@ -312,7 +341,7 @@ def test_start_run_returns_first_round(
     ("tier", "trigger"), [("deep", "3"), ("deep", "1,3"), ("lean", "none")]
 )
 def test_start_run_includes_tier_without_repeating_authorization(
-    handoff: ModuleType,
+    lifecycle_handoff: ModuleType,
     real_handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -320,14 +349,14 @@ def test_start_run_includes_tier_without_repeating_authorization(
     tier: str,
     trigger: str,
 ) -> None:
+    handoff = lifecycle_handoff
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit review authorization.")
-    rows: list[dict[str, object]] = []
-    monkeypatch.setattr(handoff, "_run_records", real_handoff._run_records)
-    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: rows)
-    monkeypatch.setattr(handoff, "_verify_reviewable_head", lambda *_: None)
+    rows: list[dict[str, Any]] = []
+    ControllerRemote.for_controller(handoff).rows = rows
 
-    def post(*args: object) -> tuple[int, bool]:
+    def post(*args: object, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
         rows.append({"id": 20, "body": args[-1]})
         return 20, False
 
@@ -362,16 +391,15 @@ def test_start_run_includes_tier_without_repeating_authorization(
     [("deep", "none"), ("lean", "3"), ("deep", "1,7"), ("deep", "3,")],
 )
 def test_start_run_rejects_trigger_that_does_not_match_tier(
-    handoff: ModuleType,
+    lifecycle_handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     tier: str,
     trigger: str,
 ) -> None:
+    handoff = lifecycle_handoff
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit review authorization.")
-    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: [])
-    monkeypatch.setattr(handoff, "_run_records", lambda rows: [])
     args = SimpleNamespace(
         repo="example/repo", pr=7, base="b" * 40, head="a" * 40,
         tier=tier, trigger=trigger, restart=False, cycle="codex,claude",
@@ -490,6 +518,13 @@ elif "repos/example/repo/issues/comments/30" in args:
     print(json.dumps(rows[-1]))
 elif "repos/example/repo/issues/7/comments?per_page=100" in args:
     print(json.dumps([rows]))
+elif "graphql" in args and any("issueOrPullRequest" in arg for arg in args):
+    nodes = [{"databaseId": row["id"], "body": row["body"],
+              "author": row["user"], "createdAt": "2026-01-01T00:00:00Z",
+              "lastEditedAt": None} for row in rows]
+    print(json.dumps([{"data": {"repository": {"issueOrPullRequest": {"comments": {
+        "totalCount": len(nodes), "nodes": nodes,
+        "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}]))
 else:
     raise SystemExit("Unexpected gh request: " + repr(args))
 """
@@ -929,6 +964,30 @@ def test_run_records_authenticates_the_marker(real_handoff: ModuleType) -> None:
         real_handoff._run_records([unparseable])
 
 
+@pytest.mark.parametrize("operation", ["_next_pass", "_authorize_pass", "_authorize_fix", "_finish_run", "_post_handoff", "_show_handoff"])
+def test_lifecycle_consumers_refuse_foreign_run_without_mutation(
+    lifecycle_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], operation: str,
+) -> None:
+    h = lifecycle_handoff
+    row = run_comment(h, comment_id=20,
+                      content="<!-- local-review-sequence:v1 engines=codex,claude -->\n\nAuthorized run.")
+    remote = ControllerRemote.for_controller(h)
+    remote.rows = [dict(row)]  # The marker's reviewer differs from review-bot.
+    before = json.dumps(remote.rows, sort_keys=True)
+    def no_post(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("foreign lifecycle must not publish")
+    monkeypatch.setattr(h, "_post_issue_comment", no_post)
+    args = SimpleNamespace(repo="example/repo", pr=7, head=HEAD_SHA, base="b" * 40,
+                           engine="codex", round=1, from_engine="codex", to_engine="claude",
+                           outcome="aborted", context_file=None, run_id="d" * 64,
+                           fingerprint="synthetic", occurrence=1)
+    with pytest.raises(h.HandoffError, match="foreign-active"):
+        getattr(h, operation)(args)
+    assert json.dumps(remote.rows, sort_keys=True) == before
+    assert capsys.readouterr().out == ""
+
+
 def test_run_records_enforces_duplicate_and_supersession_rules(
     real_handoff: ModuleType,
 ) -> None:
@@ -1087,19 +1146,20 @@ def test_authorize_pass_verifies_signed_history_at_the_reviewed_head(
 
 
 def test_start_run_verifies_signed_history_before_and_after_publication(
-    handoff: ModuleType,
+    lifecycle_handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     verify_calls: VerifyCalls,
 ) -> None:
+    handoff = lifecycle_handoff
     authorization = tmp_path / "authorization.txt"
     authorization.write_text("Explicit review authorization.\n")
-    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
-    monkeypatch.setattr(handoff, "_run_records", lambda rows: [])
 
-    def post(*args: Any) -> tuple[int, bool]:
+    def post(*args: Any, lifecycle_write: bool = False) -> tuple[int, bool]:
+        assert lifecycle_write
         verify_calls.append(("post", args))
+        ControllerRemote.for_controller(handoff).rows.append({"id": 20, "body": args[-1]})
         return (20, False)
 
     monkeypatch.setattr(handoff, "_post_issue_comment", post)
@@ -1190,42 +1250,44 @@ def test_finish_run_verifies_signed_history_only_when_converged(
 
 @pytest.mark.parametrize('conflict', [None, 'authorization', 'terminal', 'parent', 'unended', 'converged'])
 def test_aborted_restart_replays_only_its_matching_successor(
-    real_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    lifecycle_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str], conflict: str | None,
 ) -> None:
-    h = real_handoff
+    h = lifecycle_handoff
     authorization = tmp_path / 'authorization.txt'
     authorization.write_text('Explicit new budget for synthetic review.')
     content = '<!-- local-review-plan:v1 mode=chain engines=codex,claude -->\n\n' + authorization.read_text()
-    parent = {'comment_id': 1, 'run_id': 'd' * 64}
-    successor = {'comment_id': 3, 'run_id': 'e' * 64, 'supersedes': 1,
-                 'tier': 'deep', 'base': 'b' * 40, 'start_head': 'a' * 40,
-                 'content': content}
-    if conflict == 'authorization':
-        successor['content'] = 'Other authorization'
-    if conflict == 'parent':
-        successor['supersedes'] = 2
-    monkeypatch.setattr(h, '_issue_comments', lambda *_: [])
-    monkeypatch.setattr(h, '_run_records', lambda *_: [parent, successor])
-    # Only an authenticated aborted parent may have its successor replayed.
-    parent_end = (None if conflict == 'unended' else
-                  {'outcome': 'converged' if conflict == 'converged' else 'aborted'})
-    monkeypatch.setattr(h, '_run_end', lambda rows, run_id: (
-        parent_end if run_id == parent['run_id'] else
-        {'outcome': 'exhausted'} if conflict == 'terminal' else None))
-    monkeypatch.setattr(h, '_verify_reviewable_head', lambda *_: None)
-    def unexpected_post(*args: Any) -> None:
+    parent = run_comment(h, comment_id=1)
+    successor = run_comment(h, comment_id=3,
+                            supersedes=2 if conflict == 'parent' else 1,
+                            content='Other authorization' if conflict == 'authorization' else content)
+    parent['user'] = successor['user'] = {'login': 'review-bot'}
+    parent_id = str(parent['body']).split('id=', 1)[1].split(' ', 1)[0]
+    successor_id = str(successor['body']).split('id=', 1)[1].split(' ', 1)[0]
+    remote = ControllerRemote.for_controller(h)
+    remote.rows = [dict(parent)]
+    if conflict != 'unended':
+        outcome = 'converged' if conflict == 'converged' else 'aborted'
+        remote.rows.append({'id': 2, 'body': f'<!-- local-review-run-end:v1 id={parent_id} outcome={outcome} head={HEAD_SHA} -->'})
+    remote.rows.append(dict(successor))
+    if conflict == 'terminal':
+        remote.rows.append({'id': 4, 'body': f'<!-- local-review-run-end:v1 id={successor_id} outcome=exhausted head={HEAD_SHA} -->'})
+    before = json.dumps(remote.rows, sort_keys=True)
+    def unexpected_post(*args: Any, **kwargs: Any) -> None:
         pytest.fail('repeated restart must not post another run')
     monkeypatch.setattr(h, '_post_issue_comment', unexpected_post)
     args = SimpleNamespace(repo='example/repo', pr=1, head='a' * 40, base='b' * 40,
-                           tier='deep', restart=True, restart_from_run='d' * 64,
+                           tier='deep', restart=True, restart_from_run=parent_id,
                            chain='codex,claude', authorization_file=str(authorization))
     if conflict:
-        message = 'aborted outcome' if conflict in ('unended', 'converged') else 'successor'
+        # Invalid chains now fail at the earlier shared lifecycle gate.
+        message = ('lifecycle' if conflict in ('parent', 'unended') else
+                   'aborted outcome' if conflict == 'converged' else 'successor')
         with pytest.raises(h.HandoffError, match=message):
             h._start_run(args)
     else:
         h._start_run(args)
         result = json.loads(capsys.readouterr().out)
-        assert result['run_id'] == successor['run_id']
+        assert result['run_id'] == successor_id
         assert result['replayed'] is True
+    assert json.dumps(remote.rows, sort_keys=True) == before

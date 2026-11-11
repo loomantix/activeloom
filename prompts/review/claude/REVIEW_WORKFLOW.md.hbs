@@ -40,6 +40,8 @@ attestation, and bounded progression. Existing handoff sessions and the separate
 issue-implementation `agent-loop` keep their own contracts. An active legacy run
 is not silently converted to a new plan or granted a fresh budget.
 
+{{> review/chain-entry-point}}
+
 ## PR-First Rule
 
 Open a draft pull request before any local cleanup or adversarial review. Every
@@ -153,6 +155,13 @@ A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
 rather than a licence for another round. Say which, and stop.
 
+A round spent only on integrating the base is neither. When an engine already
+attested the PR's diff against its base clean, and the current diff against the
+current base is byte-identical, that engine runs the round as the convergence
+round instead of stopping. Under agent-loop the runner makes this comparison
+itself and sets `$AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1` when it holds; an engine
+that sees it set runs the convergence round without recomputing the diff.
+
 ### The run controller
 
 Rounds are numbered inside an authenticated `local-review-run:v1` marker, not
@@ -172,6 +181,12 @@ the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
+
+Lifecycle inventory is PR-wide, while evidence stays actor-owned. A foreign active
+or ended run is never `none`: follow the ledger protocol's **Cross-actor lifecycle**
+for exact user-approved abandonment/transition, then obtain separate restart and
+scope approvals and declare a fresh roster. Never forge an old-actor terminal
+marker, import its attestations or replace a pinned active runner's controls.
 
 For a requested alternating chain, record its ordered participants with
 `start-run --sequence claude,codex` (or the user's chosen order). The author
@@ -584,7 +599,7 @@ identities, so their comments are context rather than actor-owned ledger
 evidence, and they do not attest. Coverage counts local engines only — a hosted
 pass does not turn a solo relay into a cross-model one.
 
-Invocation:
+Invocation, only when the user asks for hosted review:
 
 - **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
   loop, after `refactorpass <pr-number>` and `critique <pr-number>`.

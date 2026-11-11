@@ -317,7 +317,7 @@ def json_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def validation_receipt_identity(value: Any) -> Any:
+def validation_receipt_identity(value: object) -> object:
     """Gate mapping order can change when a checkpoint is serialized."""
     if isinstance(value, dict):
         gates = value.get("gates")
@@ -424,6 +424,8 @@ def darwin_protected_service(pid: int) -> bool:
             # App extensions such as widgets live in sealed system app bundles.
             executable.is_relative_to("/System/Applications")
             and any(part.endswith(".appex") for part in executable.parts)
+        ) or executable.match(
+            "/System/Library/ExtensionKit/Extensions/*.appex/Contents/MacOS/*"
         )
     )
 
@@ -784,6 +786,10 @@ class Runner:
     def read_recovery_ledger(
         self, controller: ModuleType, source: Path, head: str
     ) -> dict[str, Any]:
+        lifecycle = self.helper("ledger", "lifecycle-state", "--repo", self.args.repo,
+                                "--pr", str(self.args.pr))
+        if lifecycle.get("state") not in ("active", "ended") or (lifecycle.get("run") or {}).get("id") != self.state["run_id"]:
+            raise Blocked("PR-wide lifecycle no longer authorizes this pinned run; do not replace its controls or budget")
         # Loading a diagnostic must not create __pycache__ in preserved evidence.
         exec(compile(source.read_bytes(), str(source), "exec"), controller.__dict__)
         rows = controller._issue_comments(self.args.repo, self.args.pr)
@@ -2872,7 +2878,9 @@ class Runner:
         if diagnostic == b"agy relay surface checkout must be clean\n":
             return {"exit_status": 1, "failure_reason": "dirty_surface"}
         if not re.fullmatch(
-            rb"fatal: not a git repository: (/[^\x00-\x1f\x7f]+/\.git/worktrees/[^/\x00-\x1f\x7f]+|\(null\))\n",
+            rb"fatal: (?:not a git repository: "
+            rb"(/[^\x00-\x1f\x7f]+/\.git/worktrees/[^/\x00-\x1f\x7f]+|\(null\))"
+            rb"|gitfile does not point to a valid repository: /[^\x00-\x1f\x7f]+/\.git)\n",
             diagnostic,
         ):
             raise Blocked("legacy log does not prove a preflight-only failure")
@@ -3557,6 +3565,9 @@ class Runner:
         # A checkpoint written before the runner owned this boundary has none.
         if not boundary or not boundary.get("key"):
             return None
+        directory_name = boundary.get("directory")
+        if not isinstance(directory_name, str):
+            return None
         if not self.telemetry_intact(boundary):
             print(
                 "Telemetry boundary changed before launch; the reviewer opens its own",
@@ -3564,7 +3575,7 @@ class Runner:
                 flush=True,
             )
             return None
-        return self.directory / boundary["directory"]
+        return self.directory / directory_name
 
     def issue_comments(self) -> list[dict[str, Any]]:
         pages = json.loads(
@@ -3792,15 +3803,19 @@ class Runner:
         # never include time spent waiting for an operator or invent a duration.
         if delta.get("enabled") is True and delta.get("durationSeconds") is None:
             attempts = self.pass_attempts(pending)
-            durations = [attempt.get("duration_seconds") for attempt in attempts]
-            if attempts and all(
-                attempt.get("exit_status") == 0
-                and attempt.get("review_started") is True
-                and type(duration) in (int, float)
-                and math.isfinite(duration)
-                and duration >= 0
-                for attempt, duration in zip(attempts, durations, strict=True)
-            ):
+            durations: list[int | float] = []
+            for attempt in attempts:
+                duration = attempt.get("duration_seconds")
+                if (
+                    attempt.get("exit_status") != 0
+                    or attempt.get("review_started") is not True
+                    or (type(duration) is not int and type(duration) is not float)
+                    or not math.isfinite(duration)
+                    or duration < 0
+                ):
+                    break
+                durations.append(duration)
+            if attempts and len(durations) == len(attempts):
                 delta["durationSeconds"] = round(sum(durations), 3)
         if already_recorded:
             if delta.get("enabled") is True and delta.get("durationSeconds") is not None:

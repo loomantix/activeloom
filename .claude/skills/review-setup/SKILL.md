@@ -54,8 +54,8 @@ Run this step during first-time setup, when `onboard` delegates here, or when th
 
 Run this during first-time setup, or when the user asks how to run the herd skills (`hreview`, `horch`, `hloop`, `hgrill`, `hpromote`) without approval prompts. Skip it when the user does not drive the herd skills.
 
-1. Ask whether the user runs Claude Code in auto mode, or starts herd panes with `--permission-mode auto` in `~/.config/activeloom/herd.json`. If neither, say the check runs again before every herd launch and stop here.
-2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I .claude/skills/hreview/scripts/herd-config.py claude-settings --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. Add `--session-mode auto` only when the user runs Claude Code in auto mode; the helper detects auto-mode herd panes from `herd.json` itself. If the helper is missing, report the required installation and defer.
+1. Explain that Claude editing panes default to auto mode while explicit `herd.json` opt-outs and custom modes are preserved. Ask whether the user's current Claude Code session also runs in auto mode; the helper detects pane defaults and overrides itself.
+2. Run the [Claude auto-mode check](../../references/herdr.md#claude-auto-mode): `python3 -I .claude/skills/hreview/scripts/herd-config.py claude-settings --project-dir <primary checkout>`, with an `--engine` for each engine in the stored orders. Add `--session-mode auto` only when the user runs Claude Code in auto mode. If the helper is missing, report the required installation and defer.
 3. Act on the report as that section says: when `ready` is false, show each missing entry and why, the draft path and the copy command, and let the user run the command. Rerun until `ready` is true or the user defers. Never edit Claude settings yourself.
 
 ## Changing a setting
@@ -69,6 +69,8 @@ Show the current values with `show` (add `--repo OWNER/REPO` for a repository-sp
 | "fall back to Sol at medium"            | `set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium` |
 | "disable the Codex fallback"            | `set codex.fallback=none`                                           |
 | "set the Claude worker role to sonnet"  | `set claude.worker.model=sonnet`                                    |
+| "run Claude builds in Claude Cloud"     | `set claude.worker.execution=cloud`                                 |
+| "build on this machine again"           | `set claude.worker.execution=local`                                 |
 | "I don't have a Gemini plan"            | `set gemini.availability=unavailable order.deep=claude,codex`       |
 | "deep reviews go Codex, then Claude"    | `set order.deep=codex,claude`                                       |
 | "in this repo, add Gemini to lean runs" | `set --repo OWNER/REPO order.lean=claude,codex,gemini`              |
@@ -81,6 +83,8 @@ Availability is global; a repository override cannot change it. `unset --repo OW
 Hosted review (`reviewit`) can be enabled or marked unavailable globally via `reviewit.availability=available` or `reviewit.availability=unavailable`. When marked unavailable, `reviewit` preflight refuses execution immediately. When both local review and hosted review are available, if a user's review request is ever in doubt (e.g. "review this PR" or "run review"), the agent must ask the user to specify whether to use local review (`critique` / `deepcritique`) or hosted review (`reviewit`).
 
 Codex's optional reviewer fallback is a complete, explicit model-and-effort pair. No fallback is enabled by default. Set both values together; a repository override replaces the whole pair. The automatic runner switches once after a recognized capacity rejection only when code and review evidence are unchanged, then keeps that fallback for the remaining Codex passes. It preserves the failed attempt and round budget and reports the actual model and effort. Standalone launchers do not retry. Every engine's worker settings take the same kind of optional pair (`ENGINE.worker.fallback.model` with `ENGINE.worker.fallback.effort`, or `ENGINE.worker.fallback=none`).
+
+`claude.worker.execution` decides where `horch` and `hloop` builds and a `backlog-refinement` `refine` run on Claude: `local` (the default when unset) or `cloud`, which starts each one in Claude Cloud (`claude --cloud`) with the worker model and effort. Only Claude takes it, and it can be set per repository. Review passes, fixes, auto-glance and shipping always run locally, and other callers of the worker settings ignore it. `resolve --engine claude --role worker` reports the effective value.
 
 ## Newer recommendations
 

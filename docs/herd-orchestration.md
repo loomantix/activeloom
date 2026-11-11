@@ -24,7 +24,7 @@ You need:
 - **ActiveLoom installed in the repository** with the harnesses you use, plus the **Codex harness** even if you never drive from Codex: the review run controller lives at `.codex/skills/critique/scripts/local-review-handoff.py`, the path the review workflow already names. See [Getting started](getting-started.md).
 - **The review profile** set up (`review-setup`). The herd skills take every model, effort and engine order from it.
 - **An authenticated `gh`**, plus `git`, `jq` and Python 3.
-- If you run Claude Code in **auto mode**, or start herd panes with `--permission-mode auto`: a few entries in your Claude settings. The skills check for them before the first launch and draft them for you; see [Claude settings for auto mode](#claude-settings-for-auto-mode).
+- If you run Claude Code in **auto mode**, or start Claude herd panes in it (the default for editing panes unless you opt out): a few entries in your Claude settings. The skills check for them before the first launch and draft them for you; see [Claude settings for auto mode](#claude-settings-for-auto-mode).
 - For `horch` to merge anything: the `ship-staging` skill installed (today it ships in the Codex and Gemini/Agy roots; a Claude-driven `horch` reads the Codex copy) and a `ship` section in the repository's config. Without both, `horch` stops at "ready to ship" and merges nothing.
 
 Check what is installed:
@@ -63,22 +63,26 @@ Optional. With no file, the defaults below apply. `ACTIVELOOM_HERD_USER_CONFIG` 
     },
     "codex": { "launch_args": [], "permission_off_args": ["--approve-for-me"] },
     "gemini": { "launch_args": [], "permission_off_args": [] }
-  }
+  },
+  "promotion": { "offer_manual_tests": false }
 }
 ```
 
-| Key                               | Default | Meaning                                                                                                                                                                                       |
-| --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worktree_root`                   | `~/wt`  | Where the skills create worktrees. Keep it outside your primary checkouts.                                                                                                                    |
-| `push_notifications`              | `true`  | Whether the driver also sends its harness's push notification (Claude Code has one) for events that need you. herdr's own notification is always shown.                                       |
-| `engines.<e>.launch_args`         | `[]`    | Added to every launch of that engine.                                                                                                                                                         |
-| `engines.<e>.permission_off_args` | `[]`    | Added to sessions that edit (review passes, builds, fixes); left out of read-only sessions such as the promotion risk review. Use the flag your CLI documents; the values above are examples. |
+| Key                               | Default                                        | Meaning                                                                                                                                                                                 |
+| --------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree_root`                   | `~/wt`                                         | Where the skills create worktrees. Keep it outside your primary checkouts.                                                                                                              |
+| `push_notifications`              | `true`                                         | Whether the driver also sends its harness's push notification (Claude Code has one) for events that need you. herdr's own notification is always shown.                                 |
+| `engines.<e>.launch_args`         | `[]`                                           | Added to every launch of that engine.                                                                                                                                                   |
+| `engines.<e>.permission_off_args` | Claude: `--permission-mode auto`; others: `[]` | Added to sessions that edit (review passes, builds, fixes); left out of read-only sessions such as the promotion risk review. Claude's default applies only under the conditions below. |
+| `promotion.offer_manual_tests`    | `false`                                        | When `true`, `hpromote` offers a [manual test hold](#manual-test-plans) once the integration branch is healthy. A personal choice, so there is no repository switch.                    |
+
+Claude editing panes default to `--permission-mode auto` only when `permission_off_args` is omitted and `launch_args` contains neither `--permission-mode` (separate or `=value` form) nor `--dangerously-skip-permissions`. Explicit arrays, including `"permission_off_args": []` to opt out, are preserved. Resolving this default never writes your settings file. Read-only panes omit the default.
 
 Permission-off flags belong here, not in a shell alias. The skills can see an alias but not what a shell function adds, and a flag passed twice makes the Codex CLI exit, so an alias plus this file breaks every Codex launch. The helper rejects a flag that appears in both lists of one engine. Without permission-off flags, panes stop at every permission prompt and the driver has to answer them. That is slow, and it can fail: the driver's own harness may refuse to approve another agent's command it cannot inspect, which blocks the run partway through.
 
-Before its first launch, each herd skill runs a permissions preflight (`herd-config.py permissions`). For every engine the run will start in a session that edits, it tells you whether those panes will stop at prompts and offers settings to add here, narrowest first: Claude `--permission-mode auto` or Codex `--approve-for-me`, which end the prompts but keep a check, then the full bypass. It writes one only if you choose it. When flags are set, it names what each one turns off, such as approval prompts or the sandbox, and warns about any such flag in `launch_args`, where it reaches read-only sessions too. It makes no offer for an engine whose flags it cannot classify, since an added flag could repeat one of them. Read [Running unattended safely](#running-unattended-safely) before choosing.
+Before its first launch, each herd skill runs a permissions preflight (`herd-config.py permissions`). For every engine the run will start in a session that edits, it tells you whether those panes will stop at prompts and offers settings to add here, narrowest first: Claude `--permission-mode auto` or Codex `--approve-for-me`, which end the prompts but keep a check, then the full bypass. An explicit Claude opt-out or custom mode is preserved; a change is offered only when you ask to change that choice. It writes one only if you choose it. When flags are set, it names what each one turns off, such as approval prompts or the sandbox, and warns about any such flag in `launch_args`, where it reaches read-only sessions too. It makes no offer for an engine whose flags it cannot classify, since an added flag could repeat one of them. Read [Running unattended safely](#running-unattended-safely) before choosing.
 
-The preflight reads this file and, for aliases, your shell. Settings in an engine's own config, such as `approval_policy` or `sandbox_mode` in `~/.codex/config.toml` or `permissions.defaultMode` in Claude settings, apply to herd panes too and do not show in its report; Claude settings are checked separately when auto mode is in use (below). Writing this file only on your choice is a rule the skills follow; no code enforces it.
+The preflight reads this file and, for aliases, your shell. Settings in an engine's own config, such as `approval_policy` or `sandbox_mode` in `~/.codex/config.toml` or `permissions.defaultMode` in Claude settings, apply to herd panes too and do not show in its report (`defaultMode` applies to Claude editing panes only when you opt out of the `--permission-mode auto` default, since a command-line mode overrides it); Claude settings are checked separately when auto mode is in use (below). Writing this file only on your choice is a rule the skills follow; no code enforces it.
 
 The preflight also runs `type` for each engine's CLI in your interactive shell. An alias that adds a flag the herd also passes blocks that engine, and an alias that turns a check off is reported, since it reaches read-only sessions too.
 
@@ -88,13 +92,13 @@ Models and efforts do not go here. They stay in the review profile, which `revie
 
 Claude Code's auto mode puts a classifier in front of every action. Out of the box it refuses two things the herd does all the time: starting a Codex or Agy session with the permission-off flags from `herd.json` (it reads as creating an unsafe agent), and reading or answering a pane's startup dialog (it reads as bypassing auto mode). The chain then stops partway through a run.
 
-Before the first launch, each herd skill runs `herd-config.py claude-settings`. It counts auto mode as in use when the driving session runs in it, when `herd.json` starts Claude panes with `--permission-mode auto` (those panes drive sessions of their own), or when your settings set `permissions.defaultMode` to `auto`. It then reads your user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`) and the checkout's `.claude/settings.json` and `.claude/settings.local.json`. `autoMode` counts only from user and local settings, because Claude Code ignores it in shared project settings. The entries it needs:
+Before the first launch, each herd skill runs `herd-config.py claude-settings`. It counts auto mode as in use when the driving session runs in it, when Claude editing panes start with `--permission-mode auto` from `herd.json` or the default (those panes drive sessions of their own), or when your settings set `permissions.defaultMode` to `auto`. It then reads your user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`) and the checkout's `.claude/settings.json` and `.claude/settings.local.json`. `autoMode` counts only from user and local settings, because Claude Code ignores it in shared project settings. The entries it needs:
 
-| Setting             | Entry                                                                                                                                                                                                           |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `permissions.allow` | `Bash(herdr agent read:*)`                                                                                                                                                                                      |
-| `autoMode.allow`    | A sentence saying that, while a herd skill runs, starting sessions with `herdr agent start` and the permission-off flags in `herd.json` (in either list) is expected, naming each flag. Only when you set some. |
-| `autoMode.allow`    | A sentence saying that reading a pane the session started and answering its startup dialog with `herdr agent send-keys` is expected. It excludes approving another session's permission prompts.                |
+| Setting             | Entry                                                                                                                                                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `permissions.allow` | `Bash(herdr agent read:*)`                                                                                                                                                                                                                     |
+| `autoMode.allow`    | A sentence saying that, while a herd skill runs, starting sessions with `herdr agent start` and the permission-off flags resolved from `herd.json` (in either list) or the Claude default is expected, naming each flag. Only when some apply. |
+| `autoMode.allow`    | A sentence saying that reading a pane the session started and answering its startup dialog with `herdr agent send-keys` is expected. It excludes approving another session's permission prompts.                                               |
 
 A broader allow rule you already have, such as `Bash(herdr:*)`, counts. Launches are deliberately not pre-allowed: a `Bash(herdr agent start:*)` rule would approve any command line after `--`, in every session, without the classifier, so the launch sentence leaves each launch to the classifier instead. A deny or ask rule on a `herdr agent` command the herd runs also blocks the run; a deny rule blocks it in every permission mode, so the check reports one even when auto mode is off. A rule that matches only some invocations, such as `Bash(herdr agent start * --yolo*)`, is listed separately as one that may block the run. Those rules are yours to change, and the draft never removes them. When something is missing, the skill stops before launching anything and shows you what is missing and why. It writes a draft of your user settings file with only those entries added, and gives you one command that backs up your settings file, validates the draft with `jq -e`, then copies it into place. Read the draft, run the command yourself, and rerun the skill. The skills never edit your Claude settings. A new `autoMode.allow` list starts with `"$defaults"` so Claude's built-in rules stay on; if your list already leaves `$defaults` out, the draft keeps it that way. The settings apply without a restart.
 
@@ -161,7 +165,8 @@ A complete example for a fictional `acme/widgets` that works on `staging` and pr
     "preflight": [["pnpm", "typecheck"]],
     "deploy_workflows": ["Deploy"],
     "post_merge": []
-  }
+  },
+  "manual_tests": { "ux_globs": ["apps/web/src/**", "apps/mobile/**"] }
 }
 ```
 
@@ -189,6 +194,8 @@ Every command is an argv array, never a shell string: `["pnpm", "install"]`, not
 | `production_lanes`         | none                          | Token-heavy production work (videos, long documents) that `horch` may hand to a named engine and skill. It stops at a local artifact for your approval.                                                                                                                                                                                                                                                                                                                         |
 | `promotion`                | absent: `hpromote` refuses    | `production_branch` is required. `skill` defaults to the generic `promote`; name your own skill to override its step rules (keep `skill` explicit while older checkouts, which still require it, read this file). `risk_engine` defaults to the first engine in your deep review order that is not the driver's. Without a [promotion recipe](#the-promotion-recipe), `preflight`, `deploy_workflows` and `post_merge` become one.                                              |
 | `telemetry.store`          | absent: herd sets nothing     | `pr` or `issue`. Herd sets `LOOM_REVIEW_TELEMETRY_STORE` to it on every pane it opens, for every engine, so review metrics from herd sessions go where the repository says whichever harness runs them. It overrides a value the engine's own config or a synced `review-telemetry.json` would give. Read only by herd: a session you start yourself is unaffected. Helpers older than this key reject the file, so update the herd skills wherever they run before you set it. |
+
+| `manual_tests.ux_globs` | none | Paths whose changes need a person to test by hand. `horch` offers a [manual test plan](#manual-test-plans) when a converged PR touches one, and `manual-tests` uses them to decide which changes get cases. A PR body's `Manual checks` section counts with or without globs. |
 
 Validate a draft before you commit it:
 
@@ -246,21 +253,39 @@ It touches only the chained issue and its children.
 
 What you type: `/horch ./push-notes.md` in a fresh session in the workspace you want orchestrated. The instruction file is yours and stays local: what this push covers, the order of work, PRs to hold back, and decisions you reserve. With no file, `horch` looks for its last handoff and otherwise asks you.
 
+`horch` first locates its invoking tab in Herdr's live inventory. It recovers stale inherited workspace or pane IDs using session identity or the matching conversation, then uses the resolved IDs for the run and the workspace label for handoff lookup. UI focus alone never selects the workspace. It asks you only when the live evidence cannot identify a unique tab; stale environment IDs alone do not require opening a new session.
+
 It inventories every tab and session in the workspace, checks your instruction file against GitHub, and then:
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
-- starts builds you scheduled on the engines `builds.engines` allows; each ends at a draft PR;
+- dispatches requested work and confirmed in-scope repairs on the engines `builds.engines` allows (in the PR's existing worktree and branch when repairing an open PR; each new build ends at a draft PR);
 - watches `hreview` dispatch and finish `auto-glance` for glance-sized PRs (or alerts you when `glance.auto` is off);
 - dispatches `hgrill`, `hloop` and `hpromote` when you ask;
 - holds: when you ask it to pause, it starts no new work until you lift the hold;
 - hands production-lane work to the configured engine and queues the result for your approval;
+- offers a [manual test plan](#manual-test-plans) for a converged PR that touches a UX glob or declares manual checks, once per converged head;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
 
-Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one.
+Invocation grants standing authority within your repository, workspace and instruction scope. A completed diagnosis with a reproducible in-scope defect proceeds to a focused repair without another build go-ahead. Scoped issues or refinement, local implementation, synthetic or non-sensitive tests, draft PRs and configured review lead to integration shipment only after the existing gates. Read-only access to a restricted environment limits operations there; it does not block an independently authorized local repair. Whole-task read-only, review-only and do-nothing-else instructions remain binding.
+
+When current work cannot advance, `horch` can select one bounded priority issue from an explicitly allowed queue using the existing `ready.py` policy and `hloop` screens. Direction must be settled; assignment, exclusion, refinement, dependency, open `Closes`/`Refs` PR and workspace file-overlap checks still apply. Missing scope grants no authority over arbitrary backlog. Necessary prerequisites within scope can proceed; new product choices and unrelated work need your decision. A blocked unit does not pause independent authorized work or expand a finite batch.
+
+Use the local instruction file or consumer instructions to narrow or disable this behavior. For example:
+
+```markdown
+Allowed scope: the named tasks and confirmed defects in their implementation.
+Ready-queue scope: only issues in the named milestone; no open design choices.
+Override: stop at draft PR; do not start review or ship.
+Reserved decisions: new product behavior and changes to external systems.
+```
+
+`scheduled-builds-only` is another instruction override when each build should wait for explicit scheduling. These are instruction boundaries, not new configuration keys or changes to tool permissions. Holds, workspace isolation, concurrency limits and author/non-author independence remain in force. Production or restricted-environment mutations, deployment or promotion activation, destructive or external irreversible actions, live-data migrations or reconciliation, and reserved decisions still require repository policy and explicit owner approval. Promotion dispatch remains an explicit user request; production merge authority is never granted.
+
+Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one. Standing authority changes neither this approval nor review caps and exact-head evidence. Red CI or review failure grants no gate bypass or ad hoc retries.
 
 When a chain or build stops on a missing or stale skill, helper or reference, it works out where the gap is (herdr.md, _Missing or stale skills_). A gap in your install or the repository's sync is yours to fix, and it gives you the one command or PR. A gap upstream it fixes there, unless your instruction file says not to: it finds or opens an upstream issue, starts a build tab in your upstream clone that ends at a draft PR, and tells you the PR and the resync step. That PR is reviewed and merged in a workspace for the upstream repository; `horch` never ships outside its own.
 
-It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
+It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and reports the repair being dispatched or the evidence or decision still needed. It reconciles the queue at startup, on watcher events and after completions or blocks, recording scope, next actions and watcher identities in local state. When you end the push it writes a handoff for the next session, including which watchers remain active and what needs a resumed session. A final reply does not keep an orchestrator running indefinitely.
 
 ### `hloop next <k>` — batch loop
 
@@ -269,6 +294,8 @@ What you type: `/hloop next 5` for the top five agent-ready issues, `/hloop 17` 
 Before launching it screens the queue and shows you the plan: issues assigned to someone else, excluded by refinement or not yet refined are skipped with a reason; an issue that lists design options with no recorded choice goes to the grill queue; and issues whose bodies name the same files run one after the other, behaviour changes first, so the second PR does not conflict once the first ships.
 
 Each issue then gets a build tab whose session opens a draft PR and starts no review, a fresh `hreview` chain (or `auto-glance` at the glance gate), the PR's own and changed tests run at its head, and a ship through `horch`'s gate. Deferred findings that are confirmed and user-visible become one follow-up issue per PR, labelled so the next batch skips it until it is refined.
+
+To move Claude builds off your machine, set `claude.worker.execution=cloud` in the review profile (`review-setup`, optionally per repository). Each Claude build then starts in Claude Cloud with `claude --cloud` instead of a build tab. That CLI needs a terminal, so the skills launch it through `review-setup`'s `cloud-launch.py`, which runs it on a pseudo-terminal and prints the session URL; `horch` records its session URL and watches for the pushed branch or draft PR. The first local worktree is the review one, and the chain is told the author is Claude. Review, auto-glance, tests at the head and shipping stay local. `backlog-refinement` can send a `refine` run to Claude Cloud the same way.
 
 To pause after the current work, tell the orchestrator. It writes a `HOLD` line to its state file and starts nothing new until you lift it; running chains finish and converged PRs still ship unless you say otherwise.
 
@@ -280,7 +307,17 @@ A dry run pins the integration and production SHAs and reports its verdict local
 
 What appears: a `P<mmdd>` tab of at most six panes, the driver on top and up to five worker slots below it. The driver reads your [promotion recipe](#the-promotion-recipe) and runs each phase's lanes in the slots, so every preflight command, CI watch and deploy watch runs in a pane you can see. It opens or adopts the promotion PR and runs the recipe's **read-only** risk review of the whole diff in its own slot. It verifies every blocker and major finding itself, posts one comment with dispositions, and for each confirmed blocker starts a fix session that opens a PR to the integration branch, gets it reviewed in a `review-<pr>` pane, and ships it through `horch`'s gate. When the integration branch moves, it reviews only the delta.
 
+With `promotion.offer_manual_tests` on, once the preflight lanes pass it asks whether to go through the [manual test plan](#manual-test-plans) first. On yes it builds or updates the integration plan in a worker slot, prints the link and a summary, and holds at `P<mmdd> ⏸ manual-tests` until you say `continue`. Results never block the promotion. If a fix later moves the head, it asks again only when the new head adds changes that would get cases.
+
 It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it runs the recipe's post-merge lanes: deploy watchers and checks side by side. It never rolls back on its own.
+
+#### Manual test plans
+
+`manual-tests` is a Claude Code skill (it publishes an Artifact, which only Claude Code can do) that `horch` and `hpromote` start in a Claude session when you accept their offer. You can also run it yourself: `/manual-tests 42`, `/manual-tests 42 43` for PRs tested together on your local stack, or `/manual-tests integration` for everything on the integration branch and not yet on production.
+
+It writes the plan as a portable file, `plan.json`, under `~/.cache/activeloom-herd/<owner>__<name>/manual-tests/<scope>/`, and publishes it as a private Artifact checklist: steps, what a pass looks like, where to look on failure, and a result per case that any tester with Contributor access saves to the page's shared database. Every save is its own record. Case IDs stay stable across updates; a changed case gets a new revision, and earlier results show as stale. The page keeps one URL per scope, and the URL is never posted to GitHub. Results are reported to you, never used as a gate.
+
+When no Claude engine is available in your review profile, or the skill is not installed, neither offer is made.
 
 #### The promotion recipe
 
@@ -398,6 +435,12 @@ It posts one `red-team:v1` comment on the PR listing non-security findings' outc
 
 ## Restart approvals
 
+The [protected autonomy policy foundation](autonomy-policy.md) adds a read-only
+policy report and transactional policy-sourced restart records. It requires a
+separate human installation and currently reports restricted containment as
+unavailable. Automatic orchestration integration is separate work; these commands
+do not change the manual workflow below.
+
 A review run that has ended (converged, exhausted, aborted) needs your approval for a new one. A message from the orchestrator or another session is not your approval, so an orchestrated restart either waits for you to type in the herder's tab, or uses a record you write yourself:
 
 ```bash
@@ -414,12 +457,12 @@ python3 -I .claude/skills/hreview/scripts/herd-config.py approve-restart \
 
 ## Running unattended safely
 
-Herd sessions read pull request diffs, issue bodies and comments. In a public repository anyone can write those, and an instruction hidden in them is aimed at the agent that reads it (prompt injection). The same sessions hold an authenticated `gh` and can push. With approval prompts on, you see each command before it runs. Each permission setting removes some of that:
+Herd sessions read pull request diffs, issue bodies and comments. In a public repository anyone can write those, and an instruction hidden in them is aimed at the agent that reads it (prompt injection). The same sessions hold an authenticated `gh` and can push. With approval prompts on, you see each command before it runs; Claude editing panes have them off by default, in auto mode. Each permission setting removes some of that:
 
 | Setting                                                                                | What a planted instruction can do                                                                         |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| None (the default)                                                                     | Nothing you do not approve; panes stop at every prompt                                                    |
-| Claude `--permission-mode auto`, Codex `--approve-for-me`                              | What the classifier or automatic reviewer lets through; Codex commands stay in its sandbox                |
+| None (the default for Codex and Agy; Claude with `"permission_off_args": []`)          | Nothing you do not approve; panes stop at every prompt                                                    |
+| Claude `--permission-mode auto` (the Claude editing default), Codex `--approve-for-me` | What the classifier or automatic reviewer lets through; Codex commands stay in its sandbox                |
 | Claude or Agy `--dangerously-skip-permissions`, Codex `-a never -s danger-full-access` | Anything your user account can do: run commands, read files, use your `gh` token, push, reach the network |
 
 A restart approval is a file in your config directory, so any setting that lets a planted instruction run commands or write files also lets it write a [restart approval](#restart-approvals). The worst it can do is start a new review run; it cannot merge.
@@ -454,7 +497,7 @@ Each engine launches with its model and effort from your review profile and its 
 
 **A pane never starts (`agent_pane_busy`).** A new tab's shell takes a few seconds to draw its prompt. The skills retry five times; if your shell prompt is slow (heavy rc files), open the tab, let it settle, and rerun.
 
-**Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts only the primary checkout and worktrees it created, and dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
+**Startup dialog (`agent_not_ready`).** A folder-trust prompt on a new worktree, an update banner, or a first-run question. The driver trusts the primary checkout, a same-repository pull request's worktree under `worktree_root` that is clean and at the PR's exact head, and a clean promotion worktree it created at a pinned commit. It blocks and asks you about anything else, including every fork head, because trusting a folder turns on that folder's checked-in engine settings. It dismisses update banners. It never runs an update from a chain. Update your CLIs between runs.
 
 **The Codex pane exits immediately.** Almost always a flag passed twice: a shell alias plus `permission_off_args`, or the same flag in both lists. The permissions preflight reports the alias; `type codex` shows it too. Remove the flag from the alias and keep it in `herd.json`.
 

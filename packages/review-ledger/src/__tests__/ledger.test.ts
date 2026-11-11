@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   dispose,
   postFinding,
@@ -14,7 +14,7 @@ import {
   verifyLedger,
   writeResult,
 } from '../index.js';
-import { setGitHubRunner } from '../github.js';
+import { resetGitHubRunner, setGitHubRunner } from '../github.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -29,11 +29,14 @@ class MockGitHubRunner implements GitHubRunner {
   public commentIdSeq = 200;
   public prHead = '1111111111111111111111111111111111111111';
   public prBase = '2222222222222222222222222222222222222222';
+  public driftAfterInventory = false;
+  public calls: string[] = [];
 
   runGh(args: string[], payload?: unknown): string {
     const cmd = args.join(' ');
-    if (cmd.includes('api user --jq .login')) {
-      return this.actor;
+    if (args[0] === 'api' && args[1] === 'user') {
+      this.calls.push('user');
+      return JSON.stringify({ login: this.actor });
     }
     if (cmd.includes('pr view') && cmd.includes('baseRefOid')) {
       return this.prBase;
@@ -42,6 +45,7 @@ class MockGitHubRunner implements GitHubRunner {
       return this.prHead;
     }
     if (cmd.includes('repos/') && cmd.includes('/files?per_page=100')) {
+      this.calls.push('files');
       const rows = Object.entries(this.prFiles).map(([filename, patch]) => ({
         filename,
         patch,
@@ -60,6 +64,8 @@ class MockGitHubRunner implements GitHubRunner {
       cmd.includes('/issues/') &&
       cmd.includes('/comments?per_page=100')
     ) {
+      this.calls.push('inventory');
+      if (this.driftAfterInventory) this.actor = 'different-actor';
       return JSON.stringify([this.issueComments]);
     }
     if (cmd.includes('repos/') && cmd.includes('/pulls/comments/')) {
@@ -107,6 +113,34 @@ class MockGitHubRunner implements GitHubRunner {
       return JSON.stringify({ id });
     }
     if (cmd.includes('api graphql')) {
+      if (
+        args.some(
+          (arg) =>
+            arg.startsWith('query=') && arg.includes('issueOrPullRequest'),
+        )
+      ) {
+        return JSON.stringify([
+          {
+            data: {
+              repository: {
+                issueOrPullRequest: {
+                  comments: {
+                    totalCount: this.issueComments.length,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: this.issueComments.map((row) => ({
+                      databaseId: row['id'],
+                      body: row['body'],
+                      author: row['user'],
+                      createdAt: '2026-01-01T00:00:00Z',
+                      lastEditedAt: null,
+                    })),
+                  },
+                },
+              },
+            },
+          },
+        ]);
+      }
       if (cmd.includes('reviewThreads(first:100')) {
         return JSON.stringify([
           {
@@ -162,11 +196,7 @@ class MockGitHubRunner implements GitHubRunner {
         });
       }
     }
-    return '{}';
-  }
-
-  currentActor(): string {
-    return this.actor;
+    throw new Error(`Unexpected mock GitHub operation: ${cmd}`);
   }
 
   gitRevList(before: string, head: string): string[] {
@@ -196,10 +226,13 @@ describe('ledger operations and workflow verification', () => {
   const samplePatch = '@@ -1,5 +1,6 @@\n context\n+new line\n';
 
   beforeEach(() => {
+    resetGitHubRunner();
     mock = new MockGitHubRunner();
     mock.prFiles = { 'src/index.ts': samplePatch };
     setGitHubRunner(mock);
   });
+
+  afterEach(() => resetGitHubRunner());
 
   it('verifies anchor with preflightAnchor', () => {
     const res = preflightAnchor({
@@ -212,6 +245,23 @@ describe('ledger operations and workflow verification', () => {
     });
     expect(res.verified).toBe(true);
     expect(res.anchor).toBe('RIGHT:2');
+  });
+
+  it('rejects actor drift during preflight inventory before reading the diff', () => {
+    mock.driftAfterInventory = true;
+    expect(() =>
+      preflightAnchor({
+        repo: 'example/project',
+        pr: 10,
+        head: headSha,
+        path: 'src/index.ts',
+        line: 2,
+        side: 'RIGHT',
+      }),
+    ).toThrow(/authenticated GitHub actor changed/);
+    expect(mock.calls).toEqual(['user', 'inventory', 'user']);
+    expect(mock.reviewComments).toEqual([]);
+    expect(mock.issueComments).toEqual([]);
   });
 
   describe('preflight-fix', () => {

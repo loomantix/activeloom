@@ -80,7 +80,7 @@ import { setupMetricsStore } from './telemetry-store.js';
 import { metricsReport } from './metrics-report.js';
 import type { ExportLine } from './export.js';
 import { formatFindings } from './format.js';
-import { resetGitHubRunner } from './github.js';
+import { readLifecycle, resetGitHubRunner } from './github.js';
 import type {
   Changeset,
   ChangesetReport,
@@ -676,6 +676,12 @@ function runCliCommand(argv: string[]): number {
   validateArgs(args);
 
   switch (args.command) {
+    case 'lifecycle-state': {
+      if (!args.repo || args.pr === undefined)
+        fail('lifecycle-state requires --repo and --pr');
+      writeSortedJson(readLifecycle(args.repo, args.pr));
+      break;
+    }
     case 'preflight-fix': {
       if (
         !args.repo ||

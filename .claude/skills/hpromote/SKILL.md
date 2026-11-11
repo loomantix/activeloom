@@ -53,7 +53,7 @@ Nothing else: no closing issues, editing other PRs, filing issues beyond deferre
 1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for this session's engine and every engine a fix or review may start on.
 2. Lock: `python3 -I $C lock --repo <repo> --skill hpromote --key <yyyy-mm-dd>`. Exit 3 means a promotion is already running or blocked: report its tab and stop.
 3. Open a new tab, `P<mmdd>`, with the primary checkout as `--cwd` (never reuse the dispatcher's), start the driver as `p<mmdd>-driver` on this session's engine, and prompt it `run` (plus `--dry-run` if given) through this skill, addressed the way herdr.md's Engines table gives for that engine.
-4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
+4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ⏸ manual-tests` (the [manual test hold](#manual-test-hold)), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `⏸ manual-tests`, relay the question or the plan URL; the user's answer goes back to the driver as `continue`, `retry`, yes or no. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
 
 ## Driver
 
@@ -78,7 +78,25 @@ Follow the promotion skill's preflight and health phases, with these additions:
 - **Adopt an existing PR.** If one is open (`gh pr list --base <production> --head <integration> --state open`), record it for adoption in Phase 2. Continue through preflight at its current head. A dry run uses it only as read-only context.
 - Pin the integration and production heads, and create an inspection worktree detached at the integration head under the user's `worktree_root` (`<name>-promote-<yyyymmdd>`). Run the recipe's `preflight` phase on the slots in it.
 - A failed `block` step that a PR to the integration branch can fix becomes a Phase 4 blocker; a `hold` marks the tab ⚠ for the user. A local environment problem is not a defect, so say which it is.
+- When every preflight lane has passed at the pinned head, run the [manual test hold](#manual-test-hold) before Phase 2.
 - Note the deploy surface for the PR body: the files matching each recipe `surface` entry, migrations and their declared bounds, deployment and infrastructure changes, new environment variables or secrets production must carry, feature flags and their production values.
+
+### Manual test hold
+
+An opt-in pause for a person to test the integration environment by hand before the promotion PR opens. Its results are reported, never a gate. Skip it, with no question, unless all hold:
+
+- not `--dry-run`, and `promotion.offer_manual_tests` is `true` in `python3 -I $C user`;
+- the `manual-tests` skill is installed for Claude (`.claude/skills/manual-tests/SKILL.md` in the primary checkout, or `~/.claude/skills/manual-tests/SKILL.md`), and `python3 -I .claude/skills/review-setup/scripts/review-profile.py show` does not mark Claude unavailable;
+- some change in the promotion would get a case: `python3 -I $C ux-paths --base origin/<production> --head <pinned integration head>` reports `match`, or a PR merged in the range has a `Manual checks` heading in its body;
+- on a return to Phase 1, the new head adds such a change that `state.md`'s `manual-tests offered:` line does not already list.
+
+Then:
+
+1. Rename the tab `P<mmdd> ⏸ manual-tests`, notify with `--sound request`, Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and ask in the driver pane: "Do you want to go through the test artifact to validate the changes first?" Record `manual-tests offered: <pr or commit refs>` in `state.md`.
+2. **No:** rename the tab back to `P<mmdd>` and continue.
+3. **Yes:** in an idle worker slot titled `manual-tests`, start `p<mmdd>-mt` on Claude with the worker model and effort, cwd the primary checkout, and prompt it `/manual-tests integration`. Wait for it to finish, read its report from the pane, and print the page URL and its summary (counts, failed case IDs, heads) in the driver pane. Copy no tester note anywhere.
+4. Hold until the user says `continue`. A failed case does not change what continue means; the user decides. If the plan update failed, print the error and wait for `retry` (run step 3 again) or `continue`.
+5. On `continue`, end the session in the slot, rename the tab `P<mmdd>`, and go to Phase 2. Continuing authorizes the promotion steps that follow, never the merge.
 
 ### Phase 2: open the promotion PR
 
@@ -93,7 +111,7 @@ Each PR in the promotion was reviewed on its own. This pass looks for risk that 
 Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes on their slots at the same time (a dry run has no PR and runs no shell lanes). A recipe without a `risk_review` has no risk pass: record "risk review not configured", skip steps 1–5 below, and continue at step 6 once the other runnable lanes finish.
 
 1. Use the inspection worktree when the promotion head is still the head it was created at; otherwise create a new detached one at the promotion head under the user's `worktree_root`.
-2. Start the risk engine in the risk review's slot, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Trust the folder; the driver created it.
+2. Start the risk engine in the risk review's slot, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Answer its folder-trust prompt by herdr.md's folder-trust rule; this worktree meets it while it is clean and still at the pinned head.
 3. Prompt it with the following, filled in. In a dry run without a PR, replace `PR #<n>` with `dry run` and use the pinned integration head and production base:
 
    ```text

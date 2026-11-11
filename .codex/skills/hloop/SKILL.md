@@ -23,6 +23,8 @@ This session is the **orchestrator** and follows the `horch` skill (`.codex/skil
 - product and scope calls go to the user, or to `hgrill` when the user has asked for grill chains;
 - never pad a batch with issues that fail the screens below.
 
+`horch`'s standing authority advances this batch within its selected scope; it does not authorize another batch. Keep blocked issues recorded and advance independent eligible issues. Refinement and product decisions still follow this skill's screens and hard stops.
+
 ## 1. Pick
 
 1. **Queue.** `python3 -I .codex/skills/issues/scripts/ready.py --agent --limit 30 --json` for `next <k>` or no arguments; otherwise the named issues. A single bare number names one issue, never a batch size.
@@ -50,13 +52,15 @@ Keep at most `--concurrency` builds running. Start the next queued issue when a 
 
 A `BUILD-QUESTION` moves the issue to the skipped list with that question. End the session and close its tab.
 
+When the profile sends Claude builds to the cloud, `horch`'s **Cloud build** replaces the tab: no tab, agent or worktree, the additions above go into its prompt, and the issue counts toward `--concurrency` until its PR appears or its 120-minute alert fires. Record the session URL against the issue in `state.md`. A launch that prints no URL frees its slot: move the issue to the skipped list with the helper's `output_tail`. A question or failure reaches the batch only through that alert; move the issue to the skipped list with the session URL.
+
 ## 3. Review
 
-On `BUILD-PR: <pr> <sha>`:
+On `BUILD-PR: <pr> <sha>`, or a cloud build's PR found by `horch`'s Cloud build watcher (its `headRefOid` is the SHA):
 
 1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The PR is a draft, the base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block. Keep the PR in draft so `hreview` or `auto-glance` owns the ready flip on convergence.
-2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push.
-3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher. A PR whose run has ended gets no herder; `horch` alerts the user with the restart words. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
+2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push. A cloud build has no tab; go on.
+3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher; for a cloud build, with `--author claude`. A PR whose run has ended gets no herder; `horch` alerts the user with the restart words. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
 
 ## 4. When a watcher stops
 
@@ -74,7 +78,7 @@ Read the herder's pane, then:
 1. **Tests at the head.** CI on PRs to the integration branch may skip test jobs, so run, in the PR's worktree at its head, the specs the PR added or changed, and the full suite when the PR changes shared logic or a dependency. The repository's `AGENTS.md` names the commands and any environment the database-backed tests need. Check the skipped count: tests that skip for a missing environment are not a pass. Give each database-backed lane its own fresh database with migrations applied before the run; a lane whose setup fails reports its tests as skipped next to a `FAIL` line, so read the skipped count of each target file, not the run's total. If the build session removed its worktree, use a detached one at the head under `worktree_root` and remove it afterwards. A failure is a block.
 2. **Ship** through `horch`'s Shipping (if the converged PR is still in draft, mark it ready with `gh pr ready <pr>` first — but when `classify-changeset` at the head reports a non-empty `dependencyPaths`, only after the workflow's Dependency updates evidence rule finds a `clear` analysis at that head; a failed classification counts as mixed; otherwise leave it draft and go to `horch`'s Problems), with a summary of one or two plain sentences on what changed for users, written from the PR body and claiming no more than it does.
 3. **Deferred findings.** A herder's final report can list findings the reviewers deferred. For the ones that are confirmed and user-visible, file one follow-up issue per PR, quoting each comment's file and line, with acceptance criteria. Label it `dev: agent` but **not** `agent: refined`, so the next batch skips it until it is refined. Test gaps go in the same issue. First search open issues for the PR number and each finding's file: the herder may already have filed it.
-4. **Clean up.** Remove the build worktree and its local branch, skipping whatever the merge already removed. Leave the review tab as `horch` says.
+4. **Clean up.** Remove the build worktree and its local branch, skipping whatever the merge already removed. A cloud build has none. Leave the review tab as `horch` says.
 5. Start any queued or serialized issue, unless a hold is set.
 
 ## 6. Report
