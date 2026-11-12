@@ -1583,9 +1583,9 @@ function silentCommand(
 function scopeFromArgv(
   argv: readonly string[],
 ): { repo: string; pr: number } | undefined {
+  if (!argv.includes('--repo') || !argv.includes('--pr')) return undefined;
   const repo = argv[argv.indexOf('--repo') + 1];
   const pr = Number(argv[argv.indexOf('--pr') + 1]);
-  if (!argv.includes('--repo') || !argv.includes('--pr')) return undefined;
   if (repo === undefined || !Number.isSafeInteger(pr) || pr < 1)
     return undefined;
   return { repo, pr };

@@ -290,10 +290,11 @@ export class SilentRunner implements GitHubRunner {
       if (method !== 'POST') this.refuse(`${method} ${endpoint}`);
       return json(this.postIssueComment(store, String(body)));
     }
-    match = REVIEW_COMMENT_RE.exec(endpoint) ?? ISSUE_COMMENT_RE.exec(endpoint);
+    const reviewMatch = REVIEW_COMMENT_RE.exec(endpoint);
+    match = reviewMatch ?? ISSUE_COMMENT_RE.exec(endpoint);
     if (match) {
       const id = Number(match[2]);
-      const review = REVIEW_COMMENT_RE.test(endpoint);
+      const review = reviewMatch !== null;
       if (!isLocalId(id)) {
         if (method !== 'GET' && this.repoIsSilent(match[1]!))
           this.refuse(`${method} ${endpoint}`);

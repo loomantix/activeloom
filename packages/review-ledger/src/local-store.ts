@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { REPO_RE } from './constants.js';
 import { fail, LedgerError } from './errors.js';
 import { parseJsonOrFail } from './io.js';
 
@@ -91,15 +92,8 @@ export function isLocalThreadId(id: string): boolean {
 
 /** Split OWNER/REPO, failing on anything else. */
 export function splitRepo(repo: string): [string, string] {
-  const parts = repo.split('/');
-  if (
-    parts.length !== 2 ||
-    !/^[A-Za-z0-9_.-]+$/.test(parts[0] ?? '') ||
-    !/^[A-Za-z0-9_.-]+$/.test(parts[1] ?? '')
-  ) {
-    fail('--repo must be OWNER/REPO');
-  }
-  return [parts[0]!, parts[1]!];
+  if (!REPO_RE.test(repo)) fail('--repo must be OWNER/REPO');
+  return repo.split('/') as [string, string];
 }
 
 /** Directory for one PR's silent store under the shared review root. */

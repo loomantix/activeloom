@@ -20660,11 +20660,8 @@ function isLocalThreadId(id) {
   return id.startsWith(LOCAL_THREAD_PREFIX);
 }
 function splitRepo(repo) {
-  const parts = repo.split("/");
-  if (parts.length !== 2 || !/^[A-Za-z0-9_.-]+$/.test(parts[0] ?? "") || !/^[A-Za-z0-9_.-]+$/.test(parts[1] ?? "")) {
-    fail("--repo must be OWNER/REPO");
-  }
-  return [parts[0], parts[1]];
+  if (!REPO_RE.test(repo)) fail("--repo must be OWNER/REPO");
+  return repo.split("/");
 }
 function storeDir(root, repo, pr) {
   const [owner, name] = splitRepo(repo);
@@ -21077,10 +21074,11 @@ var SilentRunner = class {
       if (method !== "POST") this.refuse(`${method} ${endpoint}`);
       return json(this.postIssueComment(store, String(body)));
     }
-    match = REVIEW_COMMENT_RE.exec(endpoint) ?? ISSUE_COMMENT_RE.exec(endpoint);
+    const reviewMatch = REVIEW_COMMENT_RE.exec(endpoint);
+    match = reviewMatch ?? ISSUE_COMMENT_RE.exec(endpoint);
     if (match) {
       const id = Number(match[2]);
-      const review = REVIEW_COMMENT_RE.test(endpoint);
+      const review = reviewMatch !== null;
       if (!isLocalId(id)) {
         if (method !== "GET" && this.repoIsSilent(match[1]))
           this.refuse(`${method} ${endpoint}`);
@@ -22575,9 +22573,9 @@ function silentCommand(command, repo, pr, args) {
   );
 }
 function scopeFromArgv(argv) {
+  if (!argv.includes("--repo") || !argv.includes("--pr")) return void 0;
   const repo = argv[argv.indexOf("--repo") + 1];
   const pr = Number(argv[argv.indexOf("--pr") + 1]);
-  if (!argv.includes("--repo") || !argv.includes("--pr")) return void 0;
   if (repo === void 0 || !Number.isSafeInteger(pr) || pr < 1)
     return void 0;
   return { repo, pr };
