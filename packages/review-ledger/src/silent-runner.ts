@@ -190,6 +190,7 @@ export class SilentRunner implements GitHubRunner {
     const store = new LocalStore(root, repo, pr);
     let result: LocalStore | null = null;
     if (store.pin() !== null) {
+      this.assertNoForeignLifecycle(store);
       result = store;
     } else {
       const source = profileSaysSilent(repo);
@@ -214,7 +215,10 @@ export class SilentRunner implements GitHubRunner {
   pin(repo: string, pr: number, source: string): ModePin {
     const store = new LocalStore(this.reviewRoot(), repo, pr);
     const existing = store.pin();
-    if (existing !== null) return existing;
+    if (existing !== null) {
+      this.assertNoForeignLifecycle(store);
+      return existing;
+    }
     const pin = this.pinStore(store, source);
     this.stores.set(`${repo.toLowerCase()}#${pr}`, store);
     return pin;
@@ -232,8 +236,9 @@ export class SilentRunner implements GitHubRunner {
   /** Count this actor's review-chain comments already on the PR. */
   private priorChainComments(store: LocalStore): number {
     const actor = this.inner.liveActor();
+    const issueComments = this.publicIssueComments(store);
+    this.assertNoForeignLifecycle(store, issueComments);
     const prior = [
-      `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
       `repos/${store.repo}/pulls/${store.pr}/comments?per_page=100`,
     ].flatMap((endpoint) => {
       const pages = parseJsonOrFail<unknown[][]>(
@@ -242,11 +247,45 @@ export class SilentRunner implements GitHubRunner {
       );
       return pages.flat() as Array<Record<string, unknown>>;
     });
-    return prior.filter(
+    return [...issueComments, ...prior].filter(
       (row) =>
         (row['user'] as { login?: string } | undefined)?.login === actor &&
         String(row['body'] ?? '').startsWith('<!-- local-review'),
     ).length;
+  }
+
+  private publicIssueComments(
+    store: LocalStore,
+  ): Array<Record<string, unknown>> {
+    const pages = parseJsonOrFail<unknown[][]>(
+      this.inner.runGh([
+        'api',
+        '--paginate',
+        '--slurp',
+        `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
+      ]),
+      'GitHub returned invalid JSON',
+    );
+    return pages.flat() as Array<Record<string, unknown>>;
+  }
+
+  private assertNoForeignLifecycle(
+    store: LocalStore,
+    rows = this.publicIssueComments(store),
+  ): void {
+    const actor = this.inner.liveActor();
+    if (
+      rows.some(
+        (row) =>
+          (row['user'] as { login?: string } | undefined)?.login !== actor &&
+          /^<!-- local-review-(?:run:|run-end:|transition:)/.test(
+            String(row['body'] ?? ''),
+          ),
+      )
+    )
+      fail(
+        `${store.repo}#${store.pr} carries another actor's public review lifecycle; reconcile ownership before using a silent ledger`,
+      );
   }
 
   private scopeStore(): LocalStore | null {

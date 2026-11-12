@@ -1172,6 +1172,11 @@ mode and the scratchpad path. A pin is refused on a PR that already carries this
 actor's review-chain comments, and a pinned PR stays silent until its review
 ends.
 
+Another actor's public lifecycle records block silent routing, including for
+an existing pin. Reconcile ownership before continuing; a local ledger must
+never hide a foreign public run or transition. Hosted review comments without
+lifecycle records do not block a pin.
+
 **Read the ledger through the helper.** In either mode,
 `<ledger-helper> read-ledger --repo <owner/repo> --pr <number>` returns
 `review_comments`, `issue_comments` and `threads`. Use it for every ledger read

@@ -19405,6 +19405,7 @@ var SilentRunner = class {
     const store = new LocalStore(root, repo, pr);
     let result = null;
     if (store.pin() !== null) {
+      this.assertNoForeignLifecycle(store);
       result = store;
     } else {
       const source = profileSaysSilent(repo);
@@ -19428,7 +19429,10 @@ var SilentRunner = class {
   pin(repo, pr, source) {
     const store = new LocalStore(this.reviewRoot(), repo, pr);
     const existing = store.pin();
-    if (existing !== null) return existing;
+    if (existing !== null) {
+      this.assertNoForeignLifecycle(store);
+      return existing;
+    }
     const pin = this.pinStore(store, source);
     this.stores.set(`${repo.toLowerCase()}#${pr}`, store);
     return pin;
@@ -19444,8 +19448,9 @@ var SilentRunner = class {
   /** Count this actor's review-chain comments already on the PR. */
   priorChainComments(store) {
     const actor = this.inner.liveActor();
+    const issueComments = this.publicIssueComments(store);
+    this.assertNoForeignLifecycle(store, issueComments);
     const prior = [
-      `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
       `repos/${store.repo}/pulls/${store.pr}/comments?per_page=100`
     ].flatMap((endpoint) => {
       const pages = parseJsonOrFail(
@@ -19454,9 +19459,32 @@ var SilentRunner = class {
       );
       return pages.flat();
     });
-    return prior.filter(
+    return [...issueComments, ...prior].filter(
       (row) => row["user"]?.login === actor && String(row["body"] ?? "").startsWith("<!-- local-review")
     ).length;
+  }
+  publicIssueComments(store) {
+    const pages = parseJsonOrFail(
+      this.inner.runGh([
+        "api",
+        "--paginate",
+        "--slurp",
+        `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`
+      ]),
+      "GitHub returned invalid JSON"
+    );
+    return pages.flat();
+  }
+  assertNoForeignLifecycle(store, rows = this.publicIssueComments(store)) {
+    const actor = this.inner.liveActor();
+    if (rows.some(
+      (row) => row["user"]?.login !== actor && /^<!-- local-review-(?:run:|run-end:|transition:)/.test(
+        String(row["body"] ?? "")
+      )
+    ))
+      fail(
+        `${store.repo}#${store.pr} carries another actor's public review lifecycle; reconcile ownership before using a silent ledger`
+      );
   }
   scopeStore() {
     return this.scope ? this.storeFor(this.scope.repo, this.scope.pr) : null;

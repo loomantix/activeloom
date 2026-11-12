@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
   mkdtempSync,
@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { runCli } from '../cli.js';
 import { dispose, postFinding, reconcile } from '../index.js';
 import {
+  DefaultGitHubRunner,
   fetchReviewThreads,
   getAllIssueComments,
   readLifecycle,
@@ -225,6 +226,56 @@ describe('silent runner', () => {
     ];
     expect(runner.storeFor(REPO, PR)).toBeNull();
     expect(new LocalStore(root, REPO, PR).pin()).toBeNull();
+  });
+
+  it.each(['run:v1', 'run-end:v1', 'transition:v1'])(
+    'refuses explicit and profile pins over a foreign public %s record',
+    (marker) => {
+      github.issueComments = [
+        {
+          id: 5,
+          user: { login: 'other-owner' },
+          body: `<!-- local-review-${marker} id=x -->`,
+        },
+      ];
+      expect(() => runner.pin(REPO, PR, 'run-arg')).toThrowError(
+        /reconcile ownership/,
+      );
+      expect(() => runner.storeFor(REPO, PR)).toThrowError(
+        /reconcile ownership/,
+      );
+      expect(new LocalStore(root, REPO, PR).pin()).toBeNull();
+    },
+  );
+
+  it('blocks an existing pin when a foreign public lifecycle arrives later', () => {
+    runner.pin(REPO, PR, 'run-arg');
+    github.issueComments = [
+      {
+        id: 5,
+        user: { login: 'other-owner' },
+        body: '<!-- local-review-run:v1 id=x -->',
+      },
+    ];
+    const reopened = new SilentRunner(github, { repo: REPO, pr: PR });
+    setGitHubRunner(reopened);
+    expect(() => readLifecycle(REPO, PR)).toThrowError(/reconcile ownership/);
+    expect(() => reopened.pin(REPO, PR, 'run-arg')).toThrowError(
+      /reconcile ownership/,
+    );
+    expect(new LocalStore(root, REPO, PR).pin()).not.toBeNull();
+  });
+
+  it('allows hosted reviewer comments without lifecycle records', () => {
+    github.issueComments = [
+      {
+        id: 5,
+        user: { login: 'reviewer-bot' },
+        body: 'Hosted review findings.',
+      },
+    ];
+    expect(runner.pin(REPO, PR, 'run-arg').mode).toBe('silent');
+    expect(readLifecycle(REPO, PR).state).toBe('none');
   });
 
   it('treats gh api fields or input without -X as a write, like gh does', () => {
@@ -461,7 +512,12 @@ describe('silent summary', () => {
     beforeEach(() => {
       runner.pin(REPO, PR, 'run-arg');
       closeOne();
+      vi.spyOn(DefaultGitHubRunner.prototype, 'runGh').mockImplementation(
+        (args, payload) => github.runGh(args, payload),
+      );
     });
+
+    afterEach(() => vi.restoreAllMocks());
 
     // A well-formed but stale digest: if a gate regressed, postSummary would
     // still refuse with "summary changed" before any GitHub call.
