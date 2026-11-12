@@ -2,7 +2,7 @@
 name: hpromote
 description: Promotion on herdr — opens a dedicated tab that runs the repository's promotion recipe across at most six visible panes (preflight commands, deploy and CI watchers, a read-only risk review of the whole promotion diff) and fix sessions that ship confirmed blockers to the integration branch. Stops at the human approval and merge, then verifies the production deploy, after the human reports it where the repository deploys by hand.
 disable-model-invocation: true
-argument-hint: '[--dry-run] | run [--dry-run] | merged'
+argument-hint: '[--dry-run] | run [--dry-run] | merged | deployed'
 ---
 
 # /hpromote — integration-to-production promotion on herdr
@@ -181,12 +181,12 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 
 1. Confirm `gh pr view <n> --json state,mergeCommit` reads `MERGED`, record the merge SHA in `state.md`, and confirm `origin/<production>` contains it.
 2. Create a worktree detached at the merge SHA and run the recipe's `post_merge` phase on the slots against it, side by side as the layout gives. With `merge`, these are the deploy watchers and verification commands; with `manual`, checks of the merge only.
-3. With `merge`, go to [Finish](#finish).
-4. With `manual`: if any `post_merge` lane failed, nothing has deployed: rename the tab `P<mmdd> ⚠`, report the evidence, tell the user not to deploy production, and stop; there is nothing to roll back. Otherwise report the `post_merge` lane outcomes, keep the worktree at the merge SHA, rename the tab `P<mmdd> ⏸ deploy`, notify with `--sound request` (`PR #<n> merged: deploy production (<runbook>), then send deployed`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and stop. No production deploy has started: do not watch for, wait on or verify a rollout until `deployed` arrives.
+3. With `merge`: if any `post_merge` lane did not pass (exit 3, whatever its outcome), follow the ⚠ rule below; otherwise go to [Finish](#finish).
+4. With `manual`: if any `post_merge` lane did not pass (exit 3, whatever its outcome), nothing has deployed: rename the tab `P<mmdd> ⚠`, report the evidence, tell the user not to deploy production, and stop; there is nothing to roll back. Otherwise record `post_merge passed: <merge sha>` in `state.md`, report the `post_merge` lane outcomes, keep the worktree at the merge SHA, rename the tab `P<mmdd> ⏸ deploy`, notify with `--sound request` (`PR #<n> merged: deploy production (<runbook>), then send deployed`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and stop. No production deploy has started: do not watch for, wait on or verify a rollout until `deployed` arrives.
 
 ### Post-deploy
 
-`manual` only, on `deployed`. Require that Post-merge completed and that `state.md` holds the merge SHA, then rename the tab `P<mmdd>`. Run the recipe's `post_deploy` phase on the slots against the merge-SHA worktree: deploy watchers and verification commands, side by side as the layout gives. Then go to [Finish](#finish).
+`manual` only, on `deployed`. Require `post_merge passed: <merge sha>` in `state.md`; without it, follow [Blocks](#blocks). Confirm `gh pr view <n> --json state,mergeCommit` still reads `MERGED` at that SHA and that `origin/<production>` contains it, recreate the worktree detached at it if it is gone, then rename the tab `P<mmdd>`. Run the recipe's `post_deploy` phase on the slots against that worktree: deploy watchers and verification commands, side by side as the layout gives. If any `post_deploy` lane did not pass, follow the ⚠ rule below; otherwise go to [Finish](#finish).
 
 ### Finish
 
@@ -194,7 +194,7 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 2. Record the promotion where the repository keeps promotion notes, if it does: SHA, PR count, migrations, anything that went wrong.
 3. Remove the review worktrees, release the lock, rename the tab `P<mmdd> ✓`, notify, and close the tab once the user has seen the result.
 
-A failed production deploy or a broken check after the deploy is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
+A failed production deploy, or a lane after the deploy that did not pass (any `post_deploy` lane, or with `merge` a `post_merge` lane), is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
 
 ## Blocks
 
