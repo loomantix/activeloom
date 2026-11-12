@@ -8,6 +8,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -100,7 +101,8 @@ export function splitRepo(repo: string): [string, string] {
 export function storeDir(root: string, repo: string, pr: number): string {
   const [owner, name] = splitRepo(repo);
   if (!Number.isSafeInteger(pr) || pr < 1) fail('--pr must be positive');
-  return join(root, `${owner}-${name}-${pr}`, 'silent');
+  // GitHub names are case-insensitive; one PR must map to one store.
+  return join(root, `${owner}-${name}-${pr}`.toLowerCase(), 'silent');
 }
 
 /** Resolve the review state root: `<git-common-dir>/activeloom-review`. */
@@ -184,6 +186,27 @@ function writeAtomic(path: string, text: string): void {
 
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** The lock's recorded PID, null while it is still empty, or 'gone'. */
+function lockHolder(lock: string): number | null | 'gone' {
+  let text: string;
+  try {
+    text = readFileSync(lock, 'utf8');
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return 'gone';
+    throw error;
+  }
+  const pid = Number.parseInt(text, 10);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
+function lockAge(lock: string): number {
+  try {
+    return Date.now() - statSync(lock).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 function pidAlive(pid: number): boolean {
@@ -286,8 +309,13 @@ export class LocalStore {
         break;
       } catch (error) {
         if ((error as { code?: string }).code !== 'EEXIST') throw error;
-        const holder = Number.parseInt(readFileSync(lock, 'utf8'), 10);
-        if (!Number.isSafeInteger(holder) || !pidAlive(holder)) {
+        const held = lockHolder(lock);
+        if (held === 'gone') continue;
+        // An empty lock is a holder between create and PID write; only a
+        // crash leaves one behind, so it is stale once it outlives the wait.
+        const stale =
+          held === null ? lockAge(lock) > LOCK_WAIT_MS : !pidAlive(held);
+        if (stale) {
           try {
             unlinkSync(lock);
           } catch {
@@ -296,7 +324,9 @@ export class LocalStore {
           continue;
         }
         if (Date.now() > deadline)
-          fail(`silent ledger is locked by process ${holder}: ${lock}`);
+          fail(
+            `silent ledger is locked by process ${held ?? 'unknown'}: ${lock}`,
+          );
         sleep(50);
       }
     }
@@ -306,7 +336,7 @@ export class LocalStore {
       writeAtomic(this.statePath, `${JSON.stringify(state, null, 2)}\n`);
       return result;
     } finally {
-      unlinkSync(lock);
+      if (lockHolder(lock) === process.pid) unlinkSync(lock);
     }
   }
 

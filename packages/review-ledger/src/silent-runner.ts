@@ -59,14 +59,22 @@ const READ_ONLY_GH = new Set(['pr view', 'pr checks', 'pr diff', 'repo view']);
 
 function parseApi(args: string[]): ApiRequest | null {
   if (args[0] !== 'api') return null;
-  let method = 'GET';
+  let method: string | undefined;
   let endpoint: string | undefined;
   let slurp = false;
+  let input = false;
   const fields: Record<string, string> = {};
   for (let i = 1; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === '-X' || arg === '--method') {
       method = (args[++i] ?? '').toUpperCase();
+    } else if (arg.startsWith('--method=')) {
+      method = arg.slice('--method='.length).toUpperCase();
+    } else if (arg.startsWith('-X') && arg.length > 2) {
+      method = arg.slice(2).toUpperCase();
+    } else if (arg === '--input') {
+      input = true;
+      i++;
     } else if (
       arg === '-f' ||
       arg === '-F' ||
@@ -83,7 +91,6 @@ function parseApi(args: string[]): ApiRequest | null {
     } else if (
       arg === '--jq' ||
       arg === '-q' ||
-      arg === '--input' ||
       arg === '-H' ||
       arg === '--header'
     ) {
@@ -93,6 +100,8 @@ function parseApi(args: string[]): ApiRequest | null {
     }
   }
   if (endpoint === undefined) return null;
+  // Like gh itself: fields or a request body make an unmarked call a POST.
+  method ??= Object.keys(fields).length > 0 || input ? 'POST' : 'GET';
   return { method, endpoint: endpoint.split('?')[0]!, slurp, fields };
 }
 
@@ -179,8 +188,16 @@ export class SilentRunner implements GitHubRunner {
     } else {
       const source = profileSaysSilent(repo);
       if (source !== null) {
-        this.pinStore(store, source);
-        result = store;
+        const chain = this.priorChainComments(store);
+        if (chain === 0) {
+          store.writePin(this.inner.liveActor(), source);
+          result = store;
+        } else {
+          // Reviewed loudly before the profile listed it: finish it loudly.
+          process.stderr.write(
+            `review-ledger: ${repo}#${pr} already carries ${chain} review-chain comment(s); keeping it loud despite ${source}\n`,
+          );
+        }
       }
     }
     this.stores.set(key, result);
@@ -198,6 +215,16 @@ export class SilentRunner implements GitHubRunner {
   }
 
   private pinStore(store: LocalStore, source: string): ModePin {
+    const chain = this.priorChainComments(store);
+    if (chain > 0)
+      fail(
+        `${store.repo}#${store.pr} already carries ${chain} review-chain comment(s) on GitHub; silent mode cannot start part-way through a PR. Finish this PR's review as it is, or open a new PR.`,
+      );
+    return store.writePin(this.inner.liveActor(), source);
+  }
+
+  /** Count this actor's review-chain comments already on the PR. */
+  private priorChainComments(store: LocalStore): number {
     const actor = this.inner.liveActor();
     const prior = [
       `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
@@ -209,16 +236,11 @@ export class SilentRunner implements GitHubRunner {
       );
       return pages.flat() as Array<Record<string, unknown>>;
     });
-    const chain = prior.filter(
+    return prior.filter(
       (row) =>
         (row['user'] as { login?: string } | undefined)?.login === actor &&
         String(row['body'] ?? '').startsWith('<!-- local-review'),
-    );
-    if (chain.length > 0)
-      fail(
-        `${store.repo}#${store.pr} already carries ${chain.length} review-chain comment(s) on GitHub; silent mode cannot start part-way through a PR. Finish this PR's review as it is, or open a new PR.`,
-      );
-    return store.writePin(actor, source);
+    ).length;
   }
 
   private scopeStore(): LocalStore | null {
@@ -264,7 +286,11 @@ export class SilentRunner implements GitHubRunner {
 
   private rest(request: ApiRequest, payload: unknown): string | null {
     const { method, endpoint } = request;
-    const body = (payload as { body?: unknown } | undefined)?.body;
+    const data: Record<string, unknown> = {
+      ...request.fields,
+      ...((payload ?? {}) as Record<string, unknown>),
+    };
+    const body = data['body'];
     let match = PR_COMMENTS_RE.exec(endpoint);
     if (match) {
       const store = this.storeFor(match[1]!, Number(match[2]));
@@ -272,7 +298,7 @@ export class SilentRunner implements GitHubRunner {
       if (method === 'GET')
         return this.rows(store.read().review_comments, request.slurp);
       if (method !== 'POST') this.refuse(`${method} ${endpoint}`);
-      return json(this.postRoot(store, payload as Record<string, unknown>));
+      return json(this.postRoot(store, data));
     }
     match = PR_REPLIES_RE.exec(endpoint);
     if (match) {

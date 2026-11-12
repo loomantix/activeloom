@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dispose, postFinding, reconcile } from '../index.js';
@@ -201,9 +208,62 @@ describe('silent runner', () => {
         body: '<!-- local-review-run:v1 id=x -->',
       },
     ];
-    expect(() => runner.storeFor(REPO, PR)).toThrowError(
+    expect(() => runner.pin(REPO, PR, 'run-arg')).toThrowError(
       /already carries 1 review-chain comment/,
     );
+  });
+
+  it('keeps a profile-matched PR loud when it was already reviewed loudly', () => {
+    github.issueComments = [
+      {
+        id: 5,
+        user: { login: 'operator' },
+        body: '<!-- local-review-run:v1 id=x -->',
+      },
+    ];
+    expect(runner.storeFor(REPO, PR)).toBeNull();
+    expect(new LocalStore(root, REPO, PR).pin()).toBeNull();
+  });
+
+  it('treats gh api fields or input without -X as a write, like gh does', () => {
+    for (const args of [
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '-f', 'event=COMMENT'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '--input', '-'],
+      ['api', '-XPOST', `repos/${REPO}/labels`],
+      ['api', '--method=PATCH', `repos/${REPO}/labels/x`],
+    ]) {
+      expect(() => runner.runGh(args)).toThrowError(/silent mode: refusing/);
+    }
+    expect(github.calls.some((call) => call.includes('/reviews'))).toBe(false);
+  });
+
+  it('stores a comment body passed as a -f field', () => {
+    runner.runGh([
+      'api',
+      `repos/${REPO}/issues/${PR}/comments`,
+      '-f',
+      'body=hello',
+    ]);
+    expect(getAllIssueComments(REPO, PR).map((row) => row['body'])).toEqual([
+      'hello',
+    ]);
+  });
+
+  it('maps differently cased repository names to one store', () => {
+    expect(new LocalStore(root, 'Client/App', PR).dir).toBe(
+      new LocalStore(root, REPO, PR).dir,
+    );
+  });
+
+  it('clears an empty lock left behind by a crash, but not a fresh one', () => {
+    const store = new LocalStore(root, REPO, PR);
+    store.writePin('operator', 'run-arg');
+    const lock = join(store.dir, '.lock');
+    writeFileSync(lock, '');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    store.update(() => undefined);
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('passes a repository that is not silent straight through', () => {

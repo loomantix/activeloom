@@ -19024,6 +19024,764 @@ function setupMetricsStore(repo, rotate = false) {
   return active;
 }
 
+// src/local-store.ts
+import {
+  appendFileSync,
+  closeSync as closeSync2,
+  existsSync,
+  fsyncSync as fsyncSync2,
+  lstatSync as lstatSync4,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readFileSync as readFileSync5,
+  renameSync as renameSync3,
+  statSync,
+  unlinkSync as unlinkSync2,
+  writeFileSync
+} from "fs";
+import { homedir } from "os";
+import { isAbsolute, join as join2, resolve as resolve2 } from "path";
+var LOCAL_ID_BASE = 2 ** 52;
+var LOCAL_THREAD_PREFIX = "PRRT_local_";
+var SILENT_ROOT_ENV = "ACTIVELOOM_SILENT_ROOT";
+var SILENT_FORCE_ENV = "ACTIVELOOM_REVIEW_SILENT";
+var STORE_VERSION = 1;
+var LOCK_WAIT_MS = 1e4;
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+function isLocalId(id) {
+  return Number.isSafeInteger(id) && id > LOCAL_ID_BASE;
+}
+function isLocalThreadId(id) {
+  return id.startsWith(LOCAL_THREAD_PREFIX);
+}
+function splitRepo(repo) {
+  if (!REPO_RE.test(repo)) fail("--repo must be OWNER/REPO");
+  return repo.split("/");
+}
+function storeDir(root, repo, pr) {
+  const [owner, name] = splitRepo(repo);
+  if (!Number.isSafeInteger(pr) || pr < 1) fail("--pr must be positive");
+  return join2(root, `${owner}-${name}-${pr}`.toLowerCase(), "silent");
+}
+function reviewRoot(gitCommonDir) {
+  const override = process.env[SILENT_ROOT_ENV];
+  if (override) {
+    if (!isAbsolute(override)) fail(`${SILENT_ROOT_ENV} must be absolute`);
+    return override;
+  }
+  return join2(resolve2(gitCommonDir().trim()), "activeloom-review");
+}
+function profilePath() {
+  const explicit = process.env["ACTIVELOOM_REVIEW_PROFILE"];
+  if (explicit) {
+    if (!isAbsolute(explicit))
+      fail("ACTIVELOOM_REVIEW_PROFILE must be an absolute path");
+    return explicit;
+  }
+  const base = process.env["XDG_CONFIG_HOME"] || join2(homedir(), ".config");
+  return join2(base, "activeloom", "review-profile.json");
+}
+function silentPatternMatches(pattern, repo) {
+  const target = repo.toLowerCase();
+  const value = pattern.toLowerCase();
+  if (value === "*") return true;
+  if (value.endsWith("/*")) return target.startsWith(value.slice(0, -1));
+  return value === target;
+}
+function profileSaysSilent(repo) {
+  if (process.env[SILENT_FORCE_ENV] === "1") return `env:${SILENT_FORCE_ENV}`;
+  const path = profilePath();
+  if (!existsSync(path)) return null;
+  const document = parseJsonOrFail(
+    readFileSync5(path, "utf8"),
+    `review profile is unreadable: ${path}; cannot decide silent mode`
+  );
+  const silent = document?.["silent"];
+  if (silent === void 0) return null;
+  const repos = silent?.repos;
+  if (!Array.isArray(repos) || repos.some((p) => typeof p !== "string"))
+    fail(`review profile silent.repos is malformed: ${path}`);
+  const hit = repos.find((p) => silentPatternMatches(p, repo));
+  return hit === void 0 ? null : `profile:${hit}`;
+}
+function emptyState() {
+  return {
+    version: STORE_VERSION,
+    next: 1,
+    review_comments: [],
+    issue_comments: [],
+    threads: [],
+    summary_post: null
+  };
+}
+function writeAtomic(path, text) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  const fd = openSync2(tmp, "w", 384);
+  try {
+    writeFileSync(fd, text);
+    fsyncSync2(fd);
+  } finally {
+    closeSync2(fd);
+  }
+  renameSync3(tmp, path);
+}
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function lockHolder(lock) {
+  let text;
+  try {
+    text = readFileSync5(lock, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return "gone";
+    throw error;
+  }
+  const pid = Number.parseInt(text, 10);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+function lockAge(lock) {
+  try {
+    return Date.now() - statSync(lock).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+var LocalStore = class {
+  constructor(root, repo, pr) {
+    this.repo = repo;
+    this.pr = pr;
+    this.dir = storeDir(root, repo, pr);
+  }
+  repo;
+  pr;
+  dir;
+  get statePath() {
+    return join2(this.dir, "state.json");
+  }
+  get modePath() {
+    return join2(this.dir, "mode.json");
+  }
+  get scratchpadPath() {
+    return join2(this.dir, "scratchpad.md");
+  }
+  pin() {
+    if (!existsSync(this.modePath)) return null;
+    const pin = parseJsonOrFail(
+      readFileSync5(this.modePath, "utf8"),
+      `silent mode pin is unreadable: ${this.modePath}`
+    );
+    if (pin?.mode !== "silent" || pin.repo.toLowerCase() !== this.repo.toLowerCase() || pin.pr !== this.pr)
+      fail(`silent mode pin does not match ${this.repo}#${this.pr}`);
+    return pin;
+  }
+  writePin(actor, source) {
+    this.ensureDir();
+    const pin = {
+      version: STORE_VERSION,
+      mode: "silent",
+      repo: this.repo,
+      pr: this.pr,
+      actor,
+      pinned_at: nowIso(),
+      source
+    };
+    writeAtomic(this.modePath, `${JSON.stringify(pin, null, 2)}
+`);
+    if (!existsSync(this.scratchpadPath)) {
+      writeFileSync(
+        this.scratchpadPath,
+        `# Silent review scratchpad: ${this.repo}#${this.pr}
+
+Pinned ${pin.pinned_at} (${source}). Nothing in this file is posted to GitHub.
+`,
+        { mode: 384 }
+      );
+    }
+    return pin;
+  }
+  ensureDir() {
+    mkdirSync2(this.dir, { recursive: true, mode: 448 });
+    if (lstatSync4(this.dir).isSymbolicLink())
+      fail(`silent store cannot be a symlink: ${this.dir}`);
+  }
+  read() {
+    if (!existsSync(this.statePath)) return emptyState();
+    const state = parseJsonOrFail(
+      readFileSync5(this.statePath, "utf8"),
+      `silent ledger is unreadable: ${this.statePath}`
+    );
+    if (state?.version !== STORE_VERSION)
+      fail(`unsupported silent ledger version in ${this.statePath}`);
+    return state;
+  }
+  /** Read, mutate and atomically replace the state under the store lock. */
+  update(mutate) {
+    this.ensureDir();
+    const lock = join2(this.dir, ".lock");
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    for (; ; ) {
+      try {
+        const fd = openSync2(lock, "wx", 384);
+        writeFileSync(fd, String(process.pid));
+        closeSync2(fd);
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const held = lockHolder(lock);
+        if (held === "gone") continue;
+        const stale = held === null ? lockAge(lock) > LOCK_WAIT_MS : !pidAlive(held);
+        if (stale) {
+          try {
+            unlinkSync2(lock);
+          } catch {
+          }
+          continue;
+        }
+        if (Date.now() > deadline)
+          fail(
+            `silent ledger is locked by process ${held ?? "unknown"}: ${lock}`
+          );
+        sleep(50);
+      }
+    }
+    try {
+      const state = this.read();
+      const result = mutate(state);
+      writeAtomic(this.statePath, `${JSON.stringify(state, null, 2)}
+`);
+      return result;
+    } finally {
+      if (lockHolder(lock) === process.pid) unlinkSync2(lock);
+    }
+  }
+  /** Append a human-readable line to the scratchpad. Never fatal. */
+  note(text) {
+    try {
+      this.ensureDir();
+      appendFileSync(this.scratchpadPath, `
+${text}
+`, { mode: 384 });
+    } catch (error) {
+      if (error instanceof LedgerError) throw error;
+    }
+  }
+};
+function allocateId(state) {
+  const id = LOCAL_ID_BASE + state.next;
+  state.next += 1;
+  return id;
+}
+
+// src/silent-runner.ts
+var OWNER2 = "[A-Za-z0-9_.-]+";
+var PR_COMMENTS_RE = new RegExp(
+  `^repos/(${OWNER2}/${OWNER2})/pulls/([1-9][0-9]*)/comments$`
+);
+var PR_REPLIES_RE = new RegExp(
+  `^repos/(${OWNER2}/${OWNER2})/pulls/([1-9][0-9]*)/comments/([1-9][0-9]*)/replies$`
+);
+var ISSUE_COMMENTS_RE = new RegExp(
+  `^repos/(${OWNER2}/${OWNER2})/issues/([1-9][0-9]*)/comments$`
+);
+var REVIEW_COMMENT_RE = new RegExp(
+  `^repos/(${OWNER2}/${OWNER2})/pulls/comments/([1-9][0-9]*)$`
+);
+var ISSUE_COMMENT_RE = new RegExp(
+  `^repos/(${OWNER2}/${OWNER2})/issues/comments/([1-9][0-9]*)$`
+);
+var REPO_RE2 = new RegExp(`^repos/(${OWNER2}/${OWNER2})(?:/|$)`);
+var READ_ONLY_GH = /* @__PURE__ */ new Set(["pr view", "pr checks", "pr diff", "repo view"]);
+function parseApi(args) {
+  if (args[0] !== "api") return null;
+  let method;
+  let endpoint;
+  let slurp = false;
+  let input = false;
+  const fields = {};
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-X" || arg === "--method") {
+      method = (args[++i] ?? "").toUpperCase();
+    } else if (arg.startsWith("--method=")) {
+      method = arg.slice("--method=".length).toUpperCase();
+    } else if (arg.startsWith("-X") && arg.length > 2) {
+      method = arg.slice(2).toUpperCase();
+    } else if (arg === "--input") {
+      input = true;
+      i++;
+    } else if (arg === "-f" || arg === "-F" || arg === "--raw-field" || arg === "--field") {
+      const value = args[++i] ?? "";
+      const at = value.indexOf("=");
+      if (at > 0) fields[value.slice(0, at)] = value.slice(at + 1);
+    } else if (arg === "--slurp") {
+      slurp = true;
+    } else if (arg === "--paginate" || arg === "--include" || arg === "-i") {
+    } else if (arg === "--jq" || arg === "-q" || arg === "-H" || arg === "--header") {
+      i++;
+    } else if (!arg.startsWith("-") && endpoint === void 0) {
+      endpoint = arg;
+    }
+  }
+  if (endpoint === void 0) return null;
+  method ??= Object.keys(fields).length > 0 || input ? "POST" : "GET";
+  return { method, endpoint: endpoint.split("?")[0], slurp, fields };
+}
+function json(value) {
+  return JSON.stringify(value);
+}
+function notFound() {
+  fail("GitHub operation failed: gh: Not Found (HTTP 404)");
+}
+var SilentRunner = class {
+  constructor(inner, scope) {
+    this.inner = inner;
+    this.scope = scope;
+  }
+  inner;
+  scope;
+  stores = /* @__PURE__ */ new Map();
+  root = null;
+  // --- delegation ------------------------------------------------------------
+  currentActor() {
+    return this.inner.currentActor();
+  }
+  liveActor() {
+    return this.inner.liveActor();
+  }
+  gitCompare(repo, before, after) {
+    return this.inner.gitCompare ? this.inner.gitCompare(repo, before, after) : parseJsonOrFail(
+      this.inner.runGh([
+        "api",
+        `repos/${repo}/compare/${before}...${after}`
+      ]),
+      "GitHub returned invalid JSON"
+    );
+  }
+  gitRevList(before, head) {
+    if (!this.inner.gitRevList) fail("git rev-list is unavailable");
+    return this.inner.gitRevList(before, head);
+  }
+  runGit(args) {
+    return this.inner.runGit(args);
+  }
+  isAncestor(ancestor, descendant) {
+    if (!this.inner.isAncestor) fail("git ancestry check is unavailable");
+    return this.inner.isAncestor(ancestor, descendant);
+  }
+  // --- silent scope ----------------------------------------------------------
+  reviewRoot() {
+    this.root ??= reviewRoot(
+      () => this.inner.runGit(["rev-parse", "--git-common-dir"])
+    );
+    return this.root;
+  }
+  /** The PR's store when it is silent, pinning it on first use if the profile says so. */
+  storeFor(repo, pr) {
+    const key = `${repo.toLowerCase()}#${pr}`;
+    if (this.stores.has(key)) return this.stores.get(key);
+    let root;
+    try {
+      root = this.reviewRoot();
+    } catch (error) {
+      if (profileSaysSilent(repo) !== null) throw error;
+      this.stores.set(key, null);
+      return null;
+    }
+    const store = new LocalStore(root, repo, pr);
+    let result = null;
+    if (store.pin() !== null) {
+      result = store;
+    } else {
+      const source = profileSaysSilent(repo);
+      if (source !== null) {
+        const chain = this.priorChainComments(store);
+        if (chain === 0) {
+          store.writePin(this.inner.liveActor(), source);
+          result = store;
+        } else {
+          process.stderr.write(
+            `review-ledger: ${repo}#${pr} already carries ${chain} review-chain comment(s); keeping it loud despite ${source}
+`
+          );
+        }
+      }
+    }
+    this.stores.set(key, result);
+    return result;
+  }
+  /** Pin a PR silent. Refuses a PR that already carries this actor's chain comments. */
+  pin(repo, pr, source) {
+    const store = new LocalStore(this.reviewRoot(), repo, pr);
+    const existing = store.pin();
+    if (existing !== null) return existing;
+    const pin = this.pinStore(store, source);
+    this.stores.set(`${repo.toLowerCase()}#${pr}`, store);
+    return pin;
+  }
+  pinStore(store, source) {
+    const chain = this.priorChainComments(store);
+    if (chain > 0)
+      fail(
+        `${store.repo}#${store.pr} already carries ${chain} review-chain comment(s) on GitHub; silent mode cannot start part-way through a PR. Finish this PR's review as it is, or open a new PR.`
+      );
+    return store.writePin(this.inner.liveActor(), source);
+  }
+  /** Count this actor's review-chain comments already on the PR. */
+  priorChainComments(store) {
+    const actor = this.inner.liveActor();
+    const prior = [
+      `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
+      `repos/${store.repo}/pulls/${store.pr}/comments?per_page=100`
+    ].flatMap((endpoint) => {
+      const pages = parseJsonOrFail(
+        this.inner.runGh(["api", "--paginate", "--slurp", endpoint]),
+        "GitHub returned invalid JSON"
+      );
+      return pages.flat();
+    });
+    return prior.filter(
+      (row) => row["user"]?.login === actor && String(row["body"] ?? "").startsWith("<!-- local-review")
+    ).length;
+  }
+  scopeStore() {
+    return this.scope ? this.storeFor(this.scope.repo, this.scope.pr) : null;
+  }
+  repoIsSilent(repo) {
+    if (this.scope && this.scope.repo.toLowerCase() === repo.toLowerCase())
+      return this.scopeStore() !== null;
+    return profileSaysSilent(repo) !== null;
+  }
+  refuse(what) {
+    fail(
+      `silent mode: refusing ${what}; a silent PR writes nothing to GitHub until the end-of-loop summary is approved`
+    );
+  }
+  // --- dispatch --------------------------------------------------------------
+  runGh(args, payload) {
+    const request = parseApi(args);
+    if (request === null) {
+      const command = args.slice(0, 2).join(" ");
+      if (!READ_ONLY_GH.has(command) && this.scopeStore() !== null)
+        this.refuse(`gh ${command}`);
+      return this.inner.runGh(args, payload);
+    }
+    if (request.endpoint === "graphql")
+      return this.graphql(args, request, payload);
+    const handled = this.rest(request, payload);
+    if (handled !== null) return handled;
+    if (request.method !== "GET") {
+      const repo = REPO_RE2.exec(request.endpoint)?.[1];
+      if (this.scopeStore() !== null || repo !== void 0 && this.repoIsSilent(repo))
+        this.refuse(`${request.method} ${request.endpoint}`);
+    }
+    return this.inner.runGh(args, payload);
+  }
+  rest(request, payload) {
+    const { method, endpoint } = request;
+    const data = {
+      ...request.fields,
+      ...payload ?? {}
+    };
+    const body = data["body"];
+    let match = PR_COMMENTS_RE.exec(endpoint);
+    if (match) {
+      const store = this.storeFor(match[1], Number(match[2]));
+      if (store === null) return null;
+      if (method === "GET")
+        return this.rows(store.read().review_comments, request.slurp);
+      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
+      return json(this.postRoot(store, data));
+    }
+    match = PR_REPLIES_RE.exec(endpoint);
+    if (match) {
+      const store = this.storeFor(match[1], Number(match[2]));
+      if (store === null) return null;
+      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
+      return json(this.postReply(store, Number(match[3]), String(body)));
+    }
+    match = ISSUE_COMMENTS_RE.exec(endpoint);
+    if (match) {
+      const store = this.storeFor(match[1], Number(match[2]));
+      if (store === null) return null;
+      if (method === "GET")
+        return this.rows(store.read().issue_comments, request.slurp);
+      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
+      return json(this.postIssueComment(store, String(body)));
+    }
+    const reviewMatch = REVIEW_COMMENT_RE.exec(endpoint);
+    match = reviewMatch ?? ISSUE_COMMENT_RE.exec(endpoint);
+    if (match) {
+      const id = Number(match[2]);
+      const review = reviewMatch !== null;
+      if (!isLocalId(id)) {
+        if (method !== "GET" && this.repoIsSilent(match[1]))
+          this.refuse(`${method} ${endpoint}`);
+        return null;
+      }
+      const store = this.scopeStore();
+      if (store === null)
+        fail(`local comment ${id} needs --repo and --pr naming its silent PR`);
+      return this.single(store, review, id, method, body);
+    }
+    return null;
+  }
+  rows(rows, slurp) {
+    return json(slurp ? [rows] : rows);
+  }
+  postRoot(store, payload) {
+    const actor = this.inner.currentActor();
+    const row = store.update((state) => {
+      const id = allocateId(state);
+      const at = nowIso();
+      const fileLevel = payload["subject_type"] === "file";
+      const comment = {
+        id,
+        node_id: `PRRC_local_${id}`,
+        body: String(payload["body"]),
+        user: { login: actor },
+        path: typeof payload["path"] === "string" ? payload["path"] : null,
+        line: fileLevel || typeof payload["line"] !== "number" ? null : payload["line"],
+        side: fileLevel || typeof payload["side"] !== "string" ? null : payload["side"],
+        subject_type: fileLevel ? "file" : "line",
+        commit_id: typeof payload["commit_id"] === "string" ? payload["commit_id"] : null,
+        created_at: at,
+        updated_at: at
+      };
+      state.review_comments.push(comment);
+      state.threads.push({
+        id: `${LOCAL_THREAD_PREFIX}${id}`,
+        root_id: id,
+        resolved: false
+      });
+      return comment;
+    });
+    store.note(
+      `- finding ${row.id} on \`${row.path ?? "?"}\`: ${headline(row.body)}`
+    );
+    return row;
+  }
+  postReply(store, target, body) {
+    if (!isLocalId(target)) this.refuse(`a reply to GitHub comment ${target}`);
+    const actor = this.inner.currentActor();
+    const row = store.update((state) => {
+      const parent = state.review_comments.find((c) => c.id === target);
+      if (!parent) notFound();
+      const rootId = parent.in_reply_to_id ?? parent.id;
+      const root = state.review_comments.find((c) => c.id === rootId);
+      const id = allocateId(state);
+      const at = nowIso();
+      const comment = {
+        id,
+        node_id: `PRRC_local_${id}`,
+        body,
+        user: { login: actor },
+        path: root.path,
+        line: root.line,
+        side: root.side,
+        subject_type: root.subject_type,
+        commit_id: root.commit_id,
+        in_reply_to_id: rootId,
+        created_at: at,
+        updated_at: at
+      };
+      state.review_comments.push(comment);
+      return comment;
+    });
+    store.note(`  - reply on ${row.in_reply_to_id}: ${headline(body)}`);
+    return row;
+  }
+  postIssueComment(store, body) {
+    const actor = this.inner.currentActor();
+    const row = store.update((state) => {
+      const id = allocateId(state);
+      const at = nowIso();
+      const comment = {
+        id,
+        node_id: `IC_local_${id}`,
+        body,
+        user: { login: actor },
+        created_at: at,
+        updated_at: at,
+        last_edited_at: null
+      };
+      state.issue_comments.push(comment);
+      return comment;
+    });
+    const marker = /^<!-- (local-review[a-z-]*:v[0-9]+)/.exec(body)?.[1];
+    if (marker) store.note(`- ${row.created_at} ${marker}`);
+    return row;
+  }
+  single(store, review, id, method, body) {
+    if (method === "GET") {
+      const state = store.read();
+      const rows = review ? state.review_comments : state.issue_comments;
+      const row = rows.find((r) => r["id"] === id);
+      if (!row) notFound();
+      return json(row);
+    }
+    if (review) this.refuse(`${method} on review comment ${id}`);
+    if (method === "PATCH") {
+      return json(
+        store.update((state) => {
+          const row = state.issue_comments.find((r) => r.id === id);
+          if (!row) notFound();
+          row.body = String(body);
+          row.updated_at = nowIso();
+          row.last_edited_at = row.updated_at;
+          return row;
+        })
+      );
+    }
+    if (method === "DELETE") {
+      store.update((state) => {
+        const index = state.issue_comments.findIndex((r) => r.id === id);
+        if (index < 0) notFound();
+        state.issue_comments.splice(index, 1);
+      });
+      return "";
+    }
+    this.refuse(`${method} on comment ${id}`);
+  }
+  // --- GraphQL ---------------------------------------------------------------
+  graphql(args, request, payload) {
+    const body = payload ?? {};
+    const query = String(body.query ?? request.fields["query"] ?? "");
+    const variables = {
+      ...request.fields,
+      ...body.variables ?? {}
+    };
+    const threadId = typeof variables["threadId"] === "string" ? variables["threadId"] : null;
+    if (/^\s*mutation\b/.test(query)) {
+      const field = /\b(resolveReviewThread|unresolveReviewThread)\s*\(/.exec(
+        query
+      )?.[1];
+      if (field && threadId !== null) {
+        if (!isLocalThreadId(threadId)) return this.inner.runGh(args, payload);
+        const store = this.threadStore(threadId);
+        const resolved = field === "resolveReviewThread";
+        store.update((state) => {
+          const thread = state.threads.find((t) => t.id === threadId);
+          if (!thread) fail(`unknown local review thread ${threadId}`);
+          thread.resolved = resolved;
+        });
+        store.note(
+          `  - thread ${threadId} ${resolved ? "resolved" : "reopened"}`
+        );
+        return json({
+          data: { [field]: { thread: { id: threadId, isResolved: resolved } } }
+        });
+      }
+      if (this.scopeStore() !== null) this.refuse("a GraphQL mutation");
+      return this.inner.runGh(args, payload);
+    }
+    if (threadId !== null && /\bnode\s*\(\s*id\s*:/.test(query)) {
+      if (!isLocalThreadId(threadId)) return this.inner.runGh(args, payload);
+      const store = this.threadStore(threadId);
+      const node = threadNodes(store, store.read(), 100).find(
+        (t) => t["id"] === threadId
+      );
+      return json({ data: { node: node ?? null } });
+    }
+    const owner = variables["owner"];
+    const name = variables["name"];
+    const number = Number(variables["number"]);
+    if (typeof owner === "string" && typeof name === "string" && Number.isSafeInteger(number)) {
+      const repo = `${owner}/${name}`;
+      if (/\breviewThreads\s*\(/.test(query)) {
+        const store = this.storeFor(repo, number);
+        if (store !== null) {
+          const first = Number(
+            /comments\s*\(\s*first\s*:\s*(\d+)/.exec(query)?.[1] ?? 100
+          );
+          const nodes = threadNodes(store, store.read(), first);
+          const page = {
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes,
+                    pageInfo: { hasNextPage: false, endCursor: null }
+                  }
+                }
+              }
+            }
+          };
+          return json(request.slurp ? [page] : page);
+        }
+      } else if (/\bissueOrPullRequest\s*\(/.test(query)) {
+        const store = this.storeFor(repo, number);
+        if (store !== null) {
+          const rows = store.read().issue_comments;
+          const page = {
+            data: {
+              repository: {
+                issueOrPullRequest: {
+                  comments: {
+                    totalCount: rows.length,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: rows.map((row) => ({
+                      databaseId: row.id,
+                      body: row.body,
+                      createdAt: row.created_at,
+                      lastEditedAt: row.last_edited_at,
+                      author: { login: row.user.login }
+                    }))
+                  }
+                }
+              }
+            }
+          };
+          return json(request.slurp ? [page] : page);
+        }
+      }
+    }
+    return this.inner.runGh(args, payload);
+  }
+  threadStore(threadId) {
+    const store = this.scopeStore();
+    if (store === null)
+      fail(
+        `local review thread ${threadId} needs --repo and --pr naming its silent PR`
+      );
+    return store;
+  }
+};
+function threadNodes(store, state, first) {
+  return state.threads.map((thread) => {
+    const comments = state.review_comments.filter(
+      (c) => c.id === thread.root_id || c.in_reply_to_id === thread.root_id
+    );
+    return {
+      id: thread.id,
+      isResolved: thread.resolved,
+      repository: { nameWithOwner: store.repo },
+      pullRequest: { number: store.pr },
+      comments: {
+        nodes: comments.slice(0, first).map((c) => ({
+          databaseId: c.id,
+          body: c.body,
+          author: { login: c.user.login }
+        })),
+        pageInfo: { hasNextPage: comments.length > first }
+      }
+    };
+  });
+}
+function headline(body) {
+  const line = body.split("\n").slice(1).map((l) => l.trim().replace(/^\*\*(.*)\*\*$/, "$1")).find((l) => l.length > 0) ?? "";
+  return line.length > 160 ? `${line.slice(0, 157)}...` : line;
+}
+
 // src/telemetry.ts
 function isTelemetryComment(body) {
   return body.includes(TELEMETRY_MARKER_PREFIX);
@@ -19637,10 +20395,16 @@ function commentSink(target, name = "pr-comment", historicalIssues) {
 function prCommentSink(target) {
   return commentSink(target);
 }
+function storeForPr(repo, pr) {
+  const runner = getGitHubRunner();
+  if (runner instanceof SilentRunner && runner.storeFor(repo, pr) !== null)
+    return "pr";
+  return telemetryStore();
+}
 function configuredTelemetrySink(target) {
   let store;
   try {
-    store = telemetryStore();
+    store = storeForPr(target.repo, target.pr);
   } catch (error) {
     return {
       name: "unresolved",
@@ -19663,7 +20427,7 @@ function configuredTelemetrySink(target) {
   };
 }
 function telemetryRecorded(target) {
-  const issues = telemetryStore() === "issue" ? metricsStores(target.repo, "all").map((store) => store.number) : [target.pr];
+  const issues = storeForPr(target.repo, target.pr) === "issue" ? metricsStores(target.repo, "all").map((store) => store.number) : [target.pr];
   const actor = assertActor(target.actor);
   return issues.flatMap((issue) => getIssueComments(target.repo, issue, actor)).some((row) => {
     try {
@@ -19710,7 +20474,7 @@ function enrichTelemetryDuration(params) {
     if (!Number.isFinite(params.durationSeconds) || params.durationSeconds < 0) {
       fail("telemetry duration must be a finite non-negative number");
     }
-    const store = telemetryStore();
+    const store = storeForPr(params.repo, params.pr);
     result.sink = store === "issue" ? "store-issue" : "pr-comment";
     const issues = store === "issue" ? metricsStores(params.repo, "all").map((issue) => issue.number) : [params.pr];
     const actor = assertActor(params.actor);
@@ -20626,716 +21390,6 @@ function formatFindings(findings) {
     lines.push(`| **${severity}** | \`${lens}\` | ${location} | ${desc} |`);
   }
   return lines.join("\n");
-}
-
-// src/local-store.ts
-import {
-  appendFileSync,
-  closeSync as closeSync2,
-  existsSync,
-  fsyncSync as fsyncSync2,
-  lstatSync as lstatSync4,
-  mkdirSync as mkdirSync2,
-  openSync as openSync2,
-  readFileSync as readFileSync5,
-  renameSync as renameSync3,
-  unlinkSync as unlinkSync2,
-  writeFileSync
-} from "fs";
-import { homedir } from "os";
-import { isAbsolute, join as join2, resolve as resolve2 } from "path";
-var LOCAL_ID_BASE = 2 ** 52;
-var LOCAL_THREAD_PREFIX = "PRRT_local_";
-var SILENT_ROOT_ENV = "ACTIVELOOM_SILENT_ROOT";
-var SILENT_FORCE_ENV = "ACTIVELOOM_REVIEW_SILENT";
-var STORE_VERSION = 1;
-var LOCK_WAIT_MS = 1e4;
-function nowIso() {
-  return (/* @__PURE__ */ new Date()).toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-function isLocalId(id) {
-  return Number.isSafeInteger(id) && id > LOCAL_ID_BASE;
-}
-function isLocalThreadId(id) {
-  return id.startsWith(LOCAL_THREAD_PREFIX);
-}
-function splitRepo(repo) {
-  if (!REPO_RE.test(repo)) fail("--repo must be OWNER/REPO");
-  return repo.split("/");
-}
-function storeDir(root, repo, pr) {
-  const [owner, name] = splitRepo(repo);
-  if (!Number.isSafeInteger(pr) || pr < 1) fail("--pr must be positive");
-  return join2(root, `${owner}-${name}-${pr}`, "silent");
-}
-function reviewRoot(gitCommonDir) {
-  const override = process.env[SILENT_ROOT_ENV];
-  if (override) {
-    if (!isAbsolute(override)) fail(`${SILENT_ROOT_ENV} must be absolute`);
-    return override;
-  }
-  return join2(resolve2(gitCommonDir().trim()), "activeloom-review");
-}
-function profilePath() {
-  const explicit = process.env["ACTIVELOOM_REVIEW_PROFILE"];
-  if (explicit) {
-    if (!isAbsolute(explicit))
-      fail("ACTIVELOOM_REVIEW_PROFILE must be an absolute path");
-    return explicit;
-  }
-  const base = process.env["XDG_CONFIG_HOME"] || join2(homedir(), ".config");
-  return join2(base, "activeloom", "review-profile.json");
-}
-function silentPatternMatches(pattern, repo) {
-  const target = repo.toLowerCase();
-  const value = pattern.toLowerCase();
-  if (value === "*") return true;
-  if (value.endsWith("/*")) return target.startsWith(value.slice(0, -1));
-  return value === target;
-}
-function profileSaysSilent(repo) {
-  if (process.env[SILENT_FORCE_ENV] === "1") return `env:${SILENT_FORCE_ENV}`;
-  const path = profilePath();
-  if (!existsSync(path)) return null;
-  const document = parseJsonOrFail(
-    readFileSync5(path, "utf8"),
-    `review profile is unreadable: ${path}; cannot decide silent mode`
-  );
-  const silent = document?.["silent"];
-  if (silent === void 0) return null;
-  const repos = silent?.repos;
-  if (!Array.isArray(repos) || repos.some((p) => typeof p !== "string"))
-    fail(`review profile silent.repos is malformed: ${path}`);
-  const hit = repos.find((p) => silentPatternMatches(p, repo));
-  return hit === void 0 ? null : `profile:${hit}`;
-}
-function emptyState() {
-  return {
-    version: STORE_VERSION,
-    next: 1,
-    review_comments: [],
-    issue_comments: [],
-    threads: [],
-    summary_post: null
-  };
-}
-function writeAtomic(path, text) {
-  const tmp = `${path}.${process.pid}.tmp`;
-  const fd = openSync2(tmp, "w", 384);
-  try {
-    writeFileSync(fd, text);
-    fsyncSync2(fd);
-  } finally {
-    closeSync2(fd);
-  }
-  renameSync3(tmp, path);
-}
-function sleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-var LocalStore = class {
-  constructor(root, repo, pr) {
-    this.repo = repo;
-    this.pr = pr;
-    this.dir = storeDir(root, repo, pr);
-  }
-  repo;
-  pr;
-  dir;
-  get statePath() {
-    return join2(this.dir, "state.json");
-  }
-  get modePath() {
-    return join2(this.dir, "mode.json");
-  }
-  get scratchpadPath() {
-    return join2(this.dir, "scratchpad.md");
-  }
-  pin() {
-    if (!existsSync(this.modePath)) return null;
-    const pin = parseJsonOrFail(
-      readFileSync5(this.modePath, "utf8"),
-      `silent mode pin is unreadable: ${this.modePath}`
-    );
-    if (pin?.mode !== "silent" || pin.repo.toLowerCase() !== this.repo.toLowerCase() || pin.pr !== this.pr)
-      fail(`silent mode pin does not match ${this.repo}#${this.pr}`);
-    return pin;
-  }
-  writePin(actor, source) {
-    this.ensureDir();
-    const pin = {
-      version: STORE_VERSION,
-      mode: "silent",
-      repo: this.repo,
-      pr: this.pr,
-      actor,
-      pinned_at: nowIso(),
-      source
-    };
-    writeAtomic(this.modePath, `${JSON.stringify(pin, null, 2)}
-`);
-    if (!existsSync(this.scratchpadPath)) {
-      writeFileSync(
-        this.scratchpadPath,
-        `# Silent review scratchpad: ${this.repo}#${this.pr}
-
-Pinned ${pin.pinned_at} (${source}). Nothing in this file is posted to GitHub.
-`,
-        { mode: 384 }
-      );
-    }
-    return pin;
-  }
-  ensureDir() {
-    mkdirSync2(this.dir, { recursive: true, mode: 448 });
-    if (lstatSync4(this.dir).isSymbolicLink())
-      fail(`silent store cannot be a symlink: ${this.dir}`);
-  }
-  read() {
-    if (!existsSync(this.statePath)) return emptyState();
-    const state = parseJsonOrFail(
-      readFileSync5(this.statePath, "utf8"),
-      `silent ledger is unreadable: ${this.statePath}`
-    );
-    if (state?.version !== STORE_VERSION)
-      fail(`unsupported silent ledger version in ${this.statePath}`);
-    return state;
-  }
-  /** Read, mutate and atomically replace the state under the store lock. */
-  update(mutate) {
-    this.ensureDir();
-    const lock = join2(this.dir, ".lock");
-    const deadline = Date.now() + LOCK_WAIT_MS;
-    for (; ; ) {
-      try {
-        const fd = openSync2(lock, "wx", 384);
-        writeFileSync(fd, String(process.pid));
-        closeSync2(fd);
-        break;
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        const holder = Number.parseInt(readFileSync5(lock, "utf8"), 10);
-        if (!Number.isSafeInteger(holder) || !pidAlive(holder)) {
-          try {
-            unlinkSync2(lock);
-          } catch {
-          }
-          continue;
-        }
-        if (Date.now() > deadline)
-          fail(`silent ledger is locked by process ${holder}: ${lock}`);
-        sleep(50);
-      }
-    }
-    try {
-      const state = this.read();
-      const result = mutate(state);
-      writeAtomic(this.statePath, `${JSON.stringify(state, null, 2)}
-`);
-      return result;
-    } finally {
-      unlinkSync2(lock);
-    }
-  }
-  /** Append a human-readable line to the scratchpad. Never fatal. */
-  note(text) {
-    try {
-      this.ensureDir();
-      appendFileSync(this.scratchpadPath, `
-${text}
-`, { mode: 384 });
-    } catch (error) {
-      if (error instanceof LedgerError) throw error;
-    }
-  }
-};
-function allocateId(state) {
-  const id = LOCAL_ID_BASE + state.next;
-  state.next += 1;
-  return id;
-}
-
-// src/silent-runner.ts
-var OWNER2 = "[A-Za-z0-9_.-]+";
-var PR_COMMENTS_RE = new RegExp(
-  `^repos/(${OWNER2}/${OWNER2})/pulls/([1-9][0-9]*)/comments$`
-);
-var PR_REPLIES_RE = new RegExp(
-  `^repos/(${OWNER2}/${OWNER2})/pulls/([1-9][0-9]*)/comments/([1-9][0-9]*)/replies$`
-);
-var ISSUE_COMMENTS_RE = new RegExp(
-  `^repos/(${OWNER2}/${OWNER2})/issues/([1-9][0-9]*)/comments$`
-);
-var REVIEW_COMMENT_RE = new RegExp(
-  `^repos/(${OWNER2}/${OWNER2})/pulls/comments/([1-9][0-9]*)$`
-);
-var ISSUE_COMMENT_RE = new RegExp(
-  `^repos/(${OWNER2}/${OWNER2})/issues/comments/([1-9][0-9]*)$`
-);
-var REPO_RE2 = new RegExp(`^repos/(${OWNER2}/${OWNER2})(?:/|$)`);
-var READ_ONLY_GH = /* @__PURE__ */ new Set(["pr view", "pr checks", "pr diff", "repo view"]);
-function parseApi(args) {
-  if (args[0] !== "api") return null;
-  let method = "GET";
-  let endpoint;
-  let slurp = false;
-  const fields = {};
-  for (let i = 1; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "-X" || arg === "--method") {
-      method = (args[++i] ?? "").toUpperCase();
-    } else if (arg === "-f" || arg === "-F" || arg === "--raw-field" || arg === "--field") {
-      const value = args[++i] ?? "";
-      const at = value.indexOf("=");
-      if (at > 0) fields[value.slice(0, at)] = value.slice(at + 1);
-    } else if (arg === "--slurp") {
-      slurp = true;
-    } else if (arg === "--paginate" || arg === "--include" || arg === "-i") {
-    } else if (arg === "--jq" || arg === "-q" || arg === "--input" || arg === "-H" || arg === "--header") {
-      i++;
-    } else if (!arg.startsWith("-") && endpoint === void 0) {
-      endpoint = arg;
-    }
-  }
-  if (endpoint === void 0) return null;
-  return { method, endpoint: endpoint.split("?")[0], slurp, fields };
-}
-function json(value) {
-  return JSON.stringify(value);
-}
-function notFound() {
-  fail("GitHub operation failed: gh: Not Found (HTTP 404)");
-}
-var SilentRunner = class {
-  constructor(inner, scope) {
-    this.inner = inner;
-    this.scope = scope;
-  }
-  inner;
-  scope;
-  stores = /* @__PURE__ */ new Map();
-  root = null;
-  // --- delegation ------------------------------------------------------------
-  currentActor() {
-    return this.inner.currentActor();
-  }
-  liveActor() {
-    return this.inner.liveActor();
-  }
-  gitCompare(repo, before, after) {
-    return this.inner.gitCompare ? this.inner.gitCompare(repo, before, after) : parseJsonOrFail(
-      this.inner.runGh([
-        "api",
-        `repos/${repo}/compare/${before}...${after}`
-      ]),
-      "GitHub returned invalid JSON"
-    );
-  }
-  gitRevList(before, head) {
-    if (!this.inner.gitRevList) fail("git rev-list is unavailable");
-    return this.inner.gitRevList(before, head);
-  }
-  runGit(args) {
-    return this.inner.runGit(args);
-  }
-  isAncestor(ancestor, descendant) {
-    if (!this.inner.isAncestor) fail("git ancestry check is unavailable");
-    return this.inner.isAncestor(ancestor, descendant);
-  }
-  // --- silent scope ----------------------------------------------------------
-  reviewRoot() {
-    this.root ??= reviewRoot(
-      () => this.inner.runGit(["rev-parse", "--git-common-dir"])
-    );
-    return this.root;
-  }
-  /** The PR's store when it is silent, pinning it on first use if the profile says so. */
-  storeFor(repo, pr) {
-    const key = `${repo.toLowerCase()}#${pr}`;
-    if (this.stores.has(key)) return this.stores.get(key);
-    let root;
-    try {
-      root = this.reviewRoot();
-    } catch (error) {
-      if (profileSaysSilent(repo) !== null) throw error;
-      this.stores.set(key, null);
-      return null;
-    }
-    const store = new LocalStore(root, repo, pr);
-    let result = null;
-    if (store.pin() !== null) {
-      result = store;
-    } else {
-      const source = profileSaysSilent(repo);
-      if (source !== null) {
-        this.pinStore(store, source);
-        result = store;
-      }
-    }
-    this.stores.set(key, result);
-    return result;
-  }
-  /** Pin a PR silent. Refuses a PR that already carries this actor's chain comments. */
-  pin(repo, pr, source) {
-    const store = new LocalStore(this.reviewRoot(), repo, pr);
-    const existing = store.pin();
-    if (existing !== null) return existing;
-    const pin = this.pinStore(store, source);
-    this.stores.set(`${repo.toLowerCase()}#${pr}`, store);
-    return pin;
-  }
-  pinStore(store, source) {
-    const actor = this.inner.liveActor();
-    const prior = [
-      `repos/${store.repo}/issues/${store.pr}/comments?per_page=100`,
-      `repos/${store.repo}/pulls/${store.pr}/comments?per_page=100`
-    ].flatMap((endpoint) => {
-      const pages = parseJsonOrFail(
-        this.inner.runGh(["api", "--paginate", "--slurp", endpoint]),
-        "GitHub returned invalid JSON"
-      );
-      return pages.flat();
-    });
-    const chain = prior.filter(
-      (row) => row["user"]?.login === actor && String(row["body"] ?? "").startsWith("<!-- local-review")
-    );
-    if (chain.length > 0)
-      fail(
-        `${store.repo}#${store.pr} already carries ${chain.length} review-chain comment(s) on GitHub; silent mode cannot start part-way through a PR. Finish this PR's review as it is, or open a new PR.`
-      );
-    return store.writePin(actor, source);
-  }
-  scopeStore() {
-    return this.scope ? this.storeFor(this.scope.repo, this.scope.pr) : null;
-  }
-  repoIsSilent(repo) {
-    if (this.scope && this.scope.repo.toLowerCase() === repo.toLowerCase())
-      return this.scopeStore() !== null;
-    return profileSaysSilent(repo) !== null;
-  }
-  refuse(what) {
-    fail(
-      `silent mode: refusing ${what}; a silent PR writes nothing to GitHub until the end-of-loop summary is approved`
-    );
-  }
-  // --- dispatch --------------------------------------------------------------
-  runGh(args, payload) {
-    const request = parseApi(args);
-    if (request === null) {
-      const command = args.slice(0, 2).join(" ");
-      if (!READ_ONLY_GH.has(command) && this.scopeStore() !== null)
-        this.refuse(`gh ${command}`);
-      return this.inner.runGh(args, payload);
-    }
-    if (request.endpoint === "graphql")
-      return this.graphql(args, request, payload);
-    const handled = this.rest(request, payload);
-    if (handled !== null) return handled;
-    if (request.method !== "GET") {
-      const repo = REPO_RE2.exec(request.endpoint)?.[1];
-      if (this.scopeStore() !== null || repo !== void 0 && this.repoIsSilent(repo))
-        this.refuse(`${request.method} ${request.endpoint}`);
-    }
-    return this.inner.runGh(args, payload);
-  }
-  rest(request, payload) {
-    const { method, endpoint } = request;
-    const body = payload?.body;
-    let match = PR_COMMENTS_RE.exec(endpoint);
-    if (match) {
-      const store = this.storeFor(match[1], Number(match[2]));
-      if (store === null) return null;
-      if (method === "GET")
-        return this.rows(store.read().review_comments, request.slurp);
-      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
-      return json(this.postRoot(store, payload));
-    }
-    match = PR_REPLIES_RE.exec(endpoint);
-    if (match) {
-      const store = this.storeFor(match[1], Number(match[2]));
-      if (store === null) return null;
-      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
-      return json(this.postReply(store, Number(match[3]), String(body)));
-    }
-    match = ISSUE_COMMENTS_RE.exec(endpoint);
-    if (match) {
-      const store = this.storeFor(match[1], Number(match[2]));
-      if (store === null) return null;
-      if (method === "GET")
-        return this.rows(store.read().issue_comments, request.slurp);
-      if (method !== "POST") this.refuse(`${method} ${endpoint}`);
-      return json(this.postIssueComment(store, String(body)));
-    }
-    const reviewMatch = REVIEW_COMMENT_RE.exec(endpoint);
-    match = reviewMatch ?? ISSUE_COMMENT_RE.exec(endpoint);
-    if (match) {
-      const id = Number(match[2]);
-      const review = reviewMatch !== null;
-      if (!isLocalId(id)) {
-        if (method !== "GET" && this.repoIsSilent(match[1]))
-          this.refuse(`${method} ${endpoint}`);
-        return null;
-      }
-      const store = this.scopeStore();
-      if (store === null)
-        fail(`local comment ${id} needs --repo and --pr naming its silent PR`);
-      return this.single(store, review, id, method, body);
-    }
-    return null;
-  }
-  rows(rows, slurp) {
-    return json(slurp ? [rows] : rows);
-  }
-  postRoot(store, payload) {
-    const actor = this.inner.currentActor();
-    const row = store.update((state) => {
-      const id = allocateId(state);
-      const at = nowIso();
-      const fileLevel = payload["subject_type"] === "file";
-      const comment = {
-        id,
-        node_id: `PRRC_local_${id}`,
-        body: String(payload["body"]),
-        user: { login: actor },
-        path: typeof payload["path"] === "string" ? payload["path"] : null,
-        line: fileLevel || typeof payload["line"] !== "number" ? null : payload["line"],
-        side: fileLevel || typeof payload["side"] !== "string" ? null : payload["side"],
-        subject_type: fileLevel ? "file" : "line",
-        commit_id: typeof payload["commit_id"] === "string" ? payload["commit_id"] : null,
-        created_at: at,
-        updated_at: at
-      };
-      state.review_comments.push(comment);
-      state.threads.push({
-        id: `${LOCAL_THREAD_PREFIX}${id}`,
-        root_id: id,
-        resolved: false
-      });
-      return comment;
-    });
-    store.note(
-      `- finding ${row.id} on \`${row.path ?? "?"}\`: ${headline(row.body)}`
-    );
-    return row;
-  }
-  postReply(store, target, body) {
-    if (!isLocalId(target)) this.refuse(`a reply to GitHub comment ${target}`);
-    const actor = this.inner.currentActor();
-    const row = store.update((state) => {
-      const parent = state.review_comments.find((c) => c.id === target);
-      if (!parent) notFound();
-      const rootId = parent.in_reply_to_id ?? parent.id;
-      const root = state.review_comments.find((c) => c.id === rootId);
-      const id = allocateId(state);
-      const at = nowIso();
-      const comment = {
-        id,
-        node_id: `PRRC_local_${id}`,
-        body,
-        user: { login: actor },
-        path: root.path,
-        line: root.line,
-        side: root.side,
-        subject_type: root.subject_type,
-        commit_id: root.commit_id,
-        in_reply_to_id: rootId,
-        created_at: at,
-        updated_at: at
-      };
-      state.review_comments.push(comment);
-      return comment;
-    });
-    store.note(`  - reply on ${row.in_reply_to_id}: ${headline(body)}`);
-    return row;
-  }
-  postIssueComment(store, body) {
-    const actor = this.inner.currentActor();
-    const row = store.update((state) => {
-      const id = allocateId(state);
-      const at = nowIso();
-      const comment = {
-        id,
-        node_id: `IC_local_${id}`,
-        body,
-        user: { login: actor },
-        created_at: at,
-        updated_at: at,
-        last_edited_at: null
-      };
-      state.issue_comments.push(comment);
-      return comment;
-    });
-    const marker = /^<!-- (local-review[a-z-]*:v[0-9]+)/.exec(body)?.[1];
-    if (marker) store.note(`- ${row.created_at} ${marker}`);
-    return row;
-  }
-  single(store, review, id, method, body) {
-    if (method === "GET") {
-      const state = store.read();
-      const rows = review ? state.review_comments : state.issue_comments;
-      const row = rows.find((r) => r["id"] === id);
-      if (!row) notFound();
-      return json(row);
-    }
-    if (review) this.refuse(`${method} on review comment ${id}`);
-    if (method === "PATCH") {
-      return json(
-        store.update((state) => {
-          const row = state.issue_comments.find((r) => r.id === id);
-          if (!row) notFound();
-          row.body = String(body);
-          row.updated_at = nowIso();
-          row.last_edited_at = row.updated_at;
-          return row;
-        })
-      );
-    }
-    if (method === "DELETE") {
-      store.update((state) => {
-        const index = state.issue_comments.findIndex((r) => r.id === id);
-        if (index < 0) notFound();
-        state.issue_comments.splice(index, 1);
-      });
-      return "";
-    }
-    this.refuse(`${method} on comment ${id}`);
-  }
-  // --- GraphQL ---------------------------------------------------------------
-  graphql(args, request, payload) {
-    const body = payload ?? {};
-    const query = String(body.query ?? request.fields["query"] ?? "");
-    const variables = {
-      ...request.fields,
-      ...body.variables ?? {}
-    };
-    const threadId = typeof variables["threadId"] === "string" ? variables["threadId"] : null;
-    if (/^\s*mutation\b/.test(query)) {
-      const field = /\b(resolveReviewThread|unresolveReviewThread)\s*\(/.exec(
-        query
-      )?.[1];
-      if (field && threadId !== null) {
-        if (!isLocalThreadId(threadId)) return this.inner.runGh(args, payload);
-        const store = this.threadStore(threadId);
-        const resolved = field === "resolveReviewThread";
-        store.update((state) => {
-          const thread = state.threads.find((t) => t.id === threadId);
-          if (!thread) fail(`unknown local review thread ${threadId}`);
-          thread.resolved = resolved;
-        });
-        store.note(
-          `  - thread ${threadId} ${resolved ? "resolved" : "reopened"}`
-        );
-        return json({
-          data: { [field]: { thread: { id: threadId, isResolved: resolved } } }
-        });
-      }
-      if (this.scopeStore() !== null) this.refuse("a GraphQL mutation");
-      return this.inner.runGh(args, payload);
-    }
-    if (threadId !== null && /\bnode\s*\(\s*id\s*:/.test(query)) {
-      if (!isLocalThreadId(threadId)) return this.inner.runGh(args, payload);
-      const store = this.threadStore(threadId);
-      const node = threadNodes(store, store.read(), 100).find(
-        (t) => t["id"] === threadId
-      );
-      return json({ data: { node: node ?? null } });
-    }
-    const owner = variables["owner"];
-    const name = variables["name"];
-    const number = Number(variables["number"]);
-    if (typeof owner === "string" && typeof name === "string" && Number.isSafeInteger(number)) {
-      const repo = `${owner}/${name}`;
-      if (/\breviewThreads\s*\(/.test(query)) {
-        const store = this.storeFor(repo, number);
-        if (store !== null) {
-          const first = Number(
-            /comments\s*\(\s*first\s*:\s*(\d+)/.exec(query)?.[1] ?? 100
-          );
-          const nodes = threadNodes(store, store.read(), first);
-          const page = {
-            data: {
-              repository: {
-                pullRequest: {
-                  reviewThreads: {
-                    nodes,
-                    pageInfo: { hasNextPage: false, endCursor: null }
-                  }
-                }
-              }
-            }
-          };
-          return json(request.slurp ? [page] : page);
-        }
-      } else if (/\bissueOrPullRequest\s*\(/.test(query)) {
-        const store = this.storeFor(repo, number);
-        if (store !== null) {
-          const rows = store.read().issue_comments;
-          const page = {
-            data: {
-              repository: {
-                issueOrPullRequest: {
-                  comments: {
-                    totalCount: rows.length,
-                    pageInfo: { hasNextPage: false, endCursor: null },
-                    nodes: rows.map((row) => ({
-                      databaseId: row.id,
-                      body: row.body,
-                      createdAt: row.created_at,
-                      lastEditedAt: row.last_edited_at,
-                      author: { login: row.user.login }
-                    }))
-                  }
-                }
-              }
-            }
-          };
-          return json(request.slurp ? [page] : page);
-        }
-      }
-    }
-    return this.inner.runGh(args, payload);
-  }
-  threadStore(threadId) {
-    const store = this.scopeStore();
-    if (store === null)
-      fail(
-        `local review thread ${threadId} needs --repo and --pr naming its silent PR`
-      );
-    return store;
-  }
-};
-function threadNodes(store, state, first) {
-  return state.threads.map((thread) => {
-    const comments = state.review_comments.filter(
-      (c) => c.id === thread.root_id || c.in_reply_to_id === thread.root_id
-    );
-    return {
-      id: thread.id,
-      isResolved: thread.resolved,
-      repository: { nameWithOwner: store.repo },
-      pullRequest: { number: store.pr },
-      comments: {
-        nodes: comments.slice(0, first).map((c) => ({
-          databaseId: c.id,
-          body: c.body,
-          author: { login: c.user.login }
-        })),
-        pageInfo: { hasNextPage: comments.length > first }
-      }
-    };
-  });
-}
-function headline(body) {
-  const line = body.split("\n").slice(1).map((l) => l.trim().replace(/^\*\*(.*)\*\*$/, "$1")).find((l) => l.length > 0) ?? "";
-  return line.length > 160 ? `${line.slice(0, 157)}...` : line;
 }
 
 // src/silent-summary.ts

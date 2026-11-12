@@ -1173,16 +1173,20 @@ ends.
 **Read the ledger through the helper.** In either mode,
 `<ledger-helper> read-ledger --repo <owner/repo> --pr <number>` returns
 `review_comments`, `issue_comments` and `threads`. Use it for every ledger read
-this protocol describes. On a silent PR, raw `gh` reads of PR comments see an
-empty ledger.
+this protocol describes. On a silent PR it returns only the local ledger; raw
+`gh` reads see GitHub, where the ledger is absent.
 
 **Write the ledger through the helper.** Post findings, replies, dispositions,
 resolutions, rosters, tier markers and attestations exactly as the steps above
-say, and the helper keeps them local. On a silent PR it refuses any other write:
-raw `gh pr comment`, `gh pr review`, or `gh api` writes to PR comments.
-Hosted reviewers keep posting their own reviews. Record your response to each
-of their findings in the scratchpad rather than as a thread reply. Resolving
-their threads is still allowed, because a resolution posts no comment.
+say, and the helper keeps them local. The helper refuses any other PR write
+that passes through it. A raw `gh` command does not pass through it and is not
+refused, so on a silent PR never post with `gh pr comment`, `gh pr review` or a
+`gh api` write; put that text in the scratchpad instead.
+
+**Hosted reviewers.** They keep posting their own reviews, and their threads
+are not in the local ledger. Read and resolve them with `gh` directly; a
+resolution posts no comment. Record your response to each of their findings in
+the scratchpad rather than as a thread reply.
 
 **Scratchpad.** `scratchpad.md` in the store gets a line for every finding,
 reply, resolution and marker as it is written, and the user can read it at any

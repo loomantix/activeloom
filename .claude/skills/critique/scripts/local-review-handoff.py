@@ -152,8 +152,10 @@ def _profile_says_silent(repo: str) -> bool:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         _fail(f"review profile is unreadable: {path}; cannot decide silent mode")
-    silent = document.get("silent") if isinstance(document, dict) else None
-    patterns = silent.get("repos", []) if isinstance(silent, dict) else []
+    if not isinstance(document, dict) or "silent" not in document:
+        return False
+    silent = document["silent"]
+    patterns = silent.get("repos") if isinstance(silent, dict) else None
     if not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
         _fail(f"review profile silent.repos is malformed: {path}")
     return any(_silent_pattern_matches(p, repo) for p in patterns)
@@ -169,7 +171,7 @@ def _silent_pinned(repo: str, pr: int) -> bool:
         if result.returncode != 0:
             return False
         root = str(Path(result.stdout.strip()).resolve() / "activeloom-review")
-    store = Path(root) / f"{repo.replace('/', '-')}-{pr}" / "silent"
+    store = Path(root) / f"{repo.replace('/', '-')}-{pr}".lower() / "silent"
     return (store / "mode.json").exists()
 
 

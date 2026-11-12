@@ -93,3 +93,22 @@ def test_matcher_agrees_with_the_ledger_helper(controller: ModuleType) -> None:
     vectors = json.loads((ROOT / "tests/fixtures/silent-globs.json").read_text())
     for vector in vectors:
         assert controller._silent_pattern_matches(vector["pattern"], vector["repo"]) is vector["match"]
+
+
+def test_a_pin_is_found_whatever_the_repository_casing(
+    controller: ModuleType, tmp_path: Path
+) -> None:
+    store = tmp_path / "review" / "client-app-7" / "silent"
+    store.mkdir(parents=True)
+    (store / "mode.json").write_text("{}")
+    controller._enter_silent_scope(scope(repo="Client/App"))
+    assert controller.SILENT_SCOPE == ("Client/App", 7)
+
+
+@pytest.mark.parametrize("silent", [None, "client/*", ["client/*"], {}])
+def test_malformed_silent_entry_fails_closed(
+    controller: ModuleType, tmp_path: Path, silent: Any
+) -> None:
+    (tmp_path / "profile.json").write_text(json.dumps({"silent": silent}))
+    with pytest.raises(controller.HandoffError, match="silent.repos is malformed"):
+        controller._enter_silent_scope(scope())
