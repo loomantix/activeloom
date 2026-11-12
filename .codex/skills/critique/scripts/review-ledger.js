@@ -19301,15 +19301,17 @@ var ISSUE_COMMENT_RE = new RegExp(
 );
 var REPO_RE2 = new RegExp(`^repos/(${OWNER2}/${OWNER2})(?:/|$)`);
 var READ_ONLY_GH = /* @__PURE__ */ new Set(["pr view", "pr checks", "pr diff", "repo view"]);
-function parseApi(args) {
+function parseApi(args, payload) {
   if (args[0] !== "api") return null;
   let method;
   let endpoint;
   let slurp = false;
-  let input = false;
+  let input = payload !== void 0;
+  let hasFields = false;
   const fields = {};
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
+    const joinedField = /^(?:--(?:raw-field|field)=|-[fF]=?)(.+)$/.exec(arg);
     if (arg === "-X" || arg === "--method") {
       method = (args[++i] ?? "").toUpperCase();
     } else if (arg.startsWith("--method=")) {
@@ -19319,8 +19321,11 @@ function parseApi(args) {
     } else if (arg === "--input") {
       input = true;
       i++;
-    } else if (arg === "-f" || arg === "-F" || arg === "--raw-field" || arg === "--field") {
-      const value = args[++i] ?? "";
+    } else if (arg.startsWith("--input=")) {
+      input = true;
+    } else if (arg === "-f" || arg === "-F" || arg === "--raw-field" || arg === "--field" || joinedField !== null) {
+      hasFields = true;
+      const value = joinedField?.[1] ?? args[++i] ?? "";
       const at = value.indexOf("=");
       if (at > 0) fields[value.slice(0, at)] = value.slice(at + 1);
     } else if (arg === "--slurp") {
@@ -19333,7 +19338,7 @@ function parseApi(args) {
     }
   }
   if (endpoint === void 0) return null;
-  method ??= Object.keys(fields).length > 0 || input ? "POST" : "GET";
+  method ??= hasFields || input ? "POST" : "GET";
   return { method, endpoint: endpoint.split("?")[0], slurp, fields };
 }
 function json(value) {
@@ -19468,7 +19473,7 @@ var SilentRunner = class {
   }
   // --- dispatch --------------------------------------------------------------
   runGh(args, payload) {
-    const request = parseApi(args);
+    const request = parseApi(args, payload);
     if (request === null) {
       const command = args.slice(0, 2).join(" ");
       if (!READ_ONLY_GH.has(command) && this.scopeStore() !== null)
@@ -21414,22 +21419,31 @@ function renderSummary(store, state) {
   let open = 0;
   for (const root of state.review_comments) {
     if (root.in_reply_to_id !== void 0) continue;
-    const finding = matchFinding(root.body);
+    let finding = matchFinding(root.body);
     if (finding === null) continue;
+    let findingBody = root.body;
     const replies = state.review_comments.filter(
       (c) => c.in_reply_to_id === root.id
     );
+    for (const reply2 of replies) {
+      const occurrence = matchFinding(reply2.body);
+      if (occurrence?.fingerprint === finding.fingerprint && occurrence.occurrence > finding.occurrence) {
+        finding = occurrence;
+        findingBody = reply2.body;
+      }
+    }
     let last = null;
     for (const reply2 of replies) {
       const disposition = matchDisposition(reply2.body);
-      if (disposition) last = { ...disposition, body: reply2.body };
+      if (disposition?.fingerprint === finding.fingerprint && disposition.occurrence === finding.occurrence && disposition.engine === finding.engine && disposition.round === finding.round)
+        last = { ...disposition, body: reply2.body };
     }
     if (last === null) {
       open += 1;
     } else if (last.outcome === "fixed") {
       const where = root.path ? ` \`${root.path}\`` : "";
       lines.push(
-        `- **${finding.severity}**${where}: ${title(root.body)}. ${fixText(last.body)} (${last.head.slice(0, 7)})`
+        `- **${finding.severity}**${where}: ${title(findingBody)}. ${fixText(last.body)} (${last.head.slice(0, 7)})`
       );
     } else if (last.outcome === "deferred") {
       deferred += 1;

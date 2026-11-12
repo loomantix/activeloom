@@ -26,6 +26,7 @@ import {
 } from '../local-store.js';
 import { SilentRunner, type DelegateRunner } from '../silent-runner.js';
 import { postSummary, renderSummary } from '../silent-summary.js';
+import { buildFindingBody, buildDispositionBody } from '../protocol.js';
 
 const REPO = 'client/app';
 const PR = 7;
@@ -231,11 +232,39 @@ describe('silent runner', () => {
       ['api', `repos/${REPO}/pulls/${PR}/reviews`, '--input', '-'],
       ['api', '-XPOST', `repos/${REPO}/labels`],
       ['api', '--method=PATCH', `repos/${REPO}/labels/x`],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '--raw-field=body=x'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '--field=event=COMMENT'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '-fbody=x'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '-Fevent=COMMENT'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '--input=/tmp/body.json'],
+      ['api', `repos/${REPO}/pulls/${PR}/reviews`, '-F', 'labels[]'],
     ]) {
       expect(() => runner.runGh(args)).toThrowError(/silent mode: refusing/);
     }
     expect(github.calls.some((call) => call.includes('/reviews'))).toBe(false);
   });
+
+  it('infers POST from the payload that local-gh reads from stdin', () => {
+    const body = { body: 'hello' };
+    expect(() =>
+      runner.runGh(['api', `repos/${REPO}/pulls/${PR}/reviews`], body),
+    ).toThrowError(/silent mode: refusing POST/);
+    runner.runGh(['api', `repos/${REPO}/issues/${PR}/comments`], body);
+    expect(getAllIssueComments(REPO, PR).map((row) => row['body'])).toEqual([
+      'hello',
+    ]);
+    expect(github.calls.some((call) => call.includes('/reviews'))).toBe(false);
+  });
+
+  it.each(['--raw-field=body=hello', '-fbody=hello', '-f=body=hello'])(
+    'stores a comment body from %s',
+    (field) => {
+      runner.runGh(['api', `repos/${REPO}/issues/${PR}/comments`, field]);
+      expect(getAllIssueComments(REPO, PR).map((row) => row['body'])).toEqual([
+        'hello',
+      ]);
+    },
+  );
 
   it('stores a comment body passed as a -f field', () => {
     runner.runGh([
@@ -288,6 +317,74 @@ describe('silent runner', () => {
 });
 
 describe('silent summary', () => {
+  function recurrence() {
+    const posted = finding('recurring', '**Original defect.**');
+    const store = new LocalStore(root, REPO, PR);
+    const replies = `repos/${REPO}/pulls/${PR}/comments/${posted.comment_id}/replies`;
+    const params = {
+      engine: 'claude' as const,
+      round: 1,
+      head: HEAD,
+      fingerprint: 'recurring',
+      occurrence: 1,
+    };
+    runner.runGh(['api', '-X', 'POST', replies], {
+      body: buildDispositionBody({
+        ...params,
+        outcome: 'fixed',
+        content: `Fixed in ${HEAD}. Original fix.`,
+      }).body,
+    });
+    runner.runGh(['api', '-X', 'POST', replies], {
+      body: buildFindingBody({
+        ...params,
+        engine: 'codex',
+        round: 2,
+        occurrence: 2,
+        severity: 'minor',
+        lens: 'code-reviewer',
+        content: '**Defect recurred with new evidence.**',
+      }).body,
+    });
+    return { store, replies, params };
+  }
+
+  it('reports a reopened occurrence as open despite the earlier fix', () => {
+    const { store } = recurrence();
+    const summary = renderSummary(store, store.read());
+    expect(summary.fixed).toBe(0);
+    expect(summary.open).toBe(1);
+    expect(summary.summary).not.toContain('Original fix');
+  });
+
+  it.each(['fixed', 'deferred', 'dismissed'] as const)(
+    'uses only the latest occurrence when it is %s',
+    (outcome) => {
+      const { store, replies, params } = recurrence();
+      runner.runGh(['api', '-X', 'POST', replies], {
+        body: buildDispositionBody({
+          ...params,
+          engine: 'codex',
+          round: 2,
+          occurrence: 2,
+          outcome,
+          content: `Fixed in ${HEAD}. Current disposition.`,
+        }).body,
+      });
+      const summary = renderSummary(store, store.read());
+      expect(summary.open).toBe(0);
+      expect(summary.fixed).toBe(outcome === 'fixed' ? 1 : 0);
+      expect(summary.deferred).toBe(outcome === 'deferred' ? 1 : 0);
+      expect(summary.dismissed).toBe(outcome === 'dismissed' ? 1 : 0);
+      expect(summary.summary).not.toContain('Original defect');
+      if (outcome === 'fixed') {
+        expect(summary.summary).toContain(
+          '**minor** `src/app.ts`: Defect recurred with new evidence',
+        );
+      }
+    },
+  );
+
   function closeOne(): void {
     const posted = finding(
       'null-guard',

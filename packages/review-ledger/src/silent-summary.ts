@@ -58,22 +58,39 @@ export function renderSummary(
   let open = 0;
   for (const root of state.review_comments) {
     if (root.in_reply_to_id !== undefined) continue;
-    const finding = matchFinding(root.body);
+    let finding = matchFinding(root.body);
     if (finding === null) continue;
+    let findingBody = root.body;
     const replies = state.review_comments.filter(
       (c) => c.in_reply_to_id === root.id,
     );
+    for (const reply of replies) {
+      const occurrence = matchFinding(reply.body);
+      if (
+        occurrence?.fingerprint === finding.fingerprint &&
+        occurrence.occurrence > finding.occurrence
+      ) {
+        finding = occurrence;
+        findingBody = reply.body;
+      }
+    }
     let last: { outcome: string; head: string; body: string } | null = null;
     for (const reply of replies) {
       const disposition = matchDisposition(reply.body);
-      if (disposition) last = { ...disposition, body: reply.body };
+      if (
+        disposition?.fingerprint === finding.fingerprint &&
+        disposition.occurrence === finding.occurrence &&
+        disposition.engine === finding.engine &&
+        disposition.round === finding.round
+      )
+        last = { ...disposition, body: reply.body };
     }
     if (last === null) {
       open += 1;
     } else if (last.outcome === 'fixed') {
       const where = root.path ? ` \`${root.path}\`` : '';
       lines.push(
-        `- **${finding.severity}**${where}: ${title(root.body)}. ${fixText(last.body)} (${last.head.slice(0, 7)})`,
+        `- **${finding.severity}**${where}: ${title(findingBody)}. ${fixText(last.body)} (${last.head.slice(0, 7)})`,
       );
     } else if (last.outcome === 'deferred') {
       deferred += 1;

@@ -57,15 +57,17 @@ const ISSUE_COMMENT_RE = new RegExp(
 const REPO_RE = new RegExp(`^repos/(${OWNER}/${OWNER})(?:/|$)`);
 const READ_ONLY_GH = new Set(['pr view', 'pr checks', 'pr diff', 'repo view']);
 
-function parseApi(args: string[]): ApiRequest | null {
+function parseApi(args: string[], payload?: unknown): ApiRequest | null {
   if (args[0] !== 'api') return null;
   let method: string | undefined;
   let endpoint: string | undefined;
   let slurp = false;
-  let input = false;
+  let input = payload !== undefined;
+  let hasFields = false;
   const fields: Record<string, string> = {};
   for (let i = 1; i < args.length; i++) {
     const arg = args[i]!;
+    const joinedField = /^(?:--(?:raw-field|field)=|-[fF]=?)(.+)$/.exec(arg);
     if (arg === '-X' || arg === '--method') {
       method = (args[++i] ?? '').toUpperCase();
     } else if (arg.startsWith('--method=')) {
@@ -75,13 +77,17 @@ function parseApi(args: string[]): ApiRequest | null {
     } else if (arg === '--input') {
       input = true;
       i++;
+    } else if (arg.startsWith('--input=')) {
+      input = true;
     } else if (
       arg === '-f' ||
       arg === '-F' ||
       arg === '--raw-field' ||
-      arg === '--field'
+      arg === '--field' ||
+      joinedField !== null
     ) {
-      const value = args[++i] ?? '';
+      hasFields = true;
+      const value = joinedField?.[1] ?? args[++i] ?? '';
       const at = value.indexOf('=');
       if (at > 0) fields[value.slice(0, at)] = value.slice(at + 1);
     } else if (arg === '--slurp') {
@@ -101,7 +107,7 @@ function parseApi(args: string[]): ApiRequest | null {
   }
   if (endpoint === undefined) return null;
   // Like gh itself: fields or a request body make an unmarked call a POST.
-  method ??= Object.keys(fields).length > 0 || input ? 'POST' : 'GET';
+  method ??= hasFields || input ? 'POST' : 'GET';
   return { method, endpoint: endpoint.split('?')[0]!, slurp, fields };
 }
 
@@ -262,7 +268,7 @@ export class SilentRunner implements GitHubRunner {
   // --- dispatch --------------------------------------------------------------
 
   runGh(args: string[], payload?: unknown): string {
-    const request = parseApi(args);
+    const request = parseApi(args, payload);
     if (request === null) {
       const command = args.slice(0, 2).join(' ');
       if (!READ_ONLY_GH.has(command) && this.scopeStore() !== null)
