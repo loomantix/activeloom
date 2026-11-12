@@ -25,7 +25,7 @@ Mechanics: [`herdr.md`](../../references/herdr.md). Design: loomantix/activeloom
 
 `C` = `.claude/skills/hreview/scripts/herd-config.py`; `R` = `.claude/skills/promote/scripts/promote-recipe.py`. `python3 -I $C repo > <state>/herd.json` must report `promotion.enabled: true`; otherwise say the repository has not configured promotion and stop. Then:
 
-- **Recipe:** `python3 -I $R show --herd <state>/herd.json > <state>/recipe.json`. It reads `.activeloom-promote.json` from the integration branch. Without one, it builds a recipe from `promotion.preflight`, `promotion.deploy_workflows` and `promotion.post_merge` (`source.kind` is `herd`). A recipe whose branches disagree with the herd config exits 1. Exit 1 or 2 is a block.
+- **Recipe:** `python3 -I $R show --herd <state>/herd.json > <state>/recipe.json`. It reads `.activeloom-promote.json` from the integration branch. Without one, it builds a recipe from `promotion.preflight`, `promotion.deploy_workflows` and `promotion.post_merge` (`source.kind` is `herd`). A recipe whose branches, `deploy_trigger` or `deploy_runbook` disagree with values the herd config sets exits 1. Exit 1 or 2 is a block.
 - **Step rules:** `promotion.skill`, default `promote`. Read `.claude/skills/<skill>/SKILL.md` before Phase 1. Its step kinds, outcomes, PR body and standing authorization apply here; where a repository's own skill differs from this skill on a promotion step, it wins.
 - **Branches:** the recipe's `integration_branch` and `production_branch` are the promotion PR's head and base.
 - **Deploy trigger:** the recipe's `deploy_trigger` (from the recipe file, else `promotion.deploy_trigger`), with no default. A missing one makes `show` exit 1 with a message naming the field: a block that asks the user which applies. Record it in `state.md` and take every deploy phrase below from it:
@@ -182,7 +182,7 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 1. Confirm `gh pr view <n> --json state,mergeCommit` reads `MERGED`, record the merge SHA in `state.md`, and confirm `origin/<production>` contains it.
 2. Create a worktree detached at the merge SHA and run the recipe's `post_merge` phase on the slots against it, side by side as the layout gives. With `merge`, these are the deploy watchers and verification commands; with `manual`, checks of the merge only.
 3. With `merge`, go to [Finish](#finish).
-4. With `manual`: report the `post_merge` lane outcomes, keep the worktree at the merge SHA, rename the tab `P<mmdd> ⏸ deploy`, notify with `--sound request` (`PR #<n> merged: deploy production (<runbook>), then send deployed`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and stop. No production deploy has started: do not watch for, wait on or verify a rollout until `deployed` arrives.
+4. With `manual`: if any `post_merge` lane failed, nothing has deployed: rename the tab `P<mmdd> ⚠`, report the evidence, tell the user not to deploy production, and stop; there is nothing to roll back. Otherwise report the `post_merge` lane outcomes, keep the worktree at the merge SHA, rename the tab `P<mmdd> ⏸ deploy`, notify with `--sound request` (`PR #<n> merged: deploy production (<runbook>), then send deployed`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and stop. No production deploy has started: do not watch for, wait on or verify a rollout until `deployed` arrives.
 
 ### Post-deploy
 
@@ -194,7 +194,7 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 2. Record the promotion where the repository keeps promotion notes, if it does: SHA, PR count, migrations, anything that went wrong.
 3. Remove the review worktrees, release the lock, rename the tab `P<mmdd> ✓`, notify, and close the tab once the user has seen the result.
 
-A failed production deploy or a broken check is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
+A failed production deploy or a broken check after the deploy is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
 
 ## Blocks
 

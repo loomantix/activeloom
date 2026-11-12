@@ -689,6 +689,16 @@ def test_show_falls_back_to_the_herd_config_and_checks_agreement(remote: tuple[P
     git(work, "push", "-q", "origin", "develop")
     done = show(work, "--herd", "-", stdin=json.dumps(herd_out))
     assert done.returncode == 1 and "disagree" in done.stderr
+    # Matching branches: the trigger and a herd-only runbook are still checked.
+    for promotion, field in (
+        ({"production_branch": "main", "deploy_trigger": "manual"}, "deploy_trigger"),
+        ({"production_branch": "main", "deploy_runbook": "docs/deploy.md"}, "deploy_runbook"),
+    ):
+        herd_other = {"source": herd_out["source"], "config": herd.validate_repo(
+            {"schema_version": 1, "integration_branch": "develop", "promotion": promotion}
+        )}
+        done = show(work, "--herd", "-", stdin=json.dumps(herd_other))
+        assert done.returncode == 1 and f"disagree: {field}" in done.stderr, done.stderr
     # When the default branch is production and has no recipe yet, --herd's
     # authenticated integration branch still resolves its committed recipe.
     git(work, "checkout", "-q", "-b", "main", "HEAD~1")

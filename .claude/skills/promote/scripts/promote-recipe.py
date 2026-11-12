@@ -559,6 +559,7 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
                 ("integration_branch", recipe["integration_branch"], config.get("integration_branch")),
                 ("production_branch", recipe["production_branch"], promotion.get("production_branch")),
                 ("deploy_trigger", recipe["deploy_trigger"], promotion.get("deploy_trigger")),
+                ("deploy_runbook", recipe["deploy_runbook"], promotion.get("deploy_runbook")),
             )
             if theirs is not None and ours != theirs
         ]

@@ -158,8 +158,8 @@ On `merged`:
 1. `gh pr view <n> --json state,mergeCommit` must read `MERGED`. Pin `M` = the merge commit, and confirm `origin/<production>` contains it.
 2. Create a worktree detached at `M` and run every `post_merge` lane against `M`.
 3. With `merge`: work through each `pull_request.after_merge` item, using the read-only access the repository's agent guide documents. A green job is not proof the change is live; check deployed state where the guide shows how. Remove the worktrees and report each lane's outcome and each after-merge item.
-4. With `manual`: report each `post_merge` lane's outcome, keep the worktree at `M`, and stop. Tell the user to deploy production (name the runbook) and then run `promote deployed`. Do not watch for, wait on or verify a production rollout before then.
+4. With `manual`: if any `post_merge` lane failed, report the evidence, tell the user not to deploy production, and stop; nothing has deployed, so there is nothing to roll back. Otherwise report each `post_merge` lane's outcome, keep the worktree at `M`, and stop. Tell the user to deploy production (name the runbook) and then run `promote deployed`. Do not watch for, wait on or verify a production rollout before then.
 
-On `deployed` (`manual` only): require that `merged` completed for this promotion and reuse `M`. Run every `post_deploy` lane against `M`, then work through the after-merge items as in step 3, remove the worktrees, and report.
+On `deployed` (`manual` only): identify the promotion PR, from this session or by asking the user. Re-derive `M` with `gh pr view <n> --json state,mergeCommit`, which must read `MERGED`, and confirm `origin/<production>` contains it. Require that the `post_merge` lanes passed: from this session, or by asking the user when the `merged` session is gone. Recreate the worktree detached at `M` if it is gone. Run every `post_deploy` lane against `M`, then work through the after-merge items as in step 3, remove the worktrees, and report.
 
-A failed `post_merge` or `post_deploy` step is a production problem: report the evidence and the `rollback` runbook and stop. Never roll back on your own.
+A failed `post_deploy` step, or a failed `post_merge` step with `merge`, is a production problem: report the evidence and the `rollback` runbook and stop. Never roll back on your own.
