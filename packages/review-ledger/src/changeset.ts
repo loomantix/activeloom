@@ -1,4 +1,8 @@
-import { dependencyNeedsContent, isDependencyPinChange } from './dependency.js';
+import {
+  dependencyNeedsContent,
+  isDependencyPinChange,
+  isDockerfileName,
+} from './dependency.js';
 import { runGit } from './github.js';
 import { fail } from './errors.js';
 import { requireSha } from './hash.js';
@@ -549,10 +553,14 @@ export function classifyFiles(
     }
     // A manifest or lockfile under a test or fixture path is a fixture, not a
     // dependency of the project, so only a review-significant non-test/non-fixture
-    // file can be a pin.
+    // file can be a pin. A Dockerfile under a test path builds the test runner's
+    // image, so its `FROM` pin is still a dependency; under a fixture path it is
+    // data.
+    const testRunnerImage =
+      isDockerfileName(name) && !isFixture(classification.path, name);
     const dependencyPin =
       classification.reviewSignificant &&
-      !underTestOrFixture &&
+      (!underTestOrFixture || testRunnerImage) &&
       isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);

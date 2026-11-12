@@ -17968,6 +17968,9 @@ function isImageTagLine(line) {
     line
   );
 }
+function isDockerfileName(name) {
+  return /^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name);
+}
 function isDockerfileFromLine(line) {
   const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
     line
@@ -17996,7 +17999,7 @@ function lineKind(path, name) {
       isAllowed: (line) => isRequirementPinLine(line) || isRequirementAuxiliaryLine(line)
     };
   }
-  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+  if (isDockerfileName(name)) {
     return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith(".yml") || name.endsWith(".yaml")) {
@@ -18059,13 +18062,117 @@ function jsonSkeleton(name, content) {
     return null;
   }
 }
+var DOCKERFILE_CONTINUATIONS = [
+  /(^|[^\\])\\[ \t]*$/,
+  /(^|[^`])`[ \t]*$/
+];
+var HEREDOC_WORD = /^\d*<<(-?)(["']?)([A-Za-z_][\w.-]*)\2$/;
+function dockerfileHeredocs(text) {
+  if (/[^\S \t]/.test(text)) return null;
+  const words = text.trim().split(/[ \t]+/);
+  const keyword = words[0].toLowerCase();
+  if (keyword === "onbuild") return null;
+  if (!["run", "copy", "add"].includes(keyword)) return [];
+  if (words[1]?.startsWith("[")) return null;
+  const heredocs = [];
+  for (const word of words.slice(1)) {
+    const match = HEREDOC_WORD.exec(word);
+    if (match) heredocs.push({ strip: match[1] === "-", word: match[3] });
+    else if (/["'\\]|\$\{|<</.test(word)) return null;
+  }
+  return heredocs;
+}
+function dockerfileSkeletonFor(lines, continuation) {
+  const output = [];
+  let index = 0;
+  while (index < lines.length) {
+    const first = lines[index];
+    index += 1;
+    const trimmed = first.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      output.push(first);
+      continue;
+    }
+    const instruction = [first];
+    let text = first.replace(/[\r\n]+$/, "").trimStart();
+    let continued = continuation.test(text);
+    text = text.replace(continuation, "$1");
+    while (continued && index < lines.length) {
+      const next = lines[index];
+      instruction.push(next);
+      index += 1;
+      const physical = next.replace(/[\r\n]+$/, "");
+      const content = physical.trim();
+      if (!content || content.startsWith("#")) continue;
+      continued = continuation.test(physical);
+      text += physical.replace(continuation, "$1");
+    }
+    if (text.includes("<<")) {
+      const heredocs = dockerfileHeredocs(text);
+      if (heredocs === null) return null;
+      for (const { strip, word } of heredocs) {
+        let closed = false;
+        while (index < lines.length) {
+          const body = lines[index];
+          instruction.push(body);
+          index += 1;
+          const candidate = body.replace(/[\r\n]+$/, "");
+          if ((strip ? candidate.replace(/^\t+/, "") : candidate) === word) {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) return null;
+      }
+      output.push(...instruction);
+      continue;
+    }
+    if (instruction.length === 1 && isDockerfileFromLine(trimmed)) {
+      output.push(
+        first.replace(
+          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+          (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
+        )
+      );
+      continue;
+    }
+    output.push(...instruction);
+  }
+  return output.join("\n");
+}
+function dockerfileSkeleton(content) {
+  if (content.includes("\x85") || content.indexOf("\uFEFF", 1) !== -1)
+    return null;
+  const lines = content.split("\n");
+  const skeletons = DOCKERFILE_CONTINUATIONS.map(
+    (continuation) => dockerfileSkeletonFor(lines, continuation)
+  );
+  return skeletons.includes(null) ? null : JSON.stringify(skeletons);
+}
+function stripYamlComment(raw) {
+  let quote;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (quote === '"') {
+      if (char === "\\") i += 1;
+      else if (char === '"') quote = void 0;
+    } else if (quote === "'") {
+      if (char === "'" && raw[i + 1] === "'") i += 1;
+      else if (char === "'") quote = void 0;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "#" && (i === 0 || /\s/.test(raw[i - 1]))) {
+      return raw.slice(0, i);
+    }
+  }
+  return raw;
+}
 function contentSkeleton(path, name, content) {
   if (name.endsWith(".json")) return jsonSkeleton(name, content);
   if (name.endsWith(".jsonc")) return null;
   if (name.startsWith("build.gradle") || ["gemfile", "podfile", "mix.exs"].includes(name))
     return null;
-  if ((/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) && (content.includes("<<") || /[\\`]\s*$/m.test(content)))
-    return null;
+  if (isDockerfileName(name)) return dockerfileSkeleton(content);
   if ((name.endsWith(".toml") || name === "pipfile") && /'''|"""/.test(content))
     return null;
   let section = "";
@@ -18085,7 +18192,12 @@ function contentSkeleton(path, name, content) {
         scalarIndent = void 0;
       }
       if (!line || line.startsWith("#")) return raw;
-      if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ""))) {
+      if (/["']/.test(
+        stripYamlComment(raw).replace(
+          /"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g,
+          ""
+        )
+      )) {
         unsupportedQuotes = true;
         return raw;
       }
@@ -18152,12 +18264,6 @@ function contentSkeleton(path, name, content) {
       if (/^--hash=/.test(line))
         return raw.replace(/--hash=\S+/, "--hash=<pin>");
       return raw;
-    }
-    if (isDockerfileFromLine(line)) {
-      return raw.replace(
-        /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
-        (_, prefix2, reference) => `${prefix2}${maskImageReference(reference)}`
-      );
     }
     const workflow = isWorkflowPath(path, name);
     const keys = yamlPath.join("/");
@@ -18515,7 +18621,8 @@ function classifyFiles(files, options) {
     if (classification.reviewSignificant) {
       changeset.reviewSignificantFiles += 1;
     }
-    const dependencyPin = classification.reviewSignificant && !underTestOrFixture && isDependencyPinChange(file);
+    const testRunnerImage = isDockerfileName(name) && !isFixture(classification.path, name);
+    const dependencyPin = classification.reviewSignificant && (!underTestOrFixture || testRunnerImage) && isDependencyPinChange(file);
     if (dependencyPin) {
       dependencyPaths.push(classification.path);
     } else {

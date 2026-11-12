@@ -486,6 +486,214 @@ const cases: [string, string, string, string, boolean][] = [
     '1123456789012345678901234567890123456789 # v4.2.0 $(id)',
     false,
   ],
+  // Unchanged continuations and heredocs do not hide a `FROM` digest bump.
+  [
+    'Dockerfile',
+    `FROM node:22@sha256:${'a'.repeat(64)}\nRUN apt-get update \\\n  && apt-get install -y curl\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  [
+    'Dockerfile',
+    `# escape=\`\nFROM node:22@sha256:${'a'.repeat(64)}\nRUN npm ci \`\n  --omit=dev\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  [
+    'Dockerfile',
+    `FROM node:22@sha256:${'a'.repeat(64)}\nRUN <<EOF\napt-get update\nEOF\nCOPY <<-'CONF' /etc/app.conf\n\tkey=value\n\tCONF\nFROM node:22 AS final\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN <<EOF\napt-get update\nEOF\nFROM node:22 AS final\n',
+    'node:22 AS final',
+    'node:23 AS final',
+    true,
+  ],
+  // A change inside a continued instruction or a heredoc body stays app code.
+  ...['EOF+', 'EOF/END', "'EOF'+", 'E"OF"'].map(
+    (delimiter): [string, string, string, string, boolean] => [
+      'Dockerfile',
+      `FROM node:22\nCOPY <<${delimiter} /payload\n${delimiter.startsWith('E"') ? 'E' : 'EOF'}\nFROM example:1\n${delimiter.replace(/["']/g, '')}\n`,
+      'example:1',
+      'example:2',
+      false,
+    ],
+  ),
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN printf "%s" \\\n  FROM example:1\n',
+    'node:22\nRUN printf "%s" \\\n  FROM example:1',
+    'node:23\nRUN printf "%s" \\\n  FROM example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN printf "%s" \\\n# comment lines keep the continuation\nFROM example:1\n',
+    'node:22\nRUN printf "%s" \\\n# comment lines keep the continuation\nFROM example:1',
+    'node:23\nRUN printf "%s" \\\n# comment lines keep the continuation\nFROM example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN cat <<-EOF > /stage\n\tFROM example:1\n\tEOF\n',
+    'node:22\nRUN cat <<-EOF > /stage\n\tFROM example:1',
+    'node:23\nRUN cat <<-EOF > /stage\n\tFROM example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN <<EOF\nFROM example:1\n EOF\n',
+    'node:22',
+    'node:23',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN echo "a << b"\n',
+    'node:22',
+    'node:23',
+    false,
+  ],
+  // A heredoc BuildKit would not open (or would) must not shift where the
+  // scanner thinks a later heredoc body ends; `FROM example:1` is body data.
+  ...[
+    'RUN echo << EOF',
+    'RUN cat<<EOF',
+    'RUN echo "x <<EOF y"',
+    'RUN cat <<<EOF',
+    'ENV A <<EOF',
+    'RUN echo a \\\n# <<EOF\n  && true',
+    'RUN cat <<DATA >> `f`\nDATA',
+  ].map((opener): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    `FROM node:22\n${opener}\nRUN cat <<OTHER\n${opener.includes('DATA') ? 'DATA' : 'EOF'}\nFROM example:1\nOTHER\n`,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    '# escape=`\nFROM node:22\nRUN cat <<DATA \\\nDATA\nRUN cat <<OTHER\nDATA\nFROM example:1\nOTHER\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN cat <\\\n<EOF > /etc/motd\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nCOPY <<A <<B /dst\na\nA\nFROM example:1\nB\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN <<-EOF\n  EOF\nFROM example:1\nEOF\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN printf "%s" \\\n\nFROM example:1\n',
+    'example:1',
+    'example:2',
+    false,
+  ],
+  // Whitespace BuildKit trims differently must not expose heredoc data or
+  // continued text: Go counts U+0085 as space, JavaScript counts U+FEFF.
+  ...[
+    'FROM node:22\n\u0085RUN cat <<EOF > /x\nFROM example:1\nEOF\n',
+    'FROM node:22\n\u0085COPY <<EOF /x\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN cat \\\n\u0085# note\n<<EOF > /x\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN echo \\\n\u0085# note\nFROM example:1\n',
+    'FROM node:22\nLABEL a=b \\\n\uFEFF# note\nRUN cat <<EOF > /x\nFROM example:1\nEOF\n',
+  ].map((content): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    content,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    `\uFEFFFROM node:22@sha256:${'a'.repeat(64)}\nRUN <<EOF\napt-get update\nEOF\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  // Fail-closed branches that keep heredoc bodies and continued text literal.
+  ...[
+    'FROM node:22\nONBUILD RUN <<EOF\nFROM example:1\nEOF\n',
+    'FROM node:22\r\nRUN printf "%s" \\\r\n  x \\\r\n  FROM example:1\r\n',
+    'FROM node:22\r\nRUN <<EOF\r\nFROM example:1\r\nEOF\r\n',
+    'FROM node:22\nRUN <<EOF\nEOFX\nFROM example:1\nEOF\n',
+    'FROM node:22\nRUN <<EOF\n\tEOF\nFROM example:1\nEOF\n',
+  ].map((content): [string, string, string, string, boolean] => [
+    'Dockerfile',
+    content,
+    'example:1',
+    'example:2',
+    false,
+  ]),
+  [
+    'Dockerfile',
+    `FROM node:22@sha256:${'a'.repeat(64)}\r\nRUN <<EOF\r\napt-get update\r\nEOF\r\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
+  // A heredoc opened on a continuation line, with a quoted delimiter, still
+  // lets a later `FROM` bump through.
+  [
+    'Dockerfile',
+    'FROM node:22\nRUN \\\n  cat <<"EOF" > /x\nhi\nEOF\nFROM node:22 AS final\n',
+    'node:22 AS final',
+    'node:23 AS final',
+    true,
+  ],
+  // An apostrophe in a trailing YAML comment is not an unclosed quote.
+  [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    continue-on-error: true # Don't fail if some files have issues\n    permissions:\n      actions: read # reads newer runs' jobs\n    steps:\n      - uses: actions/checkout@${'a'.repeat(40)} # v4.1.1\n`,
+    `${'a'.repeat(40)} # v4.1.1`,
+    `${'b'.repeat(40)} # v4.2.0`,
+    true,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    steps:\n      - uses: actions/checkout@${'a'.repeat(40)} # v4\n        with:\n          ref: 'main' # don't pin\n`,
+    `${'a'.repeat(40)} # v4\n        with:\n          ref: 'main'`,
+    `${'b'.repeat(40)} # v4\n        with:\n          ref: 'dev'`,
+    false,
+  ],
+  [
+    '.github/workflows/ci.yml',
+    `jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: "echo # don't\n          image: node:22\n          "\n`,
+    '@v4\n      - run: "echo # don\'t\n          image: node:22',
+    '@v5\n      - run: "echo # don\'t\n          image: node:23',
+    false,
+  ],
+  // A Dockerfile under a test path builds a runner image; its pin is a dependency.
+  [
+    'tests/e2e/Dockerfile',
+    `FROM mcr.example/playwright:v1.50.0@sha256:${'a'.repeat(64)}\nRUN npm ci \\\n  && npx playwright install\n`,
+    'a'.repeat(64),
+    'b'.repeat(64),
+    true,
+  ],
   // `mix.lock` is evaluated as Elixir, so it is not a content-free lockfile.
   [
     'mix.lock',
