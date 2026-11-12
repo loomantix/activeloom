@@ -1160,7 +1160,9 @@ itself, its pushes, CI and `gh pr ready` are unchanged.
 
 - The user's review profile lists the repository
   (`review-profile.py silent --add owner/name` or `owner/*`). The helper pins
-  the PR on first use.
+  the PR on first use, unless the PR already carries this actor's review-chain
+  comments: that PR finishes loud, the helper warns on stderr, and
+  `silent-status` reports `"silent": false`. Tell the user when that happens.
 - The user passed `silent` to the entry skill. Pin before the first pass with
   `<ledger-helper> silent-pin --repo <owner/repo> --pr <number>`, or pass
   `--silent` to `start-run`.

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runCli } from '../cli.js';
 import { dispose, postFinding, reconcile } from '../index.js';
 import {
   fetchReviewThreads,
@@ -452,6 +453,37 @@ describe('silent summary', () => {
     expect(github.posted[0]!.endpoint).toBe(
       `repos/${REPO}/issues/${PR}/comments`,
     );
+  });
+
+  describe('post-summary CLI gates', () => {
+    const scope = ['--repo', REPO, '--pr', String(PR)];
+
+    beforeEach(() => {
+      runner.pin(REPO, PR, 'run-arg');
+      closeOne();
+    });
+
+    // A well-formed but stale digest: if a gate regressed, postSummary would
+    // still refuse with "summary changed" before any GitHub call.
+    it('refuses without --confirmed', () => {
+      expect(() =>
+        runCli([
+          'post-summary',
+          ...scope,
+          '--expected-summary-sha256',
+          '0'.repeat(64),
+        ]),
+      ).toThrowError(/requires --confirmed/);
+    });
+
+    it.each([
+      ['missing', []],
+      ['malformed', ['--expected-summary-sha256', 'abc']],
+    ])('refuses a %s digest', (_label, digest) => {
+      expect(() =>
+        runCli(['post-summary', ...scope, '--confirmed', ...digest]),
+      ).toThrowError(/requires --expected-summary-sha256/);
+    });
   });
 });
 

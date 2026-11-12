@@ -242,11 +242,11 @@ python3 .claude/skills/review-setup/scripts/review-profile.py silent --add clien
 `/critique`, `/deepcritique`, `/refactorpass` and `/reviewit` also accept `silent`. On a silent PR:
 
 - Every finding, reply, resolution and marker goes to a local store under `<git-common-dir>/activeloom-review/<owner>-<repo>-<pr>/silent/` instead of the PR. `scratchpad.md` in that directory is a running log you can read at any time.
-- The ledger helper refuses any other write to the PR's comments, so a pass cannot post by accident.
+- The ledger helper refuses any other PR write made through it. A raw `gh pr comment`, `gh pr review` or `gh api` write does not pass through the helper and is not refused, so the review skills put that text in the scratchpad instead.
 - The PR is still opened as a draft, pushed to, checked by CI and marked ready as usual. Hosted reviewers (Gemini, Copilot) still post their own reviews. Replies to them go to the scratchpad, and their threads are still resolved.
 - When the run ends, the herder shows you one short summary: each fixed finding with its file and commit, counts of deferred and dismissed findings, and the result. It posts that summary only if you say yes. If you say no, nothing is posted.
 
-Silent mode cannot start part-way through a PR that already carries review-chain comments; the pin is refused. `dep-analysis` still posts its own analysis comment on dependency updates.
+Silent mode cannot start part-way through a PR that already carries review-chain comments. With `--silent` the pin is refused and the review stops. A PR in a profile-listed repository that was already reviewed loudly finishes loud; `silent-status` reports `"silent": false` for it. `dep-analysis` still posts its own analysis comment on dependency updates.
 
 ### `auto-glance <pr>` — one model instead of a human glance
 
