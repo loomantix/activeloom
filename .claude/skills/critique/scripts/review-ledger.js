@@ -17130,8 +17130,11 @@ function postedBeforeRun(finding, runStartedAt) {
   const started = Date.parse(runStartedAt);
   return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
 }
+function currentRun(repo, pr) {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1);
+}
 function currentRunStartedAt(repo, pr) {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.startedAt;
+  return currentRun(repo, pr)?.startedAt;
 }
 function sameRoundDispositions(args, matched, allowedHeads, slips) {
   const evidence = /* @__PURE__ */ new Map();
@@ -17240,7 +17243,7 @@ function transitionHeads(params) {
   return heads;
 }
 function convergenceStartRound(repo, pr) {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === "lean" ? 2 : 3;
+  return currentRun(repo, pr)?.tier === "lean" ? 2 : 3;
 }
 function verifyResultEvidence(args, threads, options) {
   const data = options?.data ?? validateResultData(args, readResultBytes(args.resultFile));
@@ -21149,9 +21152,9 @@ function postRoster(params) {
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
   const existing = resolveRoster(rows);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
   const needsFreshRoster = Boolean(
-    currentRun?.ownerTransition && (existing.commentId ?? 0) <= currentRun.commentId
+    currentRun2?.ownerTransition && (existing.commentId ?? 0) <= currentRun2.commentId
   );
   const replayCandidate = existing.present && existing.version === 2 && !needsFreshRoster ? buildRosterBody({
     author: params.author,
@@ -21306,8 +21309,8 @@ function coverage(params) {
   assertActor(params.actor);
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
-  const minimumCommentId = currentRun?.ownerTransition ? currentRun.commentId : 0;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
+  const minimumCommentId = currentRun2?.ownerTransition ? currentRun2.commentId : 0;
   const resolvedRoster = resolveRoster(rows);
   const roster = minimumCommentId && (resolvedRoster.commentId ?? 0) <= minimumCommentId ? resolveRoster([]) : resolvedRoster;
   const attested = attestationsAtHead(rows, params.head, minimumCommentId);

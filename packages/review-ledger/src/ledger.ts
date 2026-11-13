@@ -60,7 +60,7 @@ import {
   validateResultData,
   writeResultFile,
 } from './result.js';
-import { reviewRuns } from './runs.js';
+import { reviewRuns, type ReviewRun } from './runs.js';
 import {
   archiveResultRecovery,
   historicalSnapshotDigest,
@@ -534,9 +534,14 @@ function postedBeforeRun(
   );
 }
 
+/** The PR's current review run, when one is declared. */
+function currentRun(repo: string, pr: number): ReviewRun | undefined {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1);
+}
+
 /** Start time of the PR's current review run, when one is declared. */
 function currentRunStartedAt(repo: string, pr: number): string | undefined {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.startedAt;
+  return currentRun(repo, pr)?.startedAt;
 }
 
 /**
@@ -721,7 +726,7 @@ export function transitionHeads(params: {
  * start convergence at round 3.
  */
 function convergenceStartRound(repo: string, pr: number): number {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === 'lean' ? 2 : 3;
+  return currentRun(repo, pr)?.tier === 'lean' ? 2 : 3;
 }
 
 /**
