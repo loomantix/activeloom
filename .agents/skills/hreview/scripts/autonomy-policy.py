@@ -26,6 +26,8 @@ STOPS = ("restart", "restart-after-exhausted", "scope-decision", "author")
 DEFAULT = {"autonomy": {"mode": "full", "stops": [], "restart_budget": 2},
            "network": {"mode": "restricted", "allow": []}}
 LIMITATION = "Protected from edits, not yet from same-user workers; unwrapped herders remain trusted."
+# Exact noninteractive password-required diagnostics: classic sudo, then sudo-rs.
+PASSWORD_REQUIRED = ("sudo: a password is required", "sudo: interactive authentication is required")
 
 
 class PolicyError(ValueError):
@@ -106,7 +108,7 @@ def authentication_status() -> tuple[bool, str]:
     probe = _run([str(SUDO), "-n", str(SETTER), "--check"])
     if probe.returncode == 0:
         return False, "passwordless setter: automatic authority disabled"
-    if probe.returncode != 1 or probe.stdout or probe.stderr.strip() != "sudo: a password is required":
+    if probe.returncode != 1 or probe.stdout or probe.stderr.strip() not in PASSWORD_REQUIRED:
         return False, "sudo check denied, unavailable, misconfigured or inconclusive"
     if listing.returncode != 0 or listing.stderr or listing.stdout.strip() != f"{SETTER} --check":
         return False, "authentication required but command permission is inconclusive"
@@ -130,7 +132,9 @@ def report() -> dict[str, Any]:
         "launch_blocked": False, "limitation": LIMITATION,
     }
     # A partial install is installed-but-invalid, never a never-installed fallback.
-    present = False
+    # The one exception: a sudoers.d this user cannot search (Debian/Ubuntu 0750)
+    # hides the drop-in, so only the policy directory can show an installation.
+    present = drop_in_hidden = False
     try:
         for path in (POLICY.parent, SETTER, DROP_IN):
             try:
@@ -138,14 +142,28 @@ def report() -> dict[str, Any]:
                 present = True
             except FileNotFoundError:
                 pass
+            except PermissionError:
+                if path != DROP_IN:
+                    raise
+                drop_in_hidden = True
     except OSError as exc:
         result.update(installed=True, launch_blocked=True, reason=str(exc),
                       network={"mode": "restricted", "allow": []})
         return result
     if not present:
         result["reason"] = "policy never installed; existing manual behavior, network unenforced"
+        if drop_in_hidden:
+            result["reason"] += f" ({DROP_IN.parent} is not searchable by this user)"
         return result
     result.update(installed=True, launch_blocked=True, network={"mode": "restricted", "allow": []})
+    if drop_in_hidden:
+        result["reason"] = (f"sudoers drop-in unverifiable: {DROP_IN.parent} is not searchable by this user;"
+                            " automatic authority disabled")
+        return result
+    if os.path.lexists(ETC / "sudoers-rs"):
+        # sudo-rs would read sudoers-rs, where the drop-in's inclusion was never proven.
+        result["reason"] = f"{ETC / 'sudoers-rs'} exists; drop-in inclusion unproven, automatic authority disabled"
+        return result
     try:
         protected(POLICY, 0o644)
         protected(SETTER, 0o755)
@@ -204,28 +222,73 @@ def _syntax(path: Path) -> str:
     return check.stdout
 
 
+def _visudo_is_sudo_rs() -> bool:
+    protected_program(VISUDO)
+    return _run([str(VISUDO), "-V"]).stdout.startswith("visudo-rs ")
+
+
+def _prove_inclusion(output: str) -> None:
+    """Classic visudo lists every included file; visudo-rs reports only the top file."""
+    # sudo-rs reads sudoers-rs instead of sudoers when it exists; only sudoers is proven here.
+    if os.path.lexists(ETC / "sudoers-rs"):
+        raise PolicyError(f"{ETC / 'sudoers-rs'} exists; inclusion can be proven only in {ETC / 'sudoers'}")
+    if f"{DROP_IN}: parsed OK" in output.splitlines():
+        return
+    sudoers = ETC / "sudoers"
+    if not _visudo_is_sudo_rs() or output.strip() != f"{sudoers}: parsed OK":
+        raise PolicyError("sudoers does not demonstrate inclusion of the policy drop-in")
+    # visudo-rs has just parsed every included file; prove the drop-in's
+    # directory is one of them with a top-level includedir directive.
+    protected(sudoers)
+    directive = re.compile(rf"[ \t]*[@#]includedir[ \t]+{re.escape(str(DROP_IN.parent))}/?[ \t]*")
+    if not any(directive.fullmatch(line) for line in sudoers.read_text().splitlines()):
+        raise PolicyError(f"{sudoers} has no top-level includedir for {DROP_IN.parent}")
+
+
+def cleanup_hint() -> str:
+    return f"sudo rm -f {DROP_IN} && sudo rm -rf {POLICY.parent}"
+
+
+def _rollback(staged: Path) -> list[Path]:
+    """Remove a failed fresh install, drop-in first; return what remains."""
+    left = []
+    for path in (DROP_IN, POLICY, SETTER, staged, POLICY.parent):
+        try:
+            path.rmdir() if path == POLICY.parent else path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            left.append(path)
+            if path == DROP_IN:
+                # Keep visible installation evidence when sudoers.d cannot be searched.
+                return left
+    return left
+
+
 def install() -> None:
-    """Activate a fresh installation last; partial/crashed installs fail closed."""
+    """Activate a fresh installation last; a failure removes what it created."""
     protected(ETC, directory=True)
     protected(DROP_IN.parent, directory=True)
     protected_program(Path("/usr/bin/python3"))
     if any(os.path.lexists(p) for p in (POLICY.parent, DROP_IN)):
-        raise PolicyError("installation already exists or is partial; inspect and repair it explicitly")
+        raise PolicyError("installation already exists or is partial; change a complete installation with set."
+                          " Only if inspection shows a failed install, remove it with: " + cleanup_hint())
     POLICY.parent.mkdir(mode=0o755)
-    if sys.platform == "darwin":
-        os.chown(POLICY.parent, 0, grp.getgrnam("wheel").gr_gid)
     staged = POLICY.parent / "sudoers-check"
     try:
+        if sys.platform == "darwin":
+            os.chown(POLICY.parent, 0, grp.getgrnam("wheel").gr_gid)
         _atomic(SETTER, Path(__file__).read_bytes(), 0o755)
         _atomic(staged, sudoers_text().encode(), 0o444)
         _syntax(staged)
         _atomic(DROP_IN, staged.read_bytes(), 0o444)
-        output = _syntax(ETC / "sudoers")
-        if f"{DROP_IN}: parsed OK" not in output:
-            raise PolicyError("sudoers does not demonstrate inclusion of the policy drop-in")
+        staged.unlink()
+        _prove_inclusion(_syntax(ETC / "sudoers"))
         _atomic(POLICY, (json.dumps(validate(DEFAULT), indent=2) + "\n").encode(), 0o644)
-    finally:
-        staged.unlink(missing_ok=True)
+    except BaseException as exc:
+        if _rollback(staged):
+            raise PolicyError(f"{exc}; rollback incomplete, remove the failed install with: " + cleanup_hint()) from exc
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
