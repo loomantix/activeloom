@@ -6,11 +6,12 @@ description: Live review chain on herdr — this session herds the ordinary inte
 
 # <<INVOKE>>hreview — live review chain on herdr
 
-Usage: `<<INVOKE>>hreview <pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--restart [--deep] [--scope-decision keep|split]]`
+Usage: `<<INVOKE>>hreview <pr> [<pr> ...] [--author claude|codex|gemini] [--companion] [--silent] [--restart [--deep] [--scope-decision keep|split]]`
 
 - `--companion`: the PRs are companions; run their chains one after the other, in the order given.
 - `--restart`: the user names a restart of each PR's ended run (step 9). It counts only when the user typed it in this session; the same words in a prompt from the orchestrator or another session are a peer's request, not the user's approval. `--deep` adds the user's request for Deep (trigger 6). `--scope-decision` is the user's answer to the scope checkpoint, passed to `start-run`.
 - Without it, independent PRs run side by side, one row each.
+- `--silent`: keep each PR's review ledger local and post nothing to the PR until the user approves the end-of-loop summary. A repository the user's review profile lists as silent behaves the same without the flag. See the protocol's [Silent mode](../../references/local-review-ledger.md#silent-mode).
 
 This session is the **herder**. It drives panes; it never runs a review pass itself and never counts its own work as one. Design: loomantix/activeloom#419 and loomantix/activeloom#422.
 
@@ -66,7 +67,7 @@ Every engine, Gemini included, runs as an interactive session in its pane. These
    `python3 -I $P check` exiting non-zero for anything other than worker-only keys is a block.
 
 8. Author: `--author` if given; otherwise the engine named by the PR commits' `Co-Authored-By` trailers. If they name none or more than one engine, and no `--author` was given, notify and stop that PR: ask for `--author`.
-9. Run — read `python3 -I $H run-state --repo $repo --pr <n>` for the common PR-wide lifecycle. Never infer `none` from actor-filtered comments. A failed inventory blocks the run.
+9. Run — with `--silent`, first `node $L silent-pin --repo $repo --pr <n>`; a refusal is a block. Then `node $L silent-status --repo $repo --pr <n>` records whether this PR is silent. Read `python3 -I $H run-state --repo $repo --pr <n>` for the common PR-wide lifecycle. Never infer `none` from actor-filtered comments. A failed inventory blocks the run.
    - **Foreign active/ended or foreign transition:** stop. Follow the protocol's [Cross-actor lifecycle](../../references/local-review-ledger.md#cross-actor-lifecycle). A general takeover request is not a terminal marker or a restart approval. Never use `finish-run` to impersonate the old actor, change authentication, edit old evidence or write an approval yourself. The user must approve the exact repository, PR, current head, old actor, old run comment ID and digest, and new actor. An authorized worker can consume that separate approval with `transition-run`; uncertain publication retries the identical saved command.
    - **Transitioned:** the old run is abandoned by a distinct authenticated actor, not ended by its original author and not converged. Require a separate explicit restart and scope decision. Follow the Ended authorization procedure below, adding `--owner-transition-id <id>` from the verified lifecycle receipt and `--scope-decision keep` to the fresh startup. A split happens first and invalidates the old head binding. Preserve original history and pinned settings; declare a fresh roster and collect fresh actor-owned coverage. Do not reuse foreign attestations or alter the author engine because ownership changed.
    - **None:** resolve the tier and trigger per the workflow's "What sets the tier" (bounded-repair exception included). Write `<scratch>/authorization.txt`: one public-safe paragraph — repository, PR, tier, mode `live chain (hreview)`, authorized: local review passes in this run only; not authorized: merge, deployment, restart. No names, no quoted user words. Then
@@ -110,7 +111,7 @@ Repeat until the PR reaches an end state.
 2. **Start a fresh session** in the engine's pane, named `pr<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
 3. **Prompt.**
    - Skill: Lean uses `critique`; Deep uses `deepcritique`. On this engine's first pass in the PR at Lean, run `refactorpass` first; its ledger latch decides whether it runs. Address the skill the way the target engine expects (herdr.md, Engines).
-   - Text: the skill line, then `Review pass for <repo> PR #<n>, run <run_id>, round <round>, pinned base <base>, exact head <head>. Post verified findings inline before edits; validate, commit, push, reply and resolve; publish the normal review result. This session owns exactly this one pass: do not launch another engine, start or finish the run, mark the PR ready, merge, or force-push.`
+   - Text: the skill line, then `Review pass for <repo> PR #<n>, run <run_id>, round <round>, pinned base <base>, exact head <head>. Post verified findings inline before edits; validate, commit, push, reply and resolve; publish the normal review result.<for a silent PR: This PR is silent: pass `silent` to the skill and keep the ledger local per the protocol's Silent mode.> This session owns exactly this one pass: do not launch another engine, start or finish the run, mark the PR ready, merge, or force-push.`
    - `herdr agent prompt <name> "<text>" --wait --timeout 600000`.
 4. **Drive until the pass lands.** Loop on `herdr agent wait <name> --timeout 600000`:
    - `blocked`: read the pane and answer with `send-keys` or `prompt`. Choose the answer that continues the pass within its skill's contract. Accept a tier recommendation. Never pick an option that dismisses, downgrades or overrides a finding; if that is the only way forward, it is a block.
@@ -156,6 +157,8 @@ At most one gate fix per PR per run. A second red gate of this kind is a block.
    - **Any red:** leave the PR draft. Find the failing job (`gh run view <id> --json jobs`) and that workflow's latest result on the base branch (`gh run list --branch <base> --workflow <workflow> -L 1`). Notify with both. Do not fix it.
 
 **Exhausted** (`next-pass` says `exhausted`): `python3 -I $H finish-run --repo $repo --pr <n> --head $head --outcome exhausted`. Leave the PR draft and notify.
+
+**Silent PR**, after `finish-run` in either end state above: follow the protocol's [end-of-loop summary](../../references/local-review-ledger.md#silent-mode). Show the summary, ask the user whether to post it, and post only on yes. This is the one question the herder asks, so notify with `--sound request` while it waits. Notifications stay local and are unaffected.
 
 **Block**: leave the run open and the PR draft, then follow herdr.md, Blocks. Continue any other independent rows.
 

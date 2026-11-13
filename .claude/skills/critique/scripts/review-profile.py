@@ -16,7 +16,10 @@ profile invalid; older schema_version profiles are read unchanged. The
 profile is shared by every repository's synced copy of this helper, so it is
 written at the oldest version that holds it: 1 without version 2 settings, 2
 without the version 3 `reviewit` setting, 3 without the version 4 worker
-`execution` setting. Older copies can read those.
+`execution` setting, 4 without the version 5 `silent` list. Older copies can
+read those. A profile holding `silent` also sets `min_reader_version` 5: an
+older copy would set the list aside and post to a repository the user asked to
+keep quiet, so it must refuse instead.
 
 Those copies are version-skewed by design, so reads are forward-tolerant and
 writes are not. A profile newer than this helper is read for the settings this
@@ -44,7 +47,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # The oldest schema this reader still understands. A profile NEWER than
 # SCHEMA_VERSION is read rather than rejected: the writer below stores the
 # lowest version that fits, so a bump means new content exists, not that old
@@ -65,7 +68,7 @@ AVAILABILITY = ("available", "unavailable")
 # harder to see, because nothing fails.
 PROFILE_REQUIRED_KEYS = frozenset({"schema_version", "defaults_version", "confirmed_at"})
 PROFILE_OPTIONAL_KEYS = frozenset(
-    {"engines", "order", "repos", "min_reader_version", "reviewit"}
+    {"engines", "order", "repos", "min_reader_version", "reviewit", "silent"}
 )
 PROFILE_KEYS = PROFILE_REQUIRED_KEYS | PROFILE_OPTIONAL_KEYS
 ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
@@ -100,6 +103,9 @@ INHERIT = "inherit"
 INHERIT_ENGINES = ("claude", "codex")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}")
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+# A silent pattern: `owner/name`, `owner/*`, or `*`.
+SILENT_PATTERN_RE = re.compile(r"\*|[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+|\*)")
+SILENT_MIN_READER = 5
 DEFAULTS_PATH = Path(__file__).resolve().with_name("review-profile.defaults.json")
 PIN_MODEL = "ACTIVELOOM_REVIEW_MODEL"
 PIN_EFFORT = "ACTIVELOOM_REVIEW_EFFORT"
@@ -316,6 +322,10 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
     if isinstance(reviewit, dict):
         _foreign("reviewit.", set(reviewit) - {"availability"})
         pruned["reviewit"] = {k: v for k, v in reviewit.items() if k == "availability"}
+    silent = pruned.get("silent")
+    if isinstance(silent, dict):
+        _foreign("silent.", set(silent) - {"repos"})
+        pruned["silent"] = {k: v for k, v in silent.items() if k == "repos"}
     repos = pruned.get("repos")
     if isinstance(repos, dict):
         kept_repos = {}
@@ -391,6 +401,9 @@ def validate_profile(
                     f"reviewit: invalid availability {reviewit['availability']!r}; "
                     f"expected one of {', '.join(AVAILABILITY)}"
                 )
+    silent = None
+    if "silent" in document:
+        silent = validate_silent(document["silent"])
     repos = document.get("repos", {})
     if not isinstance(repos, dict):
         _fail("profile repos must be an object")
@@ -410,7 +423,35 @@ def validate_profile(
     migrated = {**document, "schema_version": SCHEMA_VERSION}
     if "repos" in document:
         migrated["repos"] = normalized_repos
+    if silent is not None:
+        migrated["silent"] = silent
     return migrated
+
+
+def silent_pattern_matches(pattern: str, repo: str) -> bool:
+    """`owner/name`, `owner/*` or `*`, ignoring case. tests/fixtures/silent-globs.json
+    pins this to the ledger helper's matcher."""
+    value, target = pattern.lower(), repo.lower()
+    if value == "*":
+        return True
+    if value.endswith("/*"):
+        return target.startswith(value[:-1])
+    return value == target
+
+
+def validate_silent(silent: Any) -> dict[str, Any]:
+    if not isinstance(silent, dict) or set(silent) != {"repos"}:
+        _fail('profile silent must be {"repos": [...]}')
+    patterns = silent["repos"]
+    if not isinstance(patterns, list) or not patterns:
+        _fail("profile silent.repos must be a nonempty list")
+    normalized: list[str] = []
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not SILENT_PATTERN_RE.fullmatch(pattern):
+            _fail(f"silent.repos: invalid pattern {pattern!r}; expected OWNER/REPO, OWNER/* or *")
+        if pattern.lower() not in normalized:
+            normalized.append(pattern.lower())
+    return {"repos": normalized}
 
 
 def unavailable_engines(document: dict[str, Any]) -> set[str]:
@@ -494,6 +535,8 @@ def require_profile() -> dict[str, Any]:
 
 def storage_schema_version(document: dict[str, Any]) -> int:
     """The oldest schema that holds the document, so older readers keep accepting it."""
+    if "silent" in document:
+        return 5
     engines = document.get("engines", {})
     scopes = [engines] + [
         override.get("engines", {}) for override in document.get("repos", {}).values()
@@ -532,6 +575,12 @@ def save_profile(document: dict[str, Any]) -> Path:
     document = validate_profile(document)
     require_consistent_orders(document)
     document["schema_version"] = storage_schema_version(document)
+    if "silent" in document:
+        document["min_reader_version"] = max(
+            document.get("min_reader_version", 1), SILENT_MIN_READER
+        )
+    elif document.get("min_reader_version") == SILENT_MIN_READER:
+        del document["min_reader_version"]
     previous = STORED_SCHEMA_VERSION
     if previous is not None and document["schema_version"] > previous:
         # The moment a human is present and the consequence is still cheap to
@@ -890,6 +939,36 @@ def command_unset(args: argparse.Namespace) -> None:
     print(json.dumps(effective(document, args.repo), indent=2, sort_keys=True))
 
 
+def command_silent(args: argparse.Namespace) -> None:
+    """Query or change the repositories whose reviews post nothing to GitHub."""
+    if args.add or args.remove:
+        document = require_profile()
+        patterns = list(document.get("silent", {}).get("repos", []))
+        for pattern in args.add or []:
+            if not SILENT_PATTERN_RE.fullmatch(pattern):
+                _fail(f"invalid pattern {pattern!r}; expected OWNER/REPO, OWNER/* or *")
+            if pattern.lower() not in patterns:
+                patterns.append(pattern.lower())
+        for pattern in args.remove or []:
+            if pattern.lower() not in patterns:
+                _fail(f"{pattern} is not in silent.repos", EXIT_REFUSED)
+            patterns.remove(pattern.lower())
+        if patterns:
+            document["silent"] = {"repos": patterns}
+        else:
+            document.pop("silent", None)
+        document["confirmed_at"] = now()
+        save_profile(document)
+    document = load_profile() or {}
+    patterns = document.get("silent", {}).get("repos", [])
+    report: dict[str, Any] = {"repos": patterns}
+    if args.repo is not None:
+        repository_key(args.repo)
+        match = next((p for p in patterns if silent_pattern_matches(p, args.repo)), None)
+        report.update({"repo": args.repo, "silent": match is not None, "pattern": match})
+    print(json.dumps(report, sort_keys=True))
+
+
 def command_resolve(args: argparse.Namespace) -> None:
     print(json.dumps(resolve(args.engine, args.repo, args.role), sort_keys=True))
 
@@ -1001,6 +1080,12 @@ def parser() -> argparse.ArgumentParser:
         metavar="ENGINE[.worker]|order.TIER",
     )
     check.add_argument("--repo")
+    silent = commands.add_parser(
+        "silent", help="repositories whose reviews keep their ledger local"
+    )
+    silent.add_argument("--repo", help="report whether this repository is silent")
+    silent.add_argument("--add", action="append", metavar="PATTERN")
+    silent.add_argument("--remove", action="append", metavar="PATTERN")
     order = commands.add_parser("order", help="engine order for a tier")
     order.add_argument("--tier", required=True, choices=TIERS)
     order.add_argument("--repo")
@@ -1021,6 +1106,7 @@ HANDLERS = {
     "launch-args": command_launch_args,
     "order": command_order,
     "check": command_check,
+    "silent": command_silent,
 }
 
 

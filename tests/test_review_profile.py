@@ -411,7 +411,7 @@ def test_defaults_prefill_worker_settings_from_reviewer_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = json.loads(run(capsys, "defaults")[1])
-    assert defaults["schema_version"] == 4
+    assert defaults["schema_version"] == 5
     for settings in defaults["engines"].values():
         assert settings["worker"] == {
             "model": settings["model"],
@@ -1095,3 +1095,43 @@ def test_storing_worker_execution_keeps_the_profile_readable_by_older_readers(
     # Removing the only `execution` lets the profile drop back to its oldest version.
     assert run(capsys, "unset", "--repo", "example/project")[0] == 0
     assert json.loads(profile.read_text())["schema_version"] == 2
+
+
+def test_silent_repos_are_stored_with_a_reader_floor(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    status, out, _ = run(capsys, "silent", "--add", "Client/*", "--repo", "client/app")
+    assert status == 0
+    assert json.loads(out) == {
+        "pattern": "client/*", "repo": "client/app", "repos": ["client/*"], "silent": True,
+    }
+    stored = json.loads(profile.read_text())
+    assert stored["silent"] == {"repos": ["client/*"]}
+    # A copy that predates `silent` would drop it and post; the floor makes it refuse.
+    assert stored["schema_version"] == 5
+    assert stored["min_reader_version"] == 5
+
+    assert json.loads(run(capsys, "silent", "--repo", "loomantix/x")[1])["silent"] is False
+    assert run(capsys, "silent", "--remove", "client/*")[0] == 0
+    stored = json.loads(profile.read_text())
+    assert "silent" not in stored and "min_reader_version" not in stored
+
+
+def test_silent_rejects_malformed_patterns(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    assert run(capsys, "silent", "--add", "client")[0] == 2
+    assert run(capsys, "silent", "--remove", "client/app")[0] == 1
+    document = json.loads(profile.read_text())
+    document["silent"] = {"repos": []}
+    profile.write_text(json.dumps(document))
+    assert run(capsys, "show")[0] == 2
+
+
+def test_silent_matcher_agrees_with_the_ledger_helper() -> None:
+    module = load()
+    vectors = json.loads((ROOT / "tests/fixtures/silent-globs.json").read_text())
+    for vector in vectors:
+        assert module.silent_pattern_matches(vector["pattern"], vector["repo"]) is vector["match"]
