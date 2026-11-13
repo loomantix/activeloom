@@ -1205,7 +1205,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
           repository { nameWithOwner }
           pullRequest { number }
           comments(first:100) {
-            nodes { databaseId body author { login } }
+            nodes { databaseId body createdAt author { login } }
             pageInfo { hasNextPage }
           }
         }

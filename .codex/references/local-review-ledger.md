@@ -779,6 +779,12 @@ what a review result may claim as same-round evidence, which is a different
 question from whether the ledger is internally consistent. Do not collapse the
 two.
 
+Same-round result evidence is scoped to the PR's latest run. An earlier run that
+ended, was aborted, or was superseded reuses the same engine and round labels,
+so a finding posted before the latest run marker never counts as this round's
+evidence. When either creation time is missing or unparseable, the finding
+counts, so evidence is never dropped on a guess.
+
 ## Fix, reply, and resolve
 
 1. For each published finding requiring a correction, apply the fix, run the

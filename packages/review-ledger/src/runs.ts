@@ -8,6 +8,8 @@ export interface ReviewRun {
   base: string;
   tier: 'lean' | 'deep';
   maxRounds: number;
+  /** When GitHub reports it, the time the run comment was posted. */
+  startedAt?: string | undefined;
 }
 
 /** A GitHub issue-comment ID: a positive safe integer. */
@@ -78,12 +80,14 @@ export function reviewRuns(rows: Array<Record<string, unknown>>): ReviewRun[] {
       fail('local-review run supersession chain is incomplete or forked');
     }
     seen.set(id!, { body, commentId });
+    const createdAt = row['created_at'];
     runs.push({
       id: id!,
       commentId,
       base: base!,
       tier: tier as ReviewRun['tier'],
       maxRounds,
+      ...(typeof createdAt === 'string' ? { startedAt: createdAt } : {}),
     });
   }
   return runs;
