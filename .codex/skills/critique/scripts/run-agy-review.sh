@@ -57,7 +57,7 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 # Pinned loomantix/activeloom commit whose .agents tree is the only
 # relay surface this launcher will expose to unattended Agy. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="44862b3d7f15a310c9db958727b61c4b63c01e62"
+agy_surface_sha="5dda4d8f06df172b9a04df39b05c1c880c912b41"
 
 # The companion surface must speak this engine's ledger protocol. Reading the
 # expectation from the vendored version file beside this script keeps the two
