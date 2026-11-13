@@ -6828,3 +6828,23 @@ def test_citation_keeps_original_gate_order_receipt(harness: Any) -> None:
     assert receipt.read_bytes() == original
     with pytest.raises(h.module.Blocked, match="does not cover"):
         runner.verify_gate_citation(citation, {**expected, "environment_sha256": "changed"})
+
+
+def test_thread_snapshot_carries_comment_creation_times(
+    harness: Any, tmp_path: Path
+) -> None:
+    """attest reads this snapshot; run scoping needs each comment's createdAt."""
+    runner = harness.runner(harness.args, harness.directory)
+    queries: list[str] = []
+
+    def fake_gh(args: list[str]) -> str:
+        queries.extend(a for a in args if a.startswith("query="))
+        empty = {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+        page = {"data": {"repository": {"pullRequest": {"reviewThreads": empty}}}}
+        return json.dumps([page])
+
+    runner.ledger_gh = fake_gh
+    snapshot = tmp_path / "threads.json"
+    assert harness.module.Runner.threads(runner, snapshot) == []
+    assert len(queries) == 1
+    assert re.search(r"comments\([^)]*\)\{nodes\{[^}]*\bcreatedAt\b", queries[0])

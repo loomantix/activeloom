@@ -143,6 +143,10 @@ describe('silent runner', () => {
     });
     expect(result.resolved).toBe(true);
     expect(fetchReviewThreads(REPO, PR)[0]!.isResolved).toBe(true);
+    // Run scoping reads each finding's creation time from the thread nodes.
+    for (const node of fetchReviewThreads(REPO, PR)[0]!.comments.nodes) {
+      expect(typeof node['createdAt']).toBe('string');
+    }
 
     const writes = github.calls.filter((c) =>
       /-X (POST|PATCH|DELETE)|mutation/.test(c),

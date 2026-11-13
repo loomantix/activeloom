@@ -20113,6 +20113,7 @@ function threadNodes(store, state, first) {
         nodes: comments.slice(0, first).map((c) => ({
           databaseId: c.id,
           body: c.body,
+          createdAt: c.created_at,
           author: { login: c.user.login }
         })),
         pageInfo: { hasNextPage: comments.length > first }
