@@ -68,7 +68,9 @@ Inclusion evidence depends on the `visudo` in use, identified by `visudo -V`:
   single-file `@include` is refused.
 - sudo-rs reads `/etc/sudoers-rs` instead of `/etc/sudoers` when it exists.
   Inclusion is proven only in `/etc/sudoers`, so installation is refused while
-  `/etc/sudoers-rs` exists.
+  `/etc/sudoers-rs` exists. If it appears later, the reader reports the
+  installation launch-blocked with automatic authority disabled. Other later
+  changes to the sudoers configuration are not re-verified by the reader.
 
 Initial values are `full`, no stops, restart budget 2, and `restricted` with an
 empty additional allowlist. Installation refuses to overwrite an existing or

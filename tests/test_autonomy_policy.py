@@ -215,6 +215,25 @@ def test_restricted_unavailable_and_explicit_open_gate(installation: Path, monke
     assert policy.report()["mode"] == "manual" and policy.report()["launch_blocked"]
 
 
+@pytest.mark.parametrize("kind", ["file", "dangling-link"])
+def test_sudoers_rs_after_install_keeps_authority_disabled(installation: Path, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    # sudo-rs reads sudoers-rs when it exists; the drop-in's inclusion was proven only in sudoers.
+    write_install()
+    value = copy.deepcopy(policy.DEFAULT)
+    value["network"]["mode"] = "open"
+    policy.POLICY.write_text(json.dumps(value))
+    monkeypatch.setattr(policy, "protected", lambda *a, **kw: None)
+    monkeypatch.setattr(policy, "authentication_status", lambda: pytest.fail("authority probed"))
+    if kind == "file":
+        (installation / "sudoers-rs").write_text("root ALL=(ALL:ALL) ALL\n")
+    else:
+        (installation / "sudoers-rs").symlink_to(installation / "missing")
+    report = policy.report()
+    assert report["installed"] and report["launch_blocked"] and not report["protected"]
+    assert report["mode"] == "manual" and report["network"]["mode"] == "restricted"
+    assert "sudoers-rs exists" in report["reason"]
+
+
 CLASSIC_VISUDO_V = "Visudo version 1.9.15p5\nSudoers file grammar version 50\n"
 SUDO_RS_VISUDO_V = "visudo-rs 0.2.13\n"  # captured from sudo-rs 0.2.13 on Ubuntu
 
@@ -269,9 +288,11 @@ def test_installer_activates_only_after_complete_sudoers_validation(installation
     assert json.loads(policy.POLICY.read_text()) == policy.DEFAULT
     assert not (policy.POLICY.parent / "sudoers-check").exists()
     assert owners == ([(policy.POLICY.parent, 0, 80)] if platform == "darwin" else [])
+    installed = {p: p.read_bytes() for p in (policy.POLICY, policy.SETTER, policy.DROP_IN)}
     with pytest.raises(policy.PolicyError, match="already exists") as refused:
         policy.install()
     assert f"sudo rm -f {policy.DROP_IN} && sudo rm -rf {policy.POLICY.parent}" in str(refused.value)
+    assert {p: p.read_bytes() for p in installed} == installed  # the refusal never rolls back
     assert owners == ([(policy.POLICY.parent, 0, 80)] if platform == "darwin" else [])
 
 

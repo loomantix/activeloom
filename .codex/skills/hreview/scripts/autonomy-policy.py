@@ -160,6 +160,10 @@ def report() -> dict[str, Any]:
         result["reason"] = (f"sudoers drop-in unverifiable: {DROP_IN.parent} is not searchable by this user;"
                             " automatic authority disabled")
         return result
+    if os.path.lexists(ETC / "sudoers-rs"):
+        # sudo-rs would read sudoers-rs, where the drop-in's inclusion was never proven.
+        result["reason"] = f"{ETC / 'sudoers-rs'} exists; drop-in inclusion unproven, automatic authority disabled"
+        return result
     try:
         protected(POLICY, 0o644)
         protected(SETTER, 0o755)
