@@ -45,17 +45,17 @@ node cli/bin/activeloom.js review-config set --repo owner/repo order.lean=codex,
 
 ### Options
 
-| Flag                 | Meaning                                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `--harness <id>`     | `claude`, `codex`, or `gemini` (Agy). Repeatable; default is detected.                                           |
-| `--ref <ref>`        | Upstream content ref; default `sync-v2`. A SHA fixes a revision; a branch or tag may move.                       |
-| `--upstream-dir <d>` | Install from a local checkout instead of downloading content.                                                    |
-| `--base-branch <b>`  | Branch sync PRs target; defaults to detected origin HEAD.                                                        |
-| `--python <path>`    | Python interpreter for `init`; default `python3`.                                                                |
-| `--consumer-dir <d>` | Consumer repository; default current directory.                                                                  |
-| `--yes`, `-y`        | Accept detected harnesses without prompting.                                                                     |
-| `--dry-run`          | Preview without installing consumer or personal files.                                                           |
-| `--force`            | Replace existing personal files or a differing generated sync workflow; `init` preserves consumer configuration. |
+| Flag                 | Meaning                                                                                                               |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--harness <id>`     | `claude`, `codex`, or `gemini` (Agy). Repeatable; default is detected, and with none detected the CLI asks or errors. |
+| `--ref <ref>`        | Upstream content ref; default `sync-v2`. A SHA fixes a revision; a branch or tag may move.                            |
+| `--upstream-dir <d>` | Install from a local checkout instead of downloading content.                                                         |
+| `--base-branch <b>`  | Branch sync PRs target; defaults to detected origin HEAD.                                                             |
+| `--python <path>`    | Python interpreter for `init`; default `python3`.                                                                     |
+| `--consumer-dir <d>` | Consumer repository; default current directory.                                                                       |
+| `--yes`, `-y`        | Accept detected harnesses without prompting.                                                                          |
+| `--dry-run`          | Preview without installing consumer or personal files.                                                                |
+| `--force`            | Replace existing personal files or a differing generated sync workflow; `init` preserves consumer configuration.      |
 
 Options apply to the relevant command; invalid combinations are rejected. Select harnesses explicitly when preparing a shared repository setup. Installing one review skill does not provision a complete multi-engine review roster.
 

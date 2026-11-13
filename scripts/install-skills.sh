@@ -15,7 +15,8 @@
 # Harnesses come from the `harnesses:` block in scripts/sync-targets.yml:
 # each one's `root` tree (`<root>/skills`) is linked into `$HOME/<skills>`.
 # By default every harness whose `home` directory exists or whose `cli` is on
-# PATH is selected; with no evidence at all, Claude Code is.
+# PATH is selected; with no evidence at all, it asks on a terminal and
+# otherwise exits non-zero asking for --harness.
 #
 # Options:
 #   --harness ID[,ID]  select harnesses; repeatable
@@ -178,7 +179,7 @@ dest_for() {
   printf '%s\n' "${!var:-$HOME/$default}"
 }
 
-# Choose harnesses: explicit, else detected, else Claude Code.
+# Choose harnesses: explicit, else detected, else ask (or fail without a TTY).
 SELECTED=""
 REASON=""
 if [ -n "${REQUESTED// /}" ]; then
@@ -194,8 +195,23 @@ else
     fi
   done <<<"$HARNESS_TABLE"
   if [ -z "$SELECTED" ]; then
-    REASON="no harness detected — defaulting to Claude Code"
-    is_known claude && SELECTED=" claude"
+    if [ -t 0 ] && [ -t 2 ] && [ "$CHECK" -eq 0 ]; then
+      printf 'No harness detected. Install for which? (%s) > ' "${KNOWN# }" >&2
+      read -r answer || answer=""
+      for id in $(printf '%s' "$answer" | tr ',' ' '); do
+        if ! is_known "$id"; then
+          echo "unknown harness: $id (known:$KNOWN)" >&2
+          exit 2
+        fi
+        SELECTED="$SELECTED $id"
+      done
+      REASON="chosen interactively"
+    fi
+    if [ -z "$SELECTED" ]; then
+      echo "❌ no harness detected: checked each harness home directory under \$HOME and each CLI on PATH, and found none." >&2
+      echo "   Pass --harness ID[,ID] to choose (known:$KNOWN)." >&2
+      exit 2
+    fi
   fi
 fi
 if [ -z "$SELECTED" ]; then
