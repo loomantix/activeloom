@@ -549,6 +549,9 @@ function currentRunStartedAt(repo: string, pr: number): string | undefined {
  *
  * Returns `[fingerprint, hasFix, hasMajorFix, hasNonblockingFix]` per fingerprint, sorted.
  *
+ * A finding posted before `args.runStartedAt` belongs to an earlier run that
+ * reused this engine and round, and is excluded; see `postedBeforeRun`.
+ *
  * `hasMajorFix` is reported for callers that summarise a ledger. It is not an
  * input to the `minor` / `material` decision: severity describes a finding and
  * says nothing about what its fix moved, so classification reads the change

@@ -852,6 +852,50 @@ describe('same-round evidence is scoped to the current run', () => {
       'fixed finding was not posted before its disposition head',
     );
   });
+
+  it('does not let checkBlockedRound recover an earlier run slip', () => {
+    const aborted = declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.issueComments.push({
+      id: runner.commentIdSeq++,
+      user: { login: ACTOR },
+      created_at: '2026-01-01T00:30:00Z',
+      body: `<!-- local-review-run-end:v1 id=${aborted.runId} outcome=aborted head=${HEAD} -->`,
+    });
+    declareRun(BEFORE, '2026-01-01T01:00:00Z', aborted.id);
+    runner.threadNodes = [
+      fixedThread('fp1'),
+      slippedThread('2026-01-01T00:10:00Z'),
+    ];
+
+    expect(() =>
+      checkBlockedRound({ ...restartedPass(), before: BEFORE }),
+    ).toThrow('no label or ordering slip to recover');
+  });
+
+  it('reads review-comment creation times from GitHub', () => {
+    const original = runner.runGh.bind(runner);
+    const threadQueries: string[] = [];
+    runner.runGh = (args: string[], payload?: unknown): string => {
+      for (const arg of args) {
+        if (arg.startsWith('query=') && arg.includes('reviewThreads(')) {
+          threadQueries.push(arg);
+        }
+      }
+      return original(args, payload);
+    };
+    declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [fixedThread('fp1')];
+    writeResult({
+      ...restartedPass(),
+      before: BEFORE,
+      classification: 'minor',
+    });
+
+    expect(threadQueries.length).toBeGreaterThan(0);
+    for (const query of threadQueries) {
+      expect(query).toMatch(/comments\([^)]*\)\s*\{[^}]*\bcreatedAt\b/);
+    }
+  });
 });
 
 describe('checkBlockedRound recovers only bookkeeping slips', () => {
