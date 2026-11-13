@@ -772,6 +772,52 @@ function prompts({ accept = true, answer = '' } = {}) {
   };
 }
 
+test('add asks for harnesses only when none were chosen', async () => {
+  const chosen = { ids: ['codex'], reason: 'detected' };
+  const untouched = prompts();
+  assert.strictEqual(await addLib.askHarnesses(chosen, untouched), chosen);
+  assert.deepStrictEqual(untouched.asked, []);
+
+  const picked = await addLib.askHarnesses(
+    { ids: [], reason: 'no harness detected' },
+    prompts({ answer: 'gemini, claude gemini' }),
+  );
+  assert.deepStrictEqual(picked, {
+    ids: ['claude', 'gemini'],
+    reason: 'chosen interactively',
+  });
+});
+
+test('add names an unknown harness typed at the prompt', async () => {
+  const none = { ids: [], reason: 'no harness detected' };
+  await assert.rejects(
+    addLib.askHarnesses(none, prompts({ answer: 'claude cladue' })),
+    /unknown harness: cladue\. Pass --harness/,
+  );
+  await assert.rejects(
+    addLib.askHarnesses(none, prompts({ answer: '  ' })),
+    /no harness chosen\. Pass --harness/,
+  );
+});
+
+test('confirmHarnesses asks directly when nothing was detected', async () => {
+  const p = prompts({ answer: 'gemini claude' });
+  await withTTY(true, async () => {
+    const out = await initLib.confirmHarnesses(
+      { ids: [], reason: 'no harness detected' },
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out, {
+      ids: ['claude', 'gemini'],
+      reason: 'confirmed',
+    });
+  });
+  assert.strictEqual(p.asked.length, 1, 'only the harness list is asked');
+  assert.match(p.asked[0], /Which\?/);
+});
+
 test('confirmHarnesses does not prompt when stdin is not a TTY', async () => {
   // Never prompt interactively when stdin is not a TTY.
   const p = prompts();

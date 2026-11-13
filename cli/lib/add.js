@@ -150,12 +150,19 @@ async function askHarnesses(chosen, prompts = ui) {
   );
   const ids = answer.split(/[\s,]+/).filter(Boolean);
   const unknown = ids.filter((id) => !known.includes(id));
-  if (ids.length === 0 || unknown.length > 0) {
+  if (unknown.length > 0) {
+    throw new Error(
+      `unknown harness: ${unknown.join(', ')}. Pass --harness <${known.join('|')}> to choose one.`,
+    );
+  }
+  if (ids.length === 0) {
     throw new Error(
       `no harness chosen. Pass --harness <${known.join('|')}> to choose one.`,
     );
   }
-  return { ids: [...new Set(ids)], reason: 'chosen interactively' };
+  // Order harnesses consistently according to the manifest, as init does.
+  const ordered = known.filter((id) => ids.includes(id));
+  return { ids: ordered, reason: 'chosen interactively' };
 }
 
 /**
@@ -404,6 +411,7 @@ module.exports = {
   add,
   listSkills,
   chooseHarnesses,
+  askHarnesses,
   assertNoPlaceholders,
   copyTree,
   walkFiles,
