@@ -1,7 +1,7 @@
 ---
 name: critique
 description: PR-first adversarial review. Lean mode runs the highest-signal local Claude lenses; `deep` selects the full relevant matrix. Verified findings are posted inline before fixes, then replied to and resolved after a pushed fix.
-argument-hint: (optional PR number and/or "deep")
+argument-hint: (optional PR number and/or "deep"; "silent" keeps the review off the PR)
 ---
 
 # /critique — PR-first adversarial review
@@ -57,6 +57,21 @@ storing them rewrites the shared profile in a schema older helper copies refuse.
 Any other exit 3 means settings are missing: follow
 `/review-setup` "Inline setup" in this conversation, then continue this request
 from where it paused. Report any other exit verbatim and stop.
+
+## Silent mode
+
+A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
+helper's `silent-status --repo <owner/repo> --pr <number>` reports
+`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+first ledger read. A refused pin ends the pass: report the refusal to the user
+and never continue the review loud. A silent PR keeps its ledger local: follow
+[Silent mode](../../references/local-review-ledger.md#silent-mode) for every
+ledger read and for the end-of-loop summary. Every posting step below that
+uses the ledger helper still runs exactly as written, and the helper keeps the
+post local. A step that posts with raw `gh` is not intercepted: write that text
+into the scratchpad that `silent-status` names instead. Where a step below
+replies to a hosted reviewer, write that reply into the scratchpad, then
+resolve the thread with `gh`.
 
 ## Findings before telemetry emission
 

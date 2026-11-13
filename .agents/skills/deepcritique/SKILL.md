@@ -57,6 +57,21 @@ Any other exit 3 means settings are missing: follow
 `review-setup` "Inline setup" in this conversation, then continue this request
 from where it paused. Report any other exit verbatim and stop.
 
+## Silent mode
+
+A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
+helper's `silent-status --repo <owner/repo> --pr <number>` reports
+`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+first ledger read. A refused pin ends the pass: report the refusal to the user
+and never continue the review loud. A silent PR keeps its ledger local: follow
+[Silent mode](../../references/local-review-ledger.md#silent-mode) for every
+ledger read and for the end-of-loop summary. Every posting step below that
+uses the ledger helper still runs exactly as written, and the helper keeps the
+post local. A step that posts with raw `gh` is not intercepted: write that text
+into the scratchpad that `silent-status` names instead. Where a step below
+replies to a hosted reviewer, write that reply into the scratchpad, then
+resolve the thread with `gh`.
+
 ## Context Window Check
 
 Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.

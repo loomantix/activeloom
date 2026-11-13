@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,6 +19,11 @@ from urllib.parse import quote
 
 
 CURRENT_ACTOR: str | None = None
+# Set when the PR this command names is in silent mode: every gh call then goes
+# through the ledger helper's silent runner, which keeps the ledger local.
+SILENT_SCOPE: tuple[str, int] | None = None
+SILENT_ROOT_ENV = "ACTIVELOOM_SILENT_ROOT"
+SILENT_FORCE_ENV = "ACTIVELOOM_REVIEW_SILENT"
 RESTART_V1_RE = re.compile(
     r"<!-- local-review-restart:v1 source=(?P<source>autonomy-policy|user-approval) "
     r"id=(?P<id>[0-9a-f]{16}) policy-sha256=(?P<policy_sha256>[0-9a-f]{64}|none) "
@@ -117,8 +123,83 @@ def _fail(message: str) -> NoReturn:
     raise HandoffError(message)
 
 
+def _ledger_helper() -> str:
+    return str(Path(__file__).with_name("review-ledger.js"))
+
+
+def _silent_pattern_matches(pattern: str, repo: str) -> bool:
+    """Mirror of the ledger helper's matcher; tests/fixtures/silent-globs.json pins both."""
+    value, target = pattern.lower(), repo.lower()
+    if value == "*":
+        return True
+    if value.endswith("/*"):
+        return target.startswith(value[:-1])
+    return value == target
+
+
+def _profile_says_silent(repo: str) -> bool:
+    if os.environ.get(SILENT_FORCE_ENV) == "1":
+        return True
+    explicit = os.environ.get("ACTIVELOOM_REVIEW_PROFILE")
+    if explicit:
+        path = Path(explicit)
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        path = Path(base) / "activeloom" / "review-profile.json"
+    if not path.exists():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail(f"review profile is unreadable: {path}; cannot decide silent mode")
+    if not isinstance(document, dict) or "silent" not in document:
+        return False
+    silent = document["silent"]
+    patterns = silent.get("repos") if isinstance(silent, dict) else None
+    if not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
+        _fail(f"review profile silent.repos is malformed: {path}")
+    return any(_silent_pattern_matches(p, repo) for p in patterns)
+
+
+def _silent_pinned(repo: str, pr: int) -> bool:
+    root = os.environ.get(SILENT_ROOT_ENV)
+    if not root:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            return False
+        root = str(Path(result.stdout.strip()).resolve() / "activeloom-review")
+    store = Path(root) / f"{repo.replace('/', '-')}-{pr}".lower() / "silent"
+    return (store / "mode.json").exists()
+
+
+def _enter_silent_scope(args: argparse.Namespace) -> None:
+    """Route this command's gh calls through the silent runner when its PR is silent."""
+    global SILENT_SCOPE
+    repo, pr = getattr(args, "repo", None), getattr(args, "pr", None)
+    if not isinstance(repo, str) or not isinstance(pr, int):
+        return
+    explicit = getattr(args, "silent", False)
+    if explicit:
+        result = subprocess.run(
+            ["node", _ledger_helper(), "silent-pin", "--repo", repo, "--pr", str(pr)],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            _fail(f"could not pin silent mode: {result.stderr.strip() or 'no diagnostic'}")
+    if explicit or _silent_pinned(repo, pr) or _profile_says_silent(repo):
+        SILENT_SCOPE = (repo, pr)
+
+
 def _run_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
     command = ["gh", *args]
+    if SILENT_SCOPE is not None:
+        repo, pr = SILENT_SCOPE
+        command = [
+            "node", _ledger_helper(), "local-gh", "--repo", repo, "--pr", str(pr), "--", *args,
+        ]
     if payload is not None:
         command.extend(["--input", "-"])
     result = subprocess.run(
@@ -1791,6 +1872,10 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--trigger", type=_trigger)
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
+    start.add_argument(
+        "--silent", action="store_true",
+        help="keep this PR's review ledger local; nothing is posted to GitHub",
+    )
     start.add_argument("--restart-approval-id", help="transactionally consume this user-recorded approval")
     start.add_argument("--owner-transition-id", help="bind the separately authorized ownership transition")
     start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")
@@ -1882,6 +1967,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if getattr(args, "round", 1) < 1:
         _fail("round must be positive")
+    _enter_silent_scope(args)
     args.handler(args)
     return 0
 
