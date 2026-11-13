@@ -161,6 +161,7 @@ A complete example for a fictional `acme/widgets` that works on `staging` and pr
   "promotion": {
     "skill": "promote",
     "production_branch": "main",
+    "deploy_trigger": "merge",
     "risk_engine": "gemini",
     "preflight": [["pnpm", "typecheck"]],
     "deploy_workflows": ["Deploy"],
@@ -193,6 +194,7 @@ Every command is an argv array, never a shell string: `["pnpm", "install"]`, not
 | `grill.persona`            | "the issue owner"             | One line describing who the driver answers as.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `production_lanes`         | none                          | Token-heavy production work (videos, long documents) that `horch` may hand to a named engine and skill. It stops at a local artifact for your approval.                                                                                                                                                                                                                                                                                                                         |
 | `promotion`                | absent: `hpromote` refuses    | `production_branch` is required. `skill` defaults to the generic `promote`; name your own skill to override its step rules (keep `skill` explicit while older checkouts, which still require it, read this file). `risk_engine` defaults to the first engine in your deep review order that is not the driver's. Without a [promotion recipe](#the-promotion-recipe), `preflight`, `deploy_workflows` and `post_merge` become one.                                              |
+| `promotion.deploy_trigger` | required without a recipe     | `merge` or `manual`, no default; see [the promotion recipe](#the-promotion-recipe). `promotion.deploy_runbook` names the manual deploy.                                                                                                                                                                                                                                                                                                                                         |
 | `telemetry.store`          | absent: herd sets nothing     | `pr` or `issue`. Herd sets `LOOM_REVIEW_TELEMETRY_STORE` to it on every pane it opens, for every engine, so review metrics from herd sessions go where the repository says whichever harness runs them. It overrides a value the engine's own config or a synced `review-telemetry.json` would give. Read only by herd: a session you start yourself is unaffected. Helpers older than this key reject the file, so update the herd skills wherever they run before you set it. |
 
 | `manual_tests.ux_globs` | none | Paths whose changes need a person to test by hand. `horch` offers a [manual test plan](#manual-test-plans) when a converged PR touches one, and `manual-tests` uses them to decide which changes get cases. A PR body's `Manual checks` section counts with or without globs. |
@@ -228,6 +230,25 @@ Where it stops:
 - **Blocked:** anything it cannot decide within the rules.
 
 It never merges, marks a PR ready only through the converged path, the auto-glance clean-result and CI gate, or a `clear` dependency analysis and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
+
+#### Silent mode
+
+A normal run leaves a lot on the PR. In a sample of 50 reviewed PRs, the chain averaged about 19 comments per reviewed PR: one comment per finding, one reply per fix, plus 10–17 bookkeeping markers even when nothing was found. Silent mode keeps all of it on your machine.
+
+Add `--silent` (`/hreview 42 --silent`), or list the repository once in your review profile so every review there is silent:
+
+```bash
+python3 .claude/skills/review-setup/scripts/review-profile.py silent --add client-org/*
+```
+
+`/critique`, `/deepcritique`, `/refactorpass` and `/reviewit` also accept `silent`. On a silent PR:
+
+- Every finding, reply, resolution and marker goes to a local store under `<git-common-dir>/activeloom-review/<owner>-<repo>-<pr>/silent/` instead of the PR. `scratchpad.md` in that directory is a running log you can read at any time.
+- The ledger helper refuses any other PR write made through it. A raw `gh pr comment`, `gh pr review` or `gh api` write does not pass through the helper and is not refused, so the review skills put that text in the scratchpad instead.
+- The PR is still opened as a draft, pushed to, checked by CI and marked ready as usual. Hosted reviewers (Gemini, Copilot) still post their own reviews. Replies to them go to the scratchpad, and their threads are still resolved.
+- When the run ends, the herder shows you one short summary: each fixed finding with its file and commit, counts of deferred and dismissed findings, and the result. It posts that summary only if you say yes. If you say no, nothing is posted.
+
+Silent mode cannot start part-way through a PR that already carries review-chain comments. With `--silent` the pin is refused and the review stops. A PR in a profile-listed repository that was already reviewed loudly finishes loud; `silent-status` reports `"silent": false` for it. `dep-analysis` still posts its own analysis comment on dependency updates.
 
 ### `auto-glance <pr>` — one model instead of a human glance
 
@@ -309,7 +330,7 @@ What appears: a `P<mmdd>` tab of at most six panes, the driver on top and up to 
 
 With `promotion.offer_manual_tests` on, once the preflight lanes pass it asks whether to go through the [manual test plan](#manual-test-plans) first. On yes it builds or updates the integration plan in a worker slot, prints the link and a summary, and holds at `P<mmdd> ⏸ manual-tests` until you say `continue`. Results never block the promotion. If a fix later moves the head, it asks again only when the new head adds changes that would get cases.
 
-It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it runs the recipe's post-merge lanes: deploy watchers and checks side by side. It never rolls back on its own.
+It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR are yours. What the merge does follows the recipe's `deploy_trigger`. With `merge`, merging deploys production; after you merge, tell it `merged` (or tell `horch`), and it runs the recipe's post-merge lanes: deploy watchers and checks side by side. With `manual`, merging only lands the code on the production branch: on `merged` it runs the post-merge checks of the merge itself and holds at `P<mmdd> ⏸ deploy`. Deploy production by your runbook, then tell it `deployed`, and only then does it run the post-deploy watchers and checks. It never rolls back on its own.
 
 #### Manual test plans
 
@@ -325,7 +346,7 @@ When no Claude engine is available in your review profile, or the skill is not i
 
 For the first standalone promotion when the remote default is production and has no recipe yet, use `/promote --integration-branch develop` (substitute your integration branch). This reads the committed remote recipe directly. Once the default branch carries a recipe naming the integration branch, `/promote` discovers it without the option. `hpromote` can discover the integration branch from its herd configuration.
 
-Sync bootstraps `promote/SKILL.md` only when absent, preserving existing repository-owned promotion instructions. The skill body remains consumer-owned after bootstrap; review and apply later upstream skill changes manually. Its recipe helper and schema continue to sync normally.
+Sync bootstraps `promote/SKILL.md` only when absent, preserving existing repository-owned promotion instructions. The skill body remains consumer-owned after bootstrap; review and apply later upstream skill changes manually. Its recipe helper and schema continue to sync normally. The helper now requires `deploy_trigger`, so add it to your recipe when the helper syncs, and carry the `deployed` step and the deploy-trigger wording into a bootstrapped skill body by hand.
 
 Legacy herd configs without a recipe retain deployment-before-verification ordering: synthesized post-merge workflow watches and commands share one ordered lane. Explicit recipes can use separate lanes for independent checks, or put dependent smoke commands after their deployment watch in the same lane.
 
@@ -334,6 +355,7 @@ Legacy herd configs without a recipe retain deployment-before-verification order
   "schema_version": 1,
   "integration_branch": "develop",
   "production_branch": "main",
+  "deploy_trigger": "merge",
   "guide": "docs/release/promotion.md",
   "rollback": "docs/runbooks/rollback.md",
   "blocker_issues": { "labels": ["type: bug"] },
@@ -402,6 +424,8 @@ Legacy herd configs without a recipe retain deployment-before-verification order
 ```
 
 Phases run in order: `preflight` on the integration head, then the promotion PR is opened, `pre_merge` on its head, your approval and merge, and `post_merge` on the merge commit. Inside a phase, steps that share a `lane` run in order and stop at the first failure; different lanes are independent. A `command` or `task` defaults to the shared `main` lane (a task to a lane of its own); each watcher and the risk review defaults to a lane of its own.
+
+`deploy_trigger` is required and has no default, because what deploys production differs between repositories. Set `"merge"` when merging the promotion PR deploys production, so `post_merge` holds the deploy watchers and deployed-state checks. Set `"manual"` when a separate step deploys it after the merge, such as a `workflow_dispatch` with a version. Then `post_merge` holds only checks of the merge itself, and the deploy watchers and deployed-state checks go in a `post_deploy` phase, which runs on the merge commit after you report `deployed`. `deploy_runbook` (manual only) names how to deploy, as a path or a one-line instruction; the ready message and the After merge checklist repeat it. A recipe without `deploy_trigger` fails validation with a message naming it, and the promotion blocks and asks. A herd config without a recipe sets `promotion.deploy_trigger` and `promotion.deploy_runbook` instead; with `manual`, its deploy watchers and `post_merge` commands move to `post_deploy`.
 
 | Kind             | Runs                                                                         | Options                                                                                                                                               |
 | ---------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |

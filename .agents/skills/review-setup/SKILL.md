@@ -77,10 +77,14 @@ Show the current values with `show` (add `--repo OWNER/REPO` for a repository-sp
 | "drop this repo's Codex model override" | `unset --repo OWNER/REPO codex.model`                               |
 | "disable hosted review / reviewit"      | `set reviewit.availability=unavailable`                             |
 | "enable hosted review / reviewit"       | `set reviewit.availability=available`                               |
+| "keep reviews off this client's PRs"    | `silent --add OWNER/*` (or `OWNER/REPO`)                            |
+| "post review comments on OWNER again"   | `silent --remove OWNER/*`                                           |
 
 Availability is global; a repository override cannot change it. `unset --repo OWNER/REPO` with no keys removes that repository's whole override. The change is complete when `show` (with the same `--repo`) prints the new value.
 
 Hosted review (`reviewit`) can be enabled or marked unavailable globally via `reviewit.availability=available` or `reviewit.availability=unavailable`. When marked unavailable, `reviewit` preflight refuses execution immediately. When both local review and hosted review are available, if a user's review request is ever in doubt (e.g. "review this PR" or "run review"), the agent must ask the user to specify whether to use local review (`critique` / `deepcritique`) or hosted review (`reviewit`).
+
+`silent` lists the repositories whose reviews keep their ledger local: no finding, reply or marker reaches the PR, and at the end the user is asked whether to post one brief summary. `silent --repo OWNER/REPO` reports whether a repository is covered. A profile that lists any repository is stored with `min_reader_version` 5, so a checkout whose helper predates silent mode refuses the profile instead of posting; sync those checkouts. The behaviour is in the ledger protocol's Silent mode section.
 
 Codex's optional reviewer fallback is a complete, explicit model-and-effort pair. No fallback is enabled by default. Set both values together; a repository override replaces the whole pair. The automatic runner switches once after a recognized capacity rejection only when code and review evidence are unchanged, then keeps that fallback for the remaining Codex passes. It preserves the failed attempt and round budget and reports the actual model and effort. Standalone launchers do not retry. Every engine's worker settings take the same kind of optional pair (`ENGINE.worker.fallback.model` with `ENGINE.worker.fallback.effort`, or `ENGINE.worker.fallback=none`).
 
