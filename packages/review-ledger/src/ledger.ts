@@ -167,6 +167,9 @@ export function threadProtocolRecords(
     }
 
     if (findingV3) {
+      if (typeof row['createdAt'] === 'string') {
+        findingV3.postedAt = row['createdAt'];
+      }
       findingsV3.push([index, findingV3]);
     }
     if (dispositionV3) {
@@ -514,6 +517,29 @@ export function verifyThreadDispositions(
 }
 
 /**
+ * Whether a finding was posted before the current run began. Without both
+ * timestamps the finding is kept, so evidence is never dropped on a guess.
+ */
+function postedBeforeRun(
+  finding: FindingV3Match,
+  runStartedAt: string | undefined,
+): boolean {
+  if (finding.postedAt === undefined || runStartedAt === undefined) {
+    return false;
+  }
+  const posted = Date.parse(finding.postedAt);
+  const started = Date.parse(runStartedAt);
+  return (
+    Number.isFinite(posted) && Number.isFinite(started) && posted < started
+  );
+}
+
+/** Start time of the PR's current review run, when one is declared. */
+function currentRunStartedAt(repo: string, pr: number): string | undefined {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.startedAt;
+}
+
+/**
  * Derive this round's fix evidence from the verified finding/disposition pairs.
  *
  * Returns `[fingerprint, hasFix, hasMajorFix, hasNonblockingFix]` per fingerprint, sorted.
@@ -524,7 +550,12 @@ export function verifyThreadDispositions(
  * range instead. See `classifyRangeEffect`.
  */
 export function sameRoundDispositions(
-  args: { engine: SupportedEngine; round: number; repo?: string | undefined },
+  args: {
+    engine: SupportedEngine;
+    round: number;
+    repo?: string | undefined;
+    runStartedAt?: string | undefined;
+  },
   matched: Array<[FindingV3Match, DispositionV3Match]>,
   allowedHeads: Record<string, number>,
   slips?: string[],
@@ -533,6 +564,11 @@ export function sameRoundDispositions(
 
   for (const [finding, disposition] of matched) {
     if (finding.engine !== args.engine || finding.round !== args.round) {
+      continue;
+    }
+    if (postedBeforeRun(finding, args.runStartedAt)) {
+      // An earlier (ended or aborted) run reuses engine and round labels; its
+      // findings never bind the current run's pass.
       continue;
     }
     const findingHead = finding.head;
@@ -726,7 +762,11 @@ export function verifyResultEvidence(
     { repo: args.repo, pr: args.pr },
   );
   const allowedHeads = options?.allowedHeads ?? transitionHeads(args);
-  const evidence = sameRoundDispositions(args, matched, allowedHeads);
+  const evidence = sameRoundDispositions(
+    { ...args, runStartedAt: currentRunStartedAt(args.repo, args.pr) },
+    matched,
+    allowedHeads,
+  );
 
   const evidenceFingerprints = evidence.map(([fingerprint]) => fingerprint);
   const expected = [...data.findingFingerprints].sort();
@@ -795,7 +835,11 @@ export function writeResult(params: WriteResultParams): LedgerResult {
     allowedHeadsFile: params.allowedHeadsFile,
   });
 
-  const dispositions = sameRoundDispositions(params, matched, allowedHeads);
+  const dispositions = sameRoundDispositions(
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
+    matched,
+    allowedHeads,
+  );
 
   const changed = params.before !== params.head;
   if (!changed && dispositions.some(([, hasFix]) => hasFix)) {
@@ -899,7 +943,7 @@ export function checkBlockedRound(
   const allowedHeads = transitionHeads(params);
   const slips: string[] = [];
   const dispositions = sameRoundDispositions(
-    params,
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
     matched,
     allowedHeads,
     slips,

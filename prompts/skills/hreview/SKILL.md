@@ -36,7 +36,7 @@ Everything else is the herder's call. Once invoked, carry each chain to ready or
 
 Run from the repository the PRs belong to.
 
-- `H` = `<<SKILLS_ROOT>>/critique/scripts/local-review-handoff.py` (run controller: `start-run`, `next-pass`, `finish-run`)
+- `H` = `<<SKILLS_ROOT>>/critique/scripts/local-review-handoff.py` (run controller: `start-run`, `next-pass`, `recover-pass`, `finish-run`)
 - `L` = `<<SKILLS_ROOT>>/critique/scripts/review-ledger.js` (`classify-changeset`, `read-roster`, `post-roster`, `verify-coverage`)
 - `P` = `<<SKILLS_ROOT>>/review-setup/scripts/review-profile.py`
 - `C` = `<<SKILLS_ROOT>>/hreview/scripts/herd-config.py`
@@ -116,6 +116,7 @@ Repeat until the PR reaches an end state.
 4. **Drive until the pass lands.** Loop on `herdr agent wait <name> --timeout 600000`:
    - `blocked`: read the pane and answer with `send-keys` or `prompt`. Choose the answer that continues the pass within its skill's contract. Accept a tier recommendation. Never pick an option that dismisses, downgrades or overrides a finding; if that is the only way forward, it is a block.
    - `done` or `idle`: read the pane (herdr.md, Status is a hint). If it finished, check the ledger (step 5). If the pass has not landed: answer a prose question with `agent prompt`; prompt `Finish and publish this pass's result per your skill.` if it stopped early; apply the workflow's "Recover a blocked pass" if it reports blocked.
+   - Blocked only by a bookkeeping slip: the pass published a fix, then `write-result` refused with `fixed finding was not posted before its disposition head` (a finding posted at its fix head) or because a convergence round fixed a non-blocking finding. Have the pass write its blocked result naming the refusal, then run `python3 -I $H recover-pass --repo $repo --pr <n> --head <published head> --base <base> --before <pass before head> --engine <engine> --round <round> --run-id <run_id> --result-file <blocked result>`. Its `check-blocked-round` requires an otherwise complete ledger with a fixed same-round finding; it keeps the published head, and `next-pass` reviews it again in the next round, spending budget. Any other refusal, or a failed `recover-pass`, is a block. Never edit ledger records to clear the slip, and never restart the run for it.
    - `timeout` while working: stall check (herdr.md).
    - Crash: relaunch per herdr.md with the recovery line `An earlier session for this pass exited. Read the ledger first and finish the pass without re-posting existing findings.`
 5. **Handoff.** The pass has landed only when both hold:

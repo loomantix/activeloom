@@ -774,6 +774,86 @@ describe('writeResult rejects results its evidence does not support', () => {
   });
 });
 
+describe('same-round evidence is scoped to the current run', () => {
+  /** Declare a Deep run started at `startHead`, posted at `createdAt`. */
+  function declareRun(
+    startHead: string,
+    createdAt: string,
+    supersedes: number | null,
+  ): { id: number; runId: string } {
+    const content = `Run the bounded review from ${createdAt}.\n`;
+    const runId = sha(
+      JSON.stringify({
+        base: BASE,
+        content,
+        max_rounds: 4,
+        start_head: startHead,
+        supersedes,
+        tier: 'deep',
+      }),
+    );
+    const id = runner.commentIdSeq++;
+    runner.issueComments.push({
+      id,
+      user: { login: ACTOR },
+      created_at: createdAt,
+      body: `<!-- local-review-run:v1 id=${runId} tier=deep max-rounds=4 base=${BASE} start-head=${startHead} supersedes=${supersedes ?? 'none'} content-sha256=${runId} -->\n${content}`,
+    });
+    return { id, runId };
+  }
+
+  /** The aborted run's slip: a cleanup finding posted at the head that fixed it. */
+  function slippedThread(postedAt: string): GitHubReviewThreadNode {
+    const thread = fixedThread('cleanup', 'nit');
+    const fc = 'the finding\n';
+    thread.comments.nodes[0]!.body = `${findingMarker({
+      fingerprint: 'cleanup',
+      severity: 'nit',
+      head: HEAD,
+      content: fc,
+    })}\n${fc}`;
+    thread.comments.nodes[0]!['createdAt'] = postedAt;
+    thread.comments.nodes[1]!['createdAt'] = postedAt;
+    return thread;
+  }
+
+  const restartedPass = () => ({
+    repo: REPO,
+    pr: PR,
+    head: HEAD,
+    engine: 'claude' as const,
+    round: 1,
+    base: BASE,
+    before: HEAD,
+    resultFile: resultPath(),
+  });
+
+  it('ignores an aborted run slip when a restarted run reviews the same head', () => {
+    const aborted = declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [slippedThread('2026-01-01T00:10:00Z')];
+    runner.issueComments.push({
+      id: runner.commentIdSeq++,
+      user: { login: ACTOR },
+      created_at: '2026-01-01T00:30:00Z',
+      body: `<!-- local-review-run-end:v1 id=${aborted.runId} outcome=aborted head=${HEAD} -->`,
+    });
+    declareRun(HEAD, '2026-01-01T01:00:00Z', aborted.id);
+
+    const out = writeResult(restartedPass());
+    expect(out.status).toBe('clean');
+    expect(out.findingFingerprints).toEqual([]);
+  });
+
+  it('still refuses the slip inside the run that posted it', () => {
+    declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [slippedThread('2026-01-01T00:10:00Z')];
+
+    expect(() => writeResult(restartedPass())).toThrow(
+      'fixed finding was not posted before its disposition head',
+    );
+  });
+});
+
 describe('checkBlockedRound recovers only bookkeeping slips', () => {
   const params = (overrides: Record<string, unknown> = {}) =>
     ({
