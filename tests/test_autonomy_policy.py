@@ -306,7 +306,8 @@ def test_failed_install_leaves_no_partial_state(installation: Path, monkeypatch:
     assert_nothing_installed(installation)
 
 
-def test_incomplete_rollback_prints_exact_cleanup(installation: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("hidden_drop_in", [False, True])
+def test_incomplete_rollback_prints_exact_cleanup(installation: Path, monkeypatch: pytest.MonkeyPatch, hidden_drop_in: bool) -> None:
     (installation / "sudoers").write_text("root ALL=(ALL:ALL) ALL\n")
     fake_installer(monkeypatch, sudo_rs=True)
     real_unlink = Path.unlink
@@ -319,6 +320,12 @@ def test_incomplete_rollback_prints_exact_cleanup(installation: Path, monkeypatc
         policy.install()
     assert f"sudo rm -f {policy.DROP_IN} && sudo rm -rf {policy.POLICY.parent}" in str(refused.value)
     assert not policy.POLICY.exists()
+    assert policy.DROP_IN.exists() and policy.POLICY.parent.is_dir()
+    if hidden_drop_in:
+        hide_drop_in(monkeypatch)
+    report = policy.report()
+    assert report["installed"] and report["launch_blocked"] and not report["protected"]
+    assert report["mode"] == "manual" and report["network"]["mode"] == "restricted"
 
 
 @pytest.mark.parametrize("version,expected", [

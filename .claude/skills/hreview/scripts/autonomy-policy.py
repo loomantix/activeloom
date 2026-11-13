@@ -252,6 +252,9 @@ def _rollback(staged: Path) -> list[Path]:
             pass
         except OSError:
             left.append(path)
+            if path == DROP_IN:
+                # Keep visible installation evidence when sudoers.d cannot be searched.
+                return left
     return left
 
 

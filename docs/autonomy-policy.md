@@ -69,8 +69,9 @@ Inclusion evidence depends on the `visudo` in use, identified by `visudo -V`:
 Initial values are `full`, no stops, restart budget 2, and `restricted` with an
 empty additional allowlist. Installation refuses to overwrite an existing or
 partial installation. A failed installation removes the drop-in first, then
-everything else it created. If that removal fails, or a crash interrupts the
-installer, it prints or leaves protected partial artifacts. The refusal names the
+everything else it created. A crash can leave protected partial artifacts.
+If drop-in removal fails, rollback stops and retains the policy directory so an
+unprivileged reader still detects the partial installation. The refusal names the
 exact cleanup (`sudo rm -f /etc/sudoers.d/activeloom-policy && sudo rm -rf
 /etc/activeloom`; `/private/etc` on macOS). Run it only after confirming the
 artifacts are a failed install. Partial artifacts are never treated as never
