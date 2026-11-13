@@ -186,6 +186,14 @@
           "oneOf": [{ "$ref": "#/$defs/engine" }, { "type": "null" }],
           "default": null
         },
+        "deploy_trigger": {
+          "enum": ["merge", "manual"],
+          "description": "What deploys production. No default; used only when the integration branch has no .activeloom-promote.json, and then required. merge: merging the promotion PR deploys it. manual: a separate human step deploys it after the merge, and the deploy watchers and post_merge commands wait for it."
+        },
+        "deploy_runbook": {
+          "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }],
+          "description": "With manual: how a person deploys production after the merge (a runbook path or a one-line instruction)."
+        },
         "preflight": { "$ref": "#/$defs/commands" },
         "deploy_workflows": {
           "type": "array",

@@ -4,10 +4,15 @@
 A promotion recipe, `.activeloom-promote.json`, is owned by the consumer
 repository and read from its integration branch at the remote, never from a
 pull request head. It names the integration and production branches and the
-steps of a promotion, in three phases separated by fixed milestones:
+steps of a promotion, in phases separated by fixed milestones:
 
     preflight  ->  open the promotion PR  ->  pre_merge  ->  human approval
-    and merge  ->  post_merge
+    and merge  ->  post_merge  [->  human production deploy  ->  post_deploy]
+
+`deploy_trigger` says what deploys production and has no default: `merge`
+when merging the promotion PR deploys it, `manual` when a separate human step
+does after the merge. Only a `manual` recipe has a `post_deploy` phase; its
+steps wait until the human reports the deploy.
 
 Inside a phase, steps are grouped into lanes. A lane runs its steps in order;
 different lanes of one phase may run side by side. `layout` maps the lanes of
@@ -38,7 +43,8 @@ SCHEMA_VERSION = 1
 RECIPE_FILE = ".activeloom-promote.json"
 MAX_PANES = 6
 WORKER_SLOTS = MAX_PANES - 1
-PHASES = ("preflight", "pre_merge", "post_merge")
+PHASES = ("preflight", "pre_merge", "post_merge", "post_deploy")
+AFTER_MERGE_PHASES = ("post_merge", "post_deploy")
 # Phases that can raise a blocker keep one slot free for a fix session.
 FIX_PHASES = ("preflight", "pre_merge")
 KINDS = ("command", "task", "risk_review", "watch_checks", "watch_workflow")
@@ -51,6 +57,11 @@ KIND_PHASES = {
     "watch_checks": ("pre_merge",),
     "watch_workflow": PHASES,
 }
+DEPLOY_TRIGGERS = ("merge", "manual")
+DEPLOY_TRIGGER_MISSING = (
+    "deploy_trigger: required; set \"merge\" if merging the promotion PR deploys production, "
+    "or \"manual\" if a separate step deploys it after the merge"
+)
 ON_FAIL = ("block", "hold", "warn")
 IF_ABSENT = ("fail", "skip")
 MERGE_METHODS = ("merge", "squash", "rebase")
@@ -65,6 +76,8 @@ TOP_KEYS = (
     "schema_version",
     "integration_branch",
     "production_branch",
+    "deploy_trigger",
+    "deploy_runbook",
     "guide",
     "rollback",
     "blocker_issues",
@@ -271,8 +284,8 @@ def _validate_step(step: Any, where: str, errors: list[str]) -> dict[str, Any] |
             errors.append(f"{where}.run: required")
         out["run"] = _argv(step.get("run", ["missing"]), f"{where}.run", errors)
         out["fix"] = _argv(step["fix"], f"{where}.fix", errors) if step.get("fix") is not None else None
-        if out["fix"] is not None and phase == "post_merge":
-            errors.append(f"{where}.fix: post_merge steps cannot carry a fix; production is already deployed")
+        if out["fix"] is not None and phase in AFTER_MERGE_PHASES:
+            errors.append(f"{where}.fix: {phase} steps cannot carry a fix; the promotion has already merged")
         out["on_fail"] = _choice(step.get("on_fail", "block"), ON_FAIL, f"{where}.on_fail", errors)
         out["timeout_minutes"] = _int(step.get("timeout_minutes", 30), 1, 240, f"{where}.timeout_minutes", errors)
     elif kind == "task":
@@ -316,6 +329,18 @@ def validate_recipe(config: Any) -> dict[str, Any]:
     if branches["integration_branch"] == branches["production_branch"] and branches["integration_branch"]:
         errors.append("production_branch: must differ from integration_branch")
 
+    trigger = config.get("deploy_trigger")
+    if trigger is None:
+        errors.append(DEPLOY_TRIGGER_MISSING)
+    elif trigger not in DEPLOY_TRIGGERS:
+        errors.append(f"deploy_trigger: must be one of {', '.join(DEPLOY_TRIGGERS)}")
+    runbook = config.get("deploy_runbook")
+    if runbook is not None:
+        if not _is_text(runbook):
+            errors.append("deploy_runbook: must be a non-empty single-line string")
+        elif trigger == "merge":
+            errors.append("deploy_runbook: only a manual deploy_trigger has a manual deploy step")
+
     issues = config.get("blocker_issues")
     blocker_issues = None
     if issues is not None:
@@ -352,6 +377,8 @@ def validate_recipe(config: Any) -> dict[str, Any]:
             errors.append(
                 f"steps: lane {step['lane']!r} mixes shell steps with session steps (task, risk_review); split it"
             )
+    if trigger == "merge" and any(step["phase"] == "post_deploy" for step in steps):
+        errors.append("steps: post_deploy needs deploy_trigger manual; with merge, put deploy checks in post_merge")
     session_lanes = [lane for lane, (_, shell) in lanes.items() if not shell]
     for lane in session_lanes:
         if sum(step["lane"] == lane for step in steps) > 1:
@@ -361,6 +388,8 @@ def validate_recipe(config: Any) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "integration_branch": branches["integration_branch"],
         "production_branch": branches["production_branch"],
+        "deploy_trigger": trigger,
+        "deploy_runbook": runbook,
         "guide": _optional_path(config, "guide", "", errors),
         "rollback": _optional_path(config, "rollback", "", errors),
         "blocker_issues": blocker_issues,
@@ -394,12 +423,17 @@ def from_herd(herd: dict[str, Any]) -> dict[str, Any]:
     It reproduces what hpromote did before recipes: run the preflight commands,
     require each deploy workflow green on the integration head, review risk,
     watch the promotion PR's checks, then watch the deploy workflows on the
-    merge commit and run the post-merge commands.
+    merge commit and run the post-merge commands. With a manual deploy trigger
+    those last two wait for the deploy, in `post_deploy`.
     """
     config = herd.get("config", herd)
     promotion = config.get("promotion") or {}
     if not promotion.get("enabled"):
         raise UsageError("the herd config has no promotion section")
+    trigger = promotion.get("deploy_trigger")
+    if trigger is None:
+        raise RecipeError([f"promotion.{DEPLOY_TRIGGER_MISSING} (herd config; no recipe file)"])
+    verify_phase = "post_deploy" if trigger == "manual" else "post_merge"
     steps: list[dict[str, Any]] = []
     for index, argv in enumerate(promotion.get("preflight", []), 1):
         steps.append({"id": f"preflight-{index}", "kind": "command", "phase": "preflight", "lane": "preflight", "run": argv})
@@ -417,14 +451,16 @@ def from_herd(herd: dict[str, Any]) -> dict[str, Any]:
     steps.append({"id": "risk", "kind": "risk_review", "phase": "pre_merge", "engine": promotion.get("risk_engine")})
     steps.append({"id": "ci", "kind": "watch_checks", "phase": "pre_merge"})
     for slug, workflow in zip(slugs, workflows):
-        steps.append({"id": f"post-{slug}", "kind": "watch_workflow", "phase": "post_merge", "lane": "verify", "workflow": workflow})
+        steps.append({"id": f"post-{slug}", "kind": "watch_workflow", "phase": verify_phase, "lane": "verify", "workflow": workflow})
     for index, argv in enumerate(promotion.get("post_merge", []), 1):
-        steps.append({"id": f"post-merge-{index}", "kind": "command", "phase": "post_merge", "lane": "verify", "run": argv})
+        steps.append({"id": f"post-merge-{index}", "kind": "command", "phase": verify_phase, "lane": "verify", "run": argv})
     return validate_recipe(
         {
             "schema_version": SCHEMA_VERSION,
             "integration_branch": config.get("integration_branch"),
             "production_branch": promotion.get("production_branch"),
+            "deploy_trigger": trigger,
+            "deploy_runbook": promotion.get("deploy_runbook"),
             "steps": steps,
         }
     )
@@ -522,6 +558,8 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
             for key, ours, theirs in (
                 ("integration_branch", recipe["integration_branch"], config.get("integration_branch")),
                 ("production_branch", recipe["production_branch"], promotion.get("production_branch")),
+                ("deploy_trigger", recipe["deploy_trigger"], promotion.get("deploy_trigger")),
+                ("deploy_runbook", recipe["deploy_runbook"], promotion.get("deploy_runbook")),
             )
             if theirs is not None and ours != theirs
         ]
