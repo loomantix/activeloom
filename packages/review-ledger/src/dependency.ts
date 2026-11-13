@@ -293,6 +293,11 @@ function isImageTagLine(line: string): boolean {
   );
 }
 
+/** Whether a lowercased basename names a Dockerfile. */
+export function isDockerfileName(name: string): boolean {
+  return /^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name);
+}
+
 function isDockerfileFromLine(line: string): boolean {
   const match = /^FROM\s+(--platform=\S+\s+)?(\S+)(\s+AS\s+[\w.-]+)?$/i.exec(
     line,
@@ -339,7 +344,7 @@ function lineKind(
         isRequirementPinLine(line) || isRequirementAuxiliaryLine(line),
     };
   }
-  if (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) {
+  if (isDockerfileName(name)) {
     return pinOnly(isDockerfileFromLine);
   }
   if (name.endsWith('.yml') || name.endsWith('.yaml')) {
@@ -391,6 +396,29 @@ function jsonSkeleton(name: string, content: string): string | null {
         }
       }
     }
+    if (name === 'package.json') {
+      const pnpm = document.pnpm;
+      if (pnpm && typeof pnpm === 'object' && !Array.isArray(pnpm)) {
+        const overrides = (pnpm as Record<string, unknown>).overrides;
+        if (
+          overrides &&
+          typeof overrides === 'object' &&
+          !Array.isArray(overrides)
+        ) {
+          for (const [key, pin] of Object.entries(overrides)) {
+            // Only plain package keys and version ranges; selectors, aliases,
+            // references and removals retain their literal structure.
+            if (
+              /^(?:@[\w.-]+\/)?[\w.-]+$/.test(key) &&
+              typeof pin === 'string' &&
+              VERSION_VALUE.test(pin)
+            ) {
+              (overrides as Record<string, unknown>)[key] = '<pin>';
+            }
+          }
+        }
+      }
+    }
     if (
       name === 'package.json' &&
       typeof document.packageManager === 'string' &&
@@ -402,6 +430,152 @@ function jsonSkeleton(name: string, content: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** BuildKit's line continuation for each escape token. */
+const DOCKERFILE_CONTINUATIONS: readonly RegExp[] = [
+  /(^|[^\\])\\[ \t]*$/,
+  /(^|[^`])`[ \t]*$/,
+];
+
+/** A heredoc word as BuildKit reads it: optional fd, `<<`, then the delimiter. */
+const HEREDOC_WORD = /^\d*<<(-?)(["']?)([A-Za-z_][\w.-]*)\2$/;
+
+/**
+ * Heredocs BuildKit reads from one logical instruction, or null when this
+ * scanner cannot confirm them. Quotes, escapes and `${` can regroup shell
+ * words, so any of them anywhere in an instruction with a `<<` is
+ * unconfirmable.
+ */
+function dockerfileHeredocs(
+  text: string,
+): { strip: boolean; word: string }[] | null {
+  if (/[^\S \t]/.test(text)) return null;
+  const words = text.trim().split(/[ \t]+/);
+  const keyword = words[0]!.toLowerCase();
+  if (keyword === 'onbuild') return null;
+  if (!['run', 'copy', 'add'].includes(keyword)) return [];
+  // JSON form carries no heredoc, but telling it apart needs BuildKit's parse.
+  if (words[1]?.startsWith('[')) return null;
+  const heredocs: { strip: boolean; word: string }[] = [];
+  for (const word of words.slice(1)) {
+    const match = HEREDOC_WORD.exec(word);
+    if (match) heredocs.push({ strip: match[1] === '-', word: match[3]! });
+    else if (/["'\\]|\$\{|<</.test(word)) return null;
+  }
+  return heredocs;
+}
+
+/**
+ * Mask only `FROM` instructions that occupy one physical line, under one
+ * escape token's continuation rule.
+ *
+ * Instruction and heredoc boundaries follow BuildKit. Reading a continuation
+ * or heredoc BuildKit does not would move where a later heredoc body ends and
+ * expose its data as instructions, so an opener this scanner cannot confirm
+ * returns null instead.
+ */
+function dockerfileSkeletonFor(
+  lines: readonly string[],
+  continuation: RegExp,
+): string | null {
+  const output: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const first = lines[index]!;
+    index += 1;
+    const trimmed = first.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      output.push(first);
+      continue;
+    }
+    // The logical line BuildKit parses: continuation tokens removed, comment
+    // and blank continuation lines dropped, physical lines concatenated.
+    const instruction = [first];
+    let text = first.replace(/[\r\n]+$/, '').trimStart();
+    let continued = continuation.test(text);
+    text = text.replace(continuation, '$1');
+    while (continued && index < lines.length) {
+      const next = lines[index]!;
+      instruction.push(next);
+      index += 1;
+      const physical = next.replace(/[\r\n]+$/, '');
+      const content = physical.trim();
+      if (!content || content.startsWith('#')) continue;
+      continued = continuation.test(physical);
+      text += physical.replace(continuation, '$1');
+    }
+    if (text.includes('<<')) {
+      const heredocs = dockerfileHeredocs(text);
+      if (heredocs === null) return null;
+      for (const { strip, word } of heredocs) {
+        let closed = false;
+        while (index < lines.length) {
+          const body = lines[index]!;
+          instruction.push(body);
+          index += 1;
+          const candidate = body.replace(/[\r\n]+$/, '');
+          if ((strip ? candidate.replace(/^\t+/, '') : candidate) === word) {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) return null;
+      }
+      output.push(...instruction);
+      continue;
+    }
+    if (instruction.length === 1 && isDockerfileFromLine(trimmed)) {
+      output.push(
+        first.replace(
+          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
+          (_, prefix: string, reference: string) =>
+            `${prefix}${maskImageReference(reference)}`,
+        ),
+      );
+      continue;
+    }
+    output.push(...instruction);
+  }
+  return output.join('\n');
+}
+
+/**
+ * Compare a Dockerfile under both escape tokens. This scanner does not read
+ * the `# escape=` directive, so it requires both readings to agree; the
+ * file's real one is always among them.
+ */
+function dockerfileSkeleton(content: string): string | null {
+  // BuildKit trims with Go's `unicode.IsSpace`, which counts U+0085 but not
+  // U+FEFF (outside a leading byte-order mark); JavaScript's `trim` does the
+  // opposite. Either can move an instruction or heredoc boundary.
+  if (content.includes('\u0085') || content.indexOf('\uFEFF', 1) !== -1)
+    return null;
+  const lines = content.split('\n');
+  const skeletons = DOCKERFILE_CONTINUATIONS.map((continuation) =>
+    dockerfileSkeletonFor(lines, continuation),
+  );
+  return skeletons.includes(null) ? null : JSON.stringify(skeletons);
+}
+
+/** Drop a trailing YAML comment: a `#` after whitespace, outside quotes. */
+function stripYamlComment(raw: string): string {
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i]!;
+    if (quote === '"') {
+      if (char === '\\') i += 1;
+      else if (char === '"') quote = undefined;
+    } else if (quote === "'") {
+      if (char === "'" && raw[i + 1] === "'") i += 1;
+      else if (char === "'") quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '#' && (i === 0 || /\s/.test(raw[i - 1]!))) {
+      return raw.slice(0, i);
+    }
+  }
+  return raw;
 }
 
 /** Preserve every byte except a recognized pin in a dependency context. */
@@ -420,13 +594,7 @@ function contentSkeleton(
     ['gemfile', 'podfile', 'mix.exs'].includes(name)
   )
     return null;
-  // Multiline bodies can contain instruction-shaped data. Unsupported syntax
-  // must not let the line scanner mistake that data for dependency declarations.
-  if (
-    (/^dockerfile(\.|$)/.test(name) || /\.dockerfile$/.test(name)) &&
-    (content.includes('<<') || /[\\`]\s*$/m.test(content))
-  )
-    return null;
+  if (isDockerfileName(name)) return dockerfileSkeleton(content);
   if ((name.endsWith('.toml') || name === 'pipfile') && /'''|"""/.test(content))
     return null;
   let section = '';
@@ -454,7 +622,15 @@ function contentSkeleton(
         if (!line || line.startsWith('#')) return raw;
         // Reject quotes that do not close on this physical line. Balanced
         // single-line strings remain supported; block scalar bodies stay literal.
-        if (/["']/.test(raw.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) {
+        // A trailing comment may hold an apostrophe; it is not a scalar.
+        if (
+          /["']/.test(
+            stripYamlComment(raw).replace(
+              /"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g,
+              '',
+            ),
+          )
+        ) {
           unsupportedQuotes = true;
           return raw;
         }
@@ -542,13 +718,6 @@ function contentSkeleton(
         if (/^--hash=/.test(line))
           return raw.replace(/--hash=\S+/, '--hash=<pin>');
         return raw;
-      }
-      if (isDockerfileFromLine(line)) {
-        return raw.replace(
-          /(FROM\s+(?:--platform=\S+\s+)?)(\S+)/i,
-          (_, prefix: string, reference: string) =>
-            `${prefix}${maskImageReference(reference)}`,
-        );
       }
       const workflow = isWorkflowPath(path, name);
       const keys = yamlPath.join('/');

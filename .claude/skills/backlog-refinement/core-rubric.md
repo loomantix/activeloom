@@ -4,7 +4,7 @@
 >
 > This file is synced from upstream and overwritten on every sync. A rule that names this repository's paths, labels, or past incidents belongs in `.backlog/refinement.local.md`; a rule that would hold in any repository belongs here, proposed upstream.
 >
-> **Core rubric version: 6.** (v6: verified-stale issues close by default once the orchestrator validates the evidence. v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
+> **Core rubric version: 8.** (v8: later passes carry a split's grill-class children, and a child with a pending interview stays unchanged with changes recorded as owed. v7: explicit existing-child handbacks and settled decomposed coordination parents. v6: verified-stale issues close by default once the orchestrator validates the evidence. v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
 
 ## The two questions (the continuous-improvement contract)
 
@@ -81,6 +81,24 @@ Each field contains one listed value. `rubric.py` parses the record and compares
 | Bounded children         | `split; next: refine`                      | Under a confirmed handback (or separate human split approval), create GitHub sub-issues and apply each child's assessment. Parent is `agent-bail: epic` with no `needs:` label.                                              |
 
 The local `<!-- grill-handback: ask -->` default requires one combined handback preview and confirmation. `auto` skips only that confirmation; it never skips summary confirmation or authorizes a close. Without a local rubric, offer only the decision comment and setup. The interview writes decision comments only; refinement alone applies bodies, labels, sub-issues, and closes. Preserve issue assignments and limit application to the session's issues and approved new children.
+
+A later pass can retain a **settled decomposed coordination parent** as
+`exclude` + `agent-bail: epic`, `settled; next: refine`, with explicit
+`existing_children` and matching `handback_parent` entries. It creates no children
+and changes no ready/exclusion state: existing `ready` (`dev: agent`) children
+stay `ready` and existing `exclude` children retain their current exclusions,
+including `epic`, `open-decision` and `spec-gap`, while their superseded
+specifications are updated. `stale` is not preserved. This exception requires an
+exact confirmed plan, original private creation proof, native links, current body
+hashes, OPEN/unassigned participants and a parent with no pending interview.
+A child with a pending `needs: grill` or `needs: product-grill` is carried with its
+label, verdict and body unchanged: a rewrite is refused, and any change it needs is
+recorded in the parent's decision comment as `Owed to #<child>: <change>`. Its
+interview stays pending, unstarted, and owns that update; until it runs, the
+parent's owed line tells a reader the child's body may be out of date. A public marker
+or a settled marker alone is not proof. If the parent still owes an interview,
+use its matching next-interview route instead; unavailable evidence stays
+unavailable. See refinement's existing-child schema and preflight.
 
 ## §1 — What makes an issue agent-intelligible
 

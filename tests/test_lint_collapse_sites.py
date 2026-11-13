@@ -172,6 +172,39 @@ def test_closing_fence_ends_literal_content(lint_collapse_sites: ModuleType, tmp
     assert _check(lint_collapse_sites, tmp_path, "```\ncode\n```\n\n<<E>>\n") == []
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<div>\ntext\n<<E>>\n\nafter\n",
+        "<details>\n<summary>s</summary>\n<<E>>\n\nafter\n",
+        "  <DIV class=\"x\">\n<<E>>\n",
+        "<table>\n<tr><td>c</td></tr>\n<<E>>\n",
+        "</div>\n<<E>>\n",
+    ],
+)
+def test_rejects_a_placeholder_inside_an_html_block(
+    lint_collapse_sites: ModuleType, tmp_path: Path, body: str
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, body)
+    assert len(violations) == 1
+    assert "inside literal Markdown content" in violations[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<div>\ntext\n\n<<E>>\n\nafter\n",
+        "<details>\n\n<<E>>\n\n</details>\n",
+        "<divider>\n\n<<E>>\n\nafter\n",
+        "    <div>\n\n<<E>>\n\nafter\n",
+    ],
+)
+def test_accepts_a_placeholder_after_an_html_block_ends(
+    lint_collapse_sites: ModuleType, tmp_path: Path, body: str
+) -> None:
+    assert _check(lint_collapse_sites, tmp_path, body) == []
+
+
 def test_canonical_manifest_passes(
     lint_collapse_sites: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:

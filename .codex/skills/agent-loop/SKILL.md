@@ -243,6 +243,26 @@ again and spends the round budget; the slipped round is never attested. A
 published change with no fixed same-round finding, an incomplete ledger, or any
 other refusal still stops.
 
+A round whose first review hook never started does not consume a round. If the
+base advances after a round's fresh-base merge is checkpointed but before Codex
+starts, the wrapper integrates it and reviews in the same round. A resumed run
+whose head moved past a Codex checkpoint only by that round's clean fresh-base
+merge, with no pass files for the round, resumes that round rather than the
+next.
+
+When a round ends with no material fix from either engine but the base advanced
+during it, the next round integrates the base and starts again at Codex. If the
+PR's diff against the new base is byte-identical to the diff that clean round
+reviewed, the wrapper exports `AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1` to that
+round's review hooks, so a Lean review past its two-round cap runs it as the
+convergence round instead of stopping. Any other round, and a resumed run, leaves
+it unset.
+
+GitHub moves a PR's head shortly after a push, not with it. After publishing a
+fresh-base merge, the wrapper reads the PR head up to five times, two seconds
+apart, before it stops as `uncertain-mutation`. Any other change to the PR stops
+it at once.
+
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
 push or call ordinary `gh`; review hooks run only after draft PR creation and

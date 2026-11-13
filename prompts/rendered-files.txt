@@ -27,6 +27,8 @@
 .agents/skills/hpromote/SKILL.md
 .agents/skills/hred-team/SKILL.md
 .agents/skills/hreview/SKILL.md
+.agents/skills/hreview/scripts/autonomy-policy.py
+.agents/skills/hreview/scripts/autonomy-policy.schema.json
 .agents/skills/hreview/scripts/herd-config.py
 .agents/skills/hreview/scripts/herd-config.schema.json
 .agents/skills/hreview/scripts/herd-user.schema.json
@@ -44,6 +46,7 @@
 .agents/skills/red-team/SKILL.md
 .agents/skills/refactorpass/SKILL.md
 .agents/skills/review-setup/SKILL.md
+.agents/skills/review-setup/scripts/cloud-launch.py
 .agents/skills/review-setup/scripts/review-profile.defaults.json
 .agents/skills/review-setup/scripts/review-profile.py
 .agents/skills/review-setup/scripts/review-settings.py
@@ -83,6 +86,8 @@
 .claude/skills/hpromote/SKILL.md
 .claude/skills/hred-team/SKILL.md
 .claude/skills/hreview/SKILL.md
+.claude/skills/hreview/scripts/autonomy-policy.py
+.claude/skills/hreview/scripts/autonomy-policy.schema.json
 .claude/skills/hreview/scripts/herd-config.py
 .claude/skills/hreview/scripts/herd-config.schema.json
 .claude/skills/hreview/scripts/herd-user.schema.json
@@ -99,6 +104,7 @@
 .claude/skills/red-team/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-setup/SKILL.md
+.claude/skills/review-setup/scripts/cloud-launch.py
 .claude/skills/review-setup/scripts/review-profile.defaults.json
 .claude/skills/review-setup/scripts/review-profile.py
 .claude/skills/review-setup/scripts/review-settings.py
@@ -137,6 +143,8 @@
 .codex/skills/hpromote/SKILL.md
 .codex/skills/hred-team/SKILL.md
 .codex/skills/hreview/SKILL.md
+.codex/skills/hreview/scripts/autonomy-policy.py
+.codex/skills/hreview/scripts/autonomy-policy.schema.json
 .codex/skills/hreview/scripts/herd-config.py
 .codex/skills/hreview/scripts/herd-config.schema.json
 .codex/skills/hreview/scripts/herd-user.schema.json
@@ -154,6 +162,7 @@
 .codex/skills/red-team/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/review-setup/SKILL.md
+.codex/skills/review-setup/scripts/cloud-launch.py
 .codex/skills/review-setup/scripts/review-profile.defaults.json
 .codex/skills/review-setup/scripts/review-profile.py
 .codex/skills/review-setup/scripts/review-settings.py

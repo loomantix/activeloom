@@ -14,7 +14,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 RELATIVE = "skills/ship-staging/scripts/check-pr-checks.py"
 HEAD = "a" * 40
-IDENTITY = {"headRefOid": HEAD, "headRefName": "feature/example"}
+IDENTITY = {
+    "headRefOid": HEAD, "headRefName": "feature/example",
+    "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+}
+INVALID_FIELD_VALUES: tuple[object, ...] = (None, "", False, [])
 
 
 @pytest.fixture
@@ -69,7 +73,7 @@ def test_passing_ci_with_or_without_required_checks(
     assert all("example/project" in call for call in calls)
 
 
-@pytest.mark.parametrize("bucket", ["fail", "pending", "cancel", "unknown", "skipping"])
+@pytest.mark.parametrize("bucket", ["fail", "pending", "cancel", "unknown"])
 def test_required_checks_must_pass(gate: ModuleType, monkeypatch: pytest.MonkeyPatch, bucket: str) -> None:
     mock_gh(monkeypatch, gate, [response(IDENTITY), response(check(bucket))])
     with pytest.raises(ValueError):
@@ -121,6 +125,65 @@ def test_changed_head_refuses(gate: ModuleType, monkeypatch: pytest.MonkeyPatch)
         response({**IDENTITY, "headRefOid": "b" * 40}),
     ])
     with pytest.raises(ValueError, match="head changed"):
+        gate.verify("example/project", "42", HEAD)
+
+
+@pytest.mark.parametrize("state", ["CLEAN", "HAS_HOOKS"])
+def test_required_skip_uses_fresh_merge_state(
+    gate: ModuleType, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    calls = mock_gh(monkeypatch, gate, [
+        response({**IDENTITY, "mergeStateStatus": "UNKNOWN", "mergeable": "UNKNOWN"}),
+        response(check("skipping")), response(check("skipping")),
+        response({**IDENTITY, "mergeStateStatus": state}),
+    ])
+    assert gate.verify("example/project", "42", HEAD)["required_count"] == 1
+    assert len(calls) == 4
+    assert "mergeable" in calls[-1][-1] and "mergeStateStatus" in calls[-1][-1]
+
+
+@pytest.mark.parametrize("bucket", ["pass", "skipping"])
+@pytest.mark.parametrize("update", [
+    {"mergeStateStatus": state}
+    for state in ("BLOCKED", "BEHIND", "DIRTY", "UNSTABLE", "UNKNOWN", "DRAFT", "unexpected")
+] + [{"mergeable": state} for state in ("CONFLICTING", "UNKNOWN", "unexpected")])
+def test_fresh_nonmergeable_state_refuses(
+    gate: ModuleType, monkeypatch: pytest.MonkeyPatch, bucket: str, update: dict[str, str],
+) -> None:
+    mock_gh(monkeypatch, gate, [
+        response(IDENTITY), response(check(bucket)), response(check(bucket)),
+        response({**IDENTITY, **update}),
+    ])
+    with pytest.raises(ValueError, match="not mergeable"):
+        gate.verify("example/project", "42", HEAD)
+
+
+@pytest.mark.parametrize("update", [{"headRefOid": "b" * 40}, {"headRefName": "other"}])
+def test_skipped_required_head_race_refuses(
+    gate: ModuleType, monkeypatch: pytest.MonkeyPatch, update: dict[str, str],
+) -> None:
+    mock_gh(monkeypatch, gate, [
+        response(IDENTITY), response(check("skipping")), response(check("skipping")),
+        response({**IDENTITY, **update}),
+    ])
+    with pytest.raises(ValueError, match="head changed"):
+        gate.verify("example/project", "42", HEAD)
+
+
+@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("bad", [
+    response(None), response([]), response({}),
+    subprocess.CompletedProcess(["gh"], 0, "not JSON", ""),
+    subprocess.CompletedProcess(["gh"], 1, "", "network unavailable"),
+    *[response({**IDENTITY, key: value}) for key in IDENTITY for value in INVALID_FIELD_VALUES],
+])
+def test_mergeability_read_errors_refuse(
+    gate: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    final: bool, bad: subprocess.CompletedProcess[str],
+) -> None:
+    replies = [response(IDENTITY), response(check("skipping")), response(check("skipping"))] if final else []
+    mock_gh(monkeypatch, gate, [*replies, bad])
+    with pytest.raises(ValueError):
         gate.verify("example/project", "42", HEAD)
 
 

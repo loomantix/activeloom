@@ -27,7 +27,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_LEDGER \
     AGENT_LOOP_REVIEW_ACTOR \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
-    AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
+    AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
+    AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
@@ -212,6 +213,8 @@ LAST_VALIDATED_BASE=""
 LAST_VALIDATED_LABEL=""
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
+PR_HEAD_SYNC_ATTEMPTS=5
+PR_HEAD_SYNC_DELAY_SECONDS=2
 DEPENDENCY_GATE=ready
 BATCH_ON_ISSUE_FAILURE=stop
 BRANCH_PREFIX=agent-loop
@@ -2324,7 +2327,8 @@ run_review_pass() {
     attest_review_head "before $engine review round $round" \
         "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
     if [ "$boundary_status" -eq 2 ]; then
-        return 2
+        # The base advanced before the hook started, so nothing was reviewed.
+        return 4
     elif [ "$boundary_status" -ne 0 ]; then
         recovery_message "PR head attestation failed before $engine review round $round." heads-misaligned
         return 1
@@ -2738,6 +2742,15 @@ human_glance_gate() {
     [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
 }
 
+# Whether the PR's diff against its base is byte-identical to the diff a
+# clean round reviewed. A round that differs only by a fresh-base merge has
+# nothing new to review, so its reviewers are told so instead of each
+# recomputing it.
+pr_diff_unchanged() {
+    local clean_base="$1" clean_head="$2" base="$3" head="$4"
+    cmp -s <(git diff "$clean_base" "$clean_head") <(git diff "$base" "$head")
+}
+
 run_review_convergence() {
     REVIEW_REMAINING_SECONDS="$REVIEW_TIMEOUT_SECONDS"
     local round="${1:-1}" codex_classification claude_classification
@@ -2745,6 +2758,7 @@ run_review_convergence() {
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
+    local clean_base_sha="" clean_head_sha=""
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -2777,6 +2791,12 @@ run_review_convergence() {
                 return 1
             }
         fi
+        unset AGENT_LOOP_REVIEW_DIFF_UNCHANGED
+        if [ -n "$clean_base_sha" ] && \
+           pr_diff_unchanged "$clean_base_sha" "$clean_head_sha" "$round_base_sha" HEAD; then
+            export AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1
+            echo "   PR diff is unchanged since the clean review of $clean_head_sha; this round only integrated the base"
+        fi
         if [ "$resume_engine" = claude ]; then
             recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
                 recovery_message "Could not recover the completed Codex leg for final-round continuation." ledger-evidence
@@ -2795,7 +2815,18 @@ run_review_convergence() {
                 "configured Codex review hook" "Configured Codex review hook" \
                 "Configured Codex review hook" \
                 "the configured Codex review hook" || pass_status=$?
-            if [ "$pass_status" -eq 2 ]; then
+            if [ "$pass_status" -eq 4 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "before review round $round (Codex boundary)" || return 1
+                echo "   PR base advanced before Codex review started; integrate it in the same round"
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint review round $round." checkpoint-failed
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -eq 2 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
                     "during review round $round (Codex boundary)" || return 1
                 echo "   PR base advanced during Codex review; restart at Codex on the next round"
@@ -2808,6 +2839,8 @@ run_review_convergence() {
                 }
                 continue
             elif [ "$pass_status" -eq 3 ]; then
+                clean_base_sha=""
+                clean_head_sha=""
                 round=$((round + 1))
                 update_run_state reviewing "$round" "$round_base_sha" \
                     "$(git rev-parse HEAD)" "" "" codex || {
@@ -2832,7 +2865,7 @@ run_review_convergence() {
         run_review_pass Claude "claude" "$CLAUDE_REVIEW_HOOK" "$round" \
             "configured Claude review hook" "Claude review hook" "Claude review" \
             "Claude review" || pass_status=$?
-        if [ "$pass_status" -eq 2 ]; then
+        if [ "$pass_status" -eq 2 ] || [ "$pass_status" -eq 4 ]; then
             require_fast_forward_base_advance "$round_base_sha" \
                 "during review round $round (Claude boundary)" || return 1
             echo "   PR base advanced during Claude review; restart at Codex on the next round"
@@ -2845,6 +2878,8 @@ run_review_convergence() {
             }
             continue
         elif [ "$pass_status" -eq 3 ]; then
+            clean_base_sha=""
+            clean_head_sha=""
             round=$((round + 1))
             update_run_state reviewing "$round" "$round_base_sha" \
                 "$(git rev-parse HEAD)" "" "" codex || {
@@ -2891,6 +2926,7 @@ run_review_convergence() {
                 return 1
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+                AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
                 AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
                 AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
@@ -2898,6 +2934,14 @@ run_review_convergence() {
             return 0
         fi
 
+        if [ "$codex_classification" != material ] && \
+           [ "$claude_classification" != material ]; then
+            clean_base_sha="$round_base_sha"
+            clean_head_sha="$(git rev-parse HEAD)"
+        else
+            clean_base_sha=""
+            clean_head_sha=""
+        fi
         if [ "$latest_base_sha" != "$round_base_sha" ]; then
             echo "   Base advanced during the round; integrate it on the draft PR and restart at Codex"
         else
@@ -2912,6 +2956,7 @@ run_review_convergence() {
     done
 
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+        AGENT_LOOP_REVIEW_DIFF_UNCHANGED \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
         AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
         AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
@@ -2962,10 +3007,17 @@ attest_pr_state() {
     IFS=$'\t' read -r state draft head_branch head_sha base_branch base_sha <<< "$row"
     if [ "$state" != OPEN ] || [ "$draft" != "$expected_draft" ] || \
        [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
-       [ "$base_branch" != "$ISSUE_BASE_BRANCH" ] || \
-       { [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; }; then
+       [ "$base_branch" != "$ISSUE_BASE_BRANCH" ]; then
         echo "PR identity, state, head, or base branch changed $phase" >&2
         return 1
+    fi
+    if [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; then
+        if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
+            echo "PR identity, state, head, or base branch changed $phase" >&2
+            return 1
+        fi
+        echo "PR head is $head_sha, not $expected_sha, $phase" >&2
+        return 3
     fi
     if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
         echo "PR base advanced or diverged $phase" >&2
@@ -2998,12 +3050,23 @@ attest_review_head() {
 }
 
 push_review_head() {
-    local phase="$1" expected_base="$2" sha
+    local phase="$1" expected_base="$2" sha attempt=1 status output
     require_issue_branch_head || return 1
     sha="$(git rev-parse HEAD)" || return 1
     git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
-    attest_pr_head "$sha" "$expected_base" "$phase"
+    # GitHub moves a PR's head shortly after a push, not with it, so a head
+    # that has not caught up yet is read again before the push counts as lost.
+    while :; do
+        status=0
+        output="$(attest_pr_head "$sha" "$expected_base" "$phase" 2>&1)" || status=$?
+        if [ "$status" -ne 3 ] || [ "$attempt" -ge "$PR_HEAD_SYNC_ATTEMPTS" ]; then
+            [ -z "$output" ] || printf '%s\n' "$output" >&2
+            return "$status"
+        fi
+        attempt=$((attempt + 1))
+        sleep "$PR_HEAD_SYNC_DELAY_SECONDS"
+    done
 }
 
 fetch_local_review_threads() {
@@ -3498,6 +3561,22 @@ recover_stranded_review_commits() {
 
 STRANDED_RESCUE_REF=""
 
+# Whether a first-leg review checkpoint was followed only by its round's
+# fresh-base merge. That checkpoint is rewritten after the merge and before the
+# hook starts, so a head exactly one clean base merge past it, with no pass
+# files for the round, means the round stopped before reviewing anything. It
+# resumes without using up another round.
+round_moved_only_by_base_merge() {
+    local engine="$1" round="$2" state_head="$3" current_head="$4"
+    local parent merged_base extra merged_tree
+    compgen -G "$AGENT_LOOP_LOG_DIR/$engine-review-round-${round}[.-]*" >/dev/null && return 1
+    read -r _ parent merged_base extra < <(git rev-list --parents -n 1 "$current_head")
+    [ "$parent" = "$state_head" ] && [ -n "$merged_base" ] && [ -z "$extra" ] || return 1
+    git merge-base --is-ancestor "$merged_base" "$AGENT_LOOP_REVIEW_BASE" || return 1
+    merged_tree="$(git merge-tree --write-tree "$state_head" "$merged_base" 2>/dev/null)" || return 1
+    [ "$merged_tree" = "$(git rev-parse "$current_head^{tree}")" ]
+}
+
 resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
@@ -3672,7 +3751,11 @@ resume_review_run() {
             return 1
         fi
     fi
-    if [ "$state_phase" = reviewing ] && \
+    if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
+       [ "$current_head" != "$state_head" ] && \
+       round_moved_only_by_base_merge codex "$state_round" "$state_head" "$current_head"; then
+        echo "   Review round $state_round integrated a fresh base and stopped before Codex started; resuming it without consuming another round"
+    elif [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
         restart_after_interrupted_pass=true
     fi

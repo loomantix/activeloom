@@ -1,7 +1,7 @@
 ---
 name: deepcritique
 description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /critique deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Runs only when the review tier resolved to Deep; hands a Lean changeset back to /critique.
-argument-hint: (optional PR number)
+argument-hint: (optional PR number; "silent" keeps the review off the PR)
 ---
 
 # /deepcritique — PR-first deep chain
@@ -20,10 +20,18 @@ this skill reads that decision rather than making its own.
 
 Classify the range before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
-snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
-least one classified file, print that section's one-line message and stop, with
-no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
-record. On `smallChange: true`, print that section's small-change
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance".
+Apply that section's **Verified zero-file comparison** first: when
+verified, print its no-content line and return without a chain or auto-glance
+and with no draft PR, ledger result, attestation, tier or refactor marker, or
+telemetry record. Its PR-wide lifecycle check
+still applies; an existing run is not bypassed by an empty diff. Failed or
+unavailable reads block this route. An empty range that fails verification
+with no existing run reports the block and stops the same way.
+
+On `skip: true` with at least one classified file, print that section's one-line
+message and stop with the same absence of review artifacts.
+On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
 On `dependencyUpdate: true`, print the workflow's dependency-update line, stop
@@ -59,6 +67,21 @@ storing them rewrites the shared profile in a schema older helper copies refuse.
 Any other exit 3 means settings are missing: follow
 `/review-setup` "Inline setup" in this conversation, then continue this request
 from where it paused. Report any other exit verbatim and stop.
+
+## Silent mode
+
+A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
+helper's `silent-status --repo <owner/repo> --pr <number>` reports
+`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+first ledger read. A refused pin ends the pass: report the refusal to the user
+and never continue the review loud. A silent PR keeps its ledger local: follow
+[Silent mode](../../references/local-review-ledger.md#silent-mode) for every
+ledger read and for the end-of-loop summary. Every posting step below that
+uses the ledger helper still runs exactly as written, and the helper keeps the
+post local. A step that posts with raw `gh` is not intercepted: write that text
+into the scratchpad that `silent-status` names instead. Where a step below
+replies to a hosted reviewer, write that reply into the scratchpad, then
+resolve the thread with `gh`.
 
 ## Phase 0: Pre-flight
 

@@ -1,12 +1,14 @@
 ---
 name: refactorpass
 description: PR-first refactor pass that gathers read-only cleanup proposals once against an open draft PR, posts verified findings before edits, and records validated fixes in the PR ledger. Runs at most once per PR for this engine.
-argument-hint: (optional PR number, optional "force"; always single-pass)
+argument-hint: (optional PR number, optional "force"; always single-pass; "silent" keeps the review off the PR)
 ---
 
 # Refactor pass — PR-first wrapper
 
 {{> review/human-glance-gate}}
+
+{{> review/silent-mode}}
 
 {{> review/findings-before-telemetry}}
 

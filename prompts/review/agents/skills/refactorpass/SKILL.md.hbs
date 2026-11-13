@@ -7,6 +7,8 @@ description: PR-first cleanup pass for Antigravity or Gemini CLI. Use when the u
 
 {{> review/human-glance-gate}}
 
+{{> review/silent-mode}}
+
 {{> review/findings-before-telemetry}}
 
 Run a structured, behavior-preserving cleanup pass on an open draft PR before
@@ -120,4 +122,4 @@ Report:
 - recommended next step from the selected path: if invoked by `deepcritique`,
   return so it can run `critique deep`; if run standalone, run `deepcritique`
   next and hand to the next declared reviewer only after that full chain; add
-  `reviewit <pr-number>` whenever a hosted pass is wanted
+  `reviewit <pr-number>` only when the user asks for a hosted pass

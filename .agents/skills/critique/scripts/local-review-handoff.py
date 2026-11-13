@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -15,6 +19,19 @@ from urllib.parse import quote
 
 
 CURRENT_ACTOR: str | None = None
+# Set when the PR this command names is in silent mode: every gh call then goes
+# through the ledger helper's silent runner, which keeps the ledger local.
+SILENT_SCOPE: tuple[str, int] | None = None
+SILENT_ROOT_ENV = "ACTIVELOOM_SILENT_ROOT"
+SILENT_FORCE_ENV = "ACTIVELOOM_REVIEW_SILENT"
+RESTART_V1_RE = re.compile(
+    r"<!-- local-review-restart:v1 source=(?P<source>autonomy-policy|user-approval) "
+    r"id=(?P<id>[0-9a-f]{16}) policy-sha256=(?P<policy_sha256>[0-9a-f]{64}|none) "
+    r"repo=(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+) pr=(?P<pr>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) ended-run=(?P<ended_run_id>[0-9a-f]{64}|none) "
+    r"ended-outcome=(?P<ended_outcome>converged|exhausted|aborted|transitioned|none) "
+    r"budget-used=(?P<budget_used>[0-9]+|none) -->"
+)
 # Engine identities this handoff surface accepts. Must stay in step with the
 # marker grammar below and with the engines the review-ledger helper accepts.
 ENGINES = ("codex", "claude", "gemini")
@@ -106,8 +123,83 @@ def _fail(message: str) -> NoReturn:
     raise HandoffError(message)
 
 
+def _ledger_helper() -> str:
+    return str(Path(__file__).with_name("review-ledger.js"))
+
+
+def _silent_pattern_matches(pattern: str, repo: str) -> bool:
+    """Mirror of the ledger helper's matcher; tests/fixtures/silent-globs.json pins both."""
+    value, target = pattern.lower(), repo.lower()
+    if value == "*":
+        return True
+    if value.endswith("/*"):
+        return target.startswith(value[:-1])
+    return value == target
+
+
+def _profile_says_silent(repo: str) -> bool:
+    if os.environ.get(SILENT_FORCE_ENV) == "1":
+        return True
+    explicit = os.environ.get("ACTIVELOOM_REVIEW_PROFILE")
+    if explicit:
+        path = Path(explicit)
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        path = Path(base) / "activeloom" / "review-profile.json"
+    if not path.exists():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail(f"review profile is unreadable: {path}; cannot decide silent mode")
+    if not isinstance(document, dict) or "silent" not in document:
+        return False
+    silent = document["silent"]
+    patterns = silent.get("repos") if isinstance(silent, dict) else None
+    if not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
+        _fail(f"review profile silent.repos is malformed: {path}")
+    return any(_silent_pattern_matches(p, repo) for p in patterns)
+
+
+def _silent_pinned(repo: str, pr: int) -> bool:
+    root = os.environ.get(SILENT_ROOT_ENV)
+    if not root:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            return False
+        root = str(Path(result.stdout.strip()).resolve() / "activeloom-review")
+    store = Path(root) / f"{repo.replace('/', '-')}-{pr}".lower() / "silent"
+    return (store / "mode.json").exists()
+
+
+def _enter_silent_scope(args: argparse.Namespace) -> None:
+    """Route this command's gh calls through the silent runner when its PR is silent."""
+    global SILENT_SCOPE
+    repo, pr = getattr(args, "repo", None), getattr(args, "pr", None)
+    if not isinstance(repo, str) or not isinstance(pr, int):
+        return
+    explicit = getattr(args, "silent", False)
+    if explicit:
+        result = subprocess.run(
+            ["node", _ledger_helper(), "silent-pin", "--repo", repo, "--pr", str(pr)],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            _fail(f"could not pin silent mode: {result.stderr.strip() or 'no diagnostic'}")
+    if explicit or _silent_pinned(repo, pr) or _profile_says_silent(repo):
+        SILENT_SCOPE = (repo, pr)
+
+
 def _run_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
     command = ["gh", *args]
+    if SILENT_SCOPE is not None:
+        repo, pr = SILENT_SCOPE
+        command = [
+            "node", _ledger_helper(), "local-gh", "--repo", repo, "--pr", str(pr), "--", *args,
+        ]
     if payload is not None:
         command.extend(["--input", "-"])
     result = subprocess.run(
@@ -151,7 +243,7 @@ def _flatten_pages(value: Any, label: str = "PR-comment") -> list[dict[str, Any]
     return rows
 
 
-def _issue_comments(repo: str, pr: int) -> list[dict[str, Any]]:
+def _actor_comments(repo: str, pr: int) -> list[dict[str, Any]]:
     rows = _flatten_pages(
         _json_output(
             [
@@ -170,7 +262,39 @@ def _issue_comments(repo: str, pr: int) -> list[dict[str, Any]]:
     ]
 
 
-def _verify_head(repo: str, pr: int, expected_head: str) -> None:
+def _lifecycle(repo: str, pr: int) -> dict[str, Any]:
+    """Use the ledger's common PR-wide decision; never infer lifecycle from coverage."""
+    helper = Path(__file__).with_name("review-ledger.js")
+    result = subprocess.run(["node", str(helper), "lifecycle-state", "--repo", repo, "--pr", str(pr)],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        _fail("PR-wide lifecycle could not be verified; inspect the read-only lifecycle-state diagnostic")
+    try:
+        state = json.loads(result.stdout)
+    except ValueError:
+        _fail("invalid lifecycle receipt")
+    if not isinstance(state, dict) or state.get("actor") != _current_actor() or state.get("state") not in (
+        "none", "active", "ended", "foreign-active", "foreign-ended", "transitioned", "foreign-transition"
+    ):
+        _fail("lifecycle actor or schema mismatch")
+    return state
+
+
+def _require_lifecycle_owner(repo: str, pr: int, run_id: str | None = None) -> dict[str, Any]:
+    state = _lifecycle(repo, pr)
+    if state["state"] not in ("none", "active", "ended"):
+        _fail(f"PR-wide lifecycle is {state['state']}; foreign evidence cannot authorize this actor")
+    if run_id is not None and (state.get("run") or {}).get("id") != run_id:
+        _fail("PR-wide active run changed")
+    return state
+
+
+def _issue_comments(repo: str, pr: int) -> list[dict[str, Any]]:
+    _require_lifecycle_owner(repo, pr)
+    return _actor_comments(repo, pr)
+
+
+def _verify_live_head(repo: str, pr: int, expected_head: str) -> None:
     actual = _run_gh(
         [
             "pr",
@@ -188,6 +312,16 @@ def _verify_head(repo: str, pr: int, expected_head: str) -> None:
         _fail(
             f"PR head mismatch: expected {expected_head}, found {actual or '<empty>'}"
         )
+
+
+def _verify_head(repo: str, pr: int, expected_head: str) -> None:
+    _verify_live_head(repo, pr, expected_head)
+    _require_lifecycle_owner(repo, pr)
+
+
+def _verify_start_head(repo: str, pr: int, expected_head: str) -> None:
+    _verify_live_head(repo, pr, expected_head)
+    _verify_signed_pr_history(repo, pr, expected_head)
 
 
 def _classic_signatures_required(repo: str, base_ref: str) -> bool:
@@ -359,8 +493,9 @@ def _read_context(path_value: str | None) -> str:
     return context
 
 
-def _post_issue_comment(repo: str, pr: int, marker: str, body: str) -> tuple[int, bool]:
-    comment_id = _matching_body(_issue_comments(repo, pr), marker, body)
+def _post_issue_comment(repo: str, pr: int, marker: str, body: str, *, lifecycle_write: bool = False) -> tuple[int, bool]:
+    read = _actor_comments if lifecycle_write else _issue_comments
+    comment_id = _matching_body(read(repo, pr), marker, body)
     replayed = comment_id is not None
     if comment_id is None:
         try:
@@ -374,12 +509,12 @@ def _post_issue_comment(repo: str, pr: int, marker: str, body: str) -> tuple[int
                 _fail("GitHub accepted the mutation but returned no comment ID")
             comment_id = cast(int, response["id"])
         except HandoffError:
-            comment_id = _matching_body(_issue_comments(repo, pr), marker, body)
+            comment_id = _matching_body(read(repo, pr), marker, body)
             if comment_id is None:
                 raise
             replayed = True
     _verify_issue_comment(repo, comment_id, body)
-    if _matching_body(_issue_comments(repo, pr), marker, body) != comment_id:
+    if _matching_body(read(repo, pr), marker, body) != comment_id:
         _fail("comment idempotency key did not resolve to the posted comment")
     return comment_id, replayed
 
@@ -605,6 +740,9 @@ def _scope_checkpoint_fires(signals: dict[str, Any]) -> bool:
 
 
 def _with_scope_decision(content: str, signals: dict[str, Any], decision: str) -> str:
+    owner = re.match(r"<!-- local-review-owner-transition:v1 id=[0-9a-f]{64} -->\n", content)
+    if owner:
+        return owner.group(0) + _with_scope_decision(content[owner.end():], signals, decision)
     # The engine plan marker must stay first, where the run parser reads it.
     marker = (
         "<!-- local-review-scope:v1 "
@@ -624,21 +762,24 @@ def _run_state(args: argparse.Namespace) -> None:
     type before any session stalls on it. The scope count is the one start-run
     enforces, not a copy of it.
     """
-    rows = _issue_comments(args.repo, args.pr)
-    records = _run_records(rows)
-    previous = records[-1] if records else None
-    end = None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
+    lifecycle = _lifecycle(args.repo, args.pr)
+    previous = lifecycle.get("run")
     signals = _scope_signals(args.repo, args.pr)
-    state = "none" if previous is None else ("active" if end is None else "ended")
+    state = lifecycle["state"]
     print(
         json.dumps(
             {
                 "behaviour_commits": signals["behaviour_commits"],
                 "missing_patch_files": len(signals["missing_patch_files"]),
-                "outcome": None if end is None else end["outcome"],
-                "restart_required": state == "ended",
-                "run_id": None if previous is None else previous["run_id"],
-                "scope_decision_required": _scope_checkpoint_fires(signals),
+                "outcome": None if previous is None else previous["outcome"],
+                "restart_required": state in ("ended", "foreign-ended", "transitioned"),
+                "transition_required": state in ("foreign-active", "foreign-ended", "foreign-transition"),
+                "actor": lifecycle["actor"],
+                "run_actor": None if previous is None else previous["actor"],
+                "run_comment_id": None if previous is None else previous["commentId"],
+                "transition": lifecycle.get("transition"),
+                "run_id": None if previous is None else previous["id"],
+                "scope_decision_required": state == "transitioned" or _scope_checkpoint_fires(signals),
                 "state": state,
                 "tier": None if previous is None else previous["tier"],
             },
@@ -647,8 +788,144 @@ def _run_state(args: argparse.Namespace) -> None:
     )
 
 
+def _start_lifecycle(args: argparse.Namespace) -> tuple[dict[str, Any], str | None]:
+    _verify_live_head(args.repo, args.pr, args.head)
+    state = _lifecycle(args.repo, args.pr)
+    identifier = getattr(args, "owner_transition_id", None)
+    if state["state"] == "transitioned":
+        transition = state["transition"]
+        if not args.restart or getattr(args, "scope_decision", None) != "keep" or identifier != transition["id"] or args.head != transition["binding"]["head"]:
+            _fail("owner transition requires separate explicit restart, scope keep, exact head and --owner-transition-id")
+    elif state["state"] in ("none", "active", "ended"):
+        if identifier is not None and not (state["state"] == "active" and state["run"].get("ownerTransition") == identifier):
+            _fail("owner transition is absent, consumed or belongs to another run")
+    else:
+        _fail("foreign lifecycle requires a governed ownership transition before any fresh run")
+    return state, identifier
+
+
+def _transition_run(args: argparse.Namespace) -> None:
+    """Record new-actor abandonment without forging an old-actor terminal marker."""
+    if args.to_actor != _current_actor() or args.to_actor == args.from_actor:
+        _fail("transition must be published by its distinct new authenticated actor")
+    path = Path(__file__).resolve().parents[2] / "hreview/scripts/herd-config.py"
+    spec = importlib.util.spec_from_file_location("transition_approval", path)
+    if spec is None or spec.loader is None:
+        _fail("transition approval helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    scope = {key: getattr(args, key) for key in ("repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor")}
+
+    def operation(binding: dict[str, Any], reserve: Any) -> dict[str, Any]:
+        canonical = json.dumps(binding, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        identifier = hashlib.sha256(canonical.encode()).hexdigest()
+        marker = f"<!-- local-review-transition:v1 id={identifier} -->"
+        body = marker + "\n" + canonical
+        _verify_live_head(args.repo, args.pr, args.head)
+        state = _lifecycle(args.repo, args.pr)
+        existing = [item for item in state["transitions"] if item["id"] == identifier]
+        if existing:
+            if existing[0]["binding"] != binding:
+                _fail("transition replay binding changed")
+            _verify_issue_comment(args.repo, existing[0]["commentId"], body)
+            _verify_live_head(args.repo, args.pr, args.head)
+            if _lifecycle(args.repo, args.pr) != state:
+                _fail("lifecycle changed while reconciling transition")
+            return dict(verified=True, replayed=True, transition_id=identifier, restart_authorized=False)
+        source = state.get("run")
+        if (state["state"] not in ("foreign-active", "foreign-ended") or source is None or
+            source["actor"] != args.from_actor or source["commentId"] != args.run_comment_id or source["id"] != args.run_id):
+            _fail("transition names a stale, competing or unrelated run")
+        if _lifecycle(args.repo, args.pr) != state:
+            _fail("lifecycle changed before transition publication")
+        _verify_live_head(args.repo, args.pr, args.head)
+        reserve(identifier)
+        comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body, lifecycle_write=True)
+        _verify_live_head(args.repo, args.pr, args.head)
+        after = _lifecycle(args.repo, args.pr)
+        if after["state"] != "transitioned" or after["transition"]["id"] != identifier:
+            _fail("transition publication raced with another lifecycle change; reconcile without another approval")
+        return dict(verified=True, replayed=replayed, transition_id=identifier,
+                    comment_id=comment_id, restart_authorized=False)
+
+    try:
+        result = helper.transition_transaction(scope, args.approval_id, operation)
+    except helper.ApprovalError as exc:
+        _fail(str(exc))
+    print(json.dumps(result, sort_keys=True))
+
+
+def _restart_helper() -> Any:
+    path = Path(__file__).resolve().parents[2] / "hreview/scripts/herd-config.py"
+    spec = importlib.util.spec_from_file_location("restart_approval", path)
+    if spec is None or spec.loader is None:
+        _fail("restart approval helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
 def _start_run(args: argparse.Namespace) -> None:
-    rows = _issue_comments(args.repo, args.pr)
+    approval_id = getattr(args, "restart_approval_id", None)
+    if approval_id is None:
+        _start_run_checked(args)
+        return
+    if not args.restart or getattr(args, "restart_from_run", None):
+        _fail("--restart-approval-id requires --restart without --restart-from-run")
+    helper = _restart_helper()
+    fields = {key: value for key, value in vars(args).items() if key != "handler"}
+    fields["authorization_file"] = _read_context(args.authorization_file)
+    fingerprint = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+    def operation(record: dict[str, Any], reserve: Any) -> str:
+        if record["deep"] and args.tier != "deep":
+            _fail("approval requires Deep review")
+        if record["scope_decision"] != getattr(args, "scope_decision", None):
+            _fail("scope decision differs from the restart approval")
+        args.restart_reserve = reserve
+        args.restart_intent = record.get("intent")
+        args.restart_record = record
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _start_run_checked(args)
+        return output.getvalue()
+
+    try:
+        output = helper.restart_transaction(args.repo, args.pr, args.head, approval_id, fingerprint, operation)
+    except helper.ApprovalError as exc:
+        _fail(str(exc))
+    print(output, end="")
+
+
+def _restart_marker(record: dict[str, Any], repo: str, pr: int, head: str,
+                    previous: dict[str, Any] | None, end: dict[str, Any] | None) -> str:
+    policy = record.get("source", "user-approval") == "autonomy-policy"
+    ended_run = record.get("ended_run_id") if policy else previous["run_id"] if previous else None
+    outcome = record.get("ended_outcome") if policy else end["outcome"] if end else "transitioned" if previous else None
+    marker = (
+        f"<!-- local-review-restart:v1 source={record.get('source', 'user-approval')} "
+        f"id={record['id']} policy-sha256={record.get('policy_sha256') or 'none'} "
+        f"repo={repo} pr={pr} head={head} ended-run={ended_run or 'none'} "
+        f"ended-outcome={outcome or 'none'} budget-used={record.get('budget_used') if policy else 'none'} -->"
+    )
+    if not RESTART_V1_RE.fullmatch(marker):
+        _fail("malformed restart provenance")
+    return marker
+
+
+def _with_restart_marker(content: str, marker: str) -> str:
+    prefix = re.match(
+        r"(?:<!-- local-review-owner-transition:v1 [^\n]* -->\n)?"
+        r"(?:<!-- local-review-(?:sequence|plan):v1 [^\n]* -->\n\n)?"
+        r"(?:<!-- local-review-scope:v1 [^\n]* -->\n\n)?", content,
+    )
+    at = prefix.end() if prefix else 0
+    return content[:at] + marker + "\n\n" + content[at:]
+
+
+def _start_run_checked(args: argparse.Namespace) -> None:
+    lifecycle, transition_id = _start_lifecycle(args)
+    rows = _actor_comments(args.repo, args.pr)
     records = _run_records(rows)
     previous = records[-1] if records else None
     content = _read_context(args.authorization_file).strip()
@@ -697,6 +974,8 @@ def _start_run(args: argparse.Namespace) -> None:
             content = (
                 f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
             )
+    if transition_id is not None:
+        content = f"<!-- local-review-owner-transition:v1 id={transition_id} -->\n" + content
     scope_decision = getattr(args, "scope_decision", None)
     max_rounds = TIER_CAPS[args.tier]
     previous_end = (
@@ -721,7 +1000,7 @@ def _start_run(args: argparse.Namespace) -> None:
     if (
         previous is not None
         and previous_end is None
-        and (not args.restart or replay_restart)
+        and (not args.restart or replay_restart or getattr(args, "restart_intent", None))
         and previous["tier"] == args.tier
         and previous["base"] == args.base
         and previous["start_head"] == args.head
@@ -738,15 +1017,28 @@ def _start_run(args: argparse.Namespace) -> None:
                     f"scope decision mismatch on replay: run recorded decision={recorded}"
                 )
             plan = re.match(
+                r"(?:<!-- local-review-owner-transition:v1 id=[0-9a-f]{64} -->\n)?"
                 r"<!-- local-review-(?:sequence|plan):v1 [^\n]* -->\n\n",
                 replay_content,
             )
-            at = plan.end() if plan else 0
+            owner = re.match(r"<!-- local-review-owner-transition:v1 id=[0-9a-f]{64} -->\n", replay_content)
+            at = plan.end() if plan else owner.end() if owner else 0
             replay_content = (
                 replay_content[:at] + scope_match.group(0) + replay_content[at:]
             )
+        restart_record = getattr(args, "restart_record", None)
+        if restart_record is not None:
+            parent = records[-2] if len(records) > 1 else None
+            parent_end = _run_end(rows, parent["run_id"]) if parent else None
+            replay_content = _with_restart_marker(replay_content, _restart_marker(
+                restart_record, args.repo, args.pr, args.head, parent, parent_end,
+            ))
         if previous["content"] == replay_content:
-            _verify_reviewable_head(args.repo, args.pr, args.head)
+            intent = getattr(args, "restart_intent", None)
+            if intent is not None and intent["run_id"] != previous["run_id"]:
+                _fail("active run differs from reserved restart")
+            _verify_start_head(args.repo, args.pr, args.head)
+            _require_lifecycle_owner(args.repo, args.pr, previous["run_id"])
             print(
                 json.dumps(
                     {
@@ -772,7 +1064,7 @@ def _start_run(args: argparse.Namespace) -> None:
         content = _with_scope_decision(content, scope_signals, scope_decision)
     if previous is not None and not args.restart:
         _fail("a local-review run already exists; an explicit restart is required")
-    if previous is not None and previous_end is None:
+    if previous is not None and previous_end is None and lifecycle["state"] != "transitioned":
         _fail("the previous local-review run must be ended before an explicit restart")
     if scope_signals is None:
         scope_signals = _scope_signals(args.repo, args.pr)
@@ -789,6 +1081,16 @@ def _start_run(args: argparse.Namespace) -> None:
                 "re-run start-run with --scope-decision keep or --scope-decision split"
             )
     supersedes = None if previous is None else cast(int, previous["comment_id"])
+    restart_record = getattr(args, "restart_record", None)
+    if restart_record is not None:
+        if restart_record.get("source") == "autonomy-policy" and (
+            previous is None or previous["run_id"] != restart_record["ended_run_id"]
+            or previous_end is None or previous_end["outcome"] != restart_record["ended_outcome"]
+        ):
+            _fail("policy restart parent or outcome changed")
+        content = _with_restart_marker(content, _restart_marker(
+            restart_record, args.repo, args.pr, args.head, previous, previous_end,
+        ))
     run_id = _run_digest(
         tier=args.tier,
         max_rounds=max_rounds,
@@ -804,9 +1106,15 @@ def _start_run(args: argparse.Namespace) -> None:
         f"content-sha256={run_id} -->"
     )
     body = f"{marker}\n{content}"
-    _verify_reviewable_head(args.repo, args.pr, args.head)
-    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
-    _verify_reviewable_head(args.repo, args.pr, args.head)
+    _verify_start_head(args.repo, args.pr, args.head)
+    if _start_lifecycle(args)[0] != lifecycle:
+        _fail("PR lifecycle changed before run publication")
+    reserve = getattr(args, "restart_reserve", None)
+    if reserve is not None:
+        reserve(run_id)
+    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body, lifecycle_write=True)
+    _verify_start_head(args.repo, args.pr, args.head)
+    _require_lifecycle_owner(args.repo, args.pr, run_id)
     print(
         json.dumps(
             {
@@ -1284,10 +1592,12 @@ def _parse_plan(value: str, mode: str) -> list[str]:
 
 
 def _content_mode(content: str) -> str:
+    content = re.sub(r"^<!-- local-review-owner-transition:v1 id=[0-9a-f]{64} -->\n", "", content)
     return "chain" if content.startswith("<!-- local-review-plan:") else "cycle"
 
 
 def _content_sequence(content: str) -> list[str] | None:
+    content = re.sub(r"^<!-- local-review-owner-transition:v1 id=[0-9a-f]{64} -->\n", "", content)
     if "<!-- local-review-plan:" in content:
         match = re.match(
             r"<!-- local-review-plan:v1 mode=chain engines=([^\n]+) -->\n\n", content
@@ -1562,6 +1872,12 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--trigger", type=_trigger)
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
+    start.add_argument(
+        "--silent", action="store_true",
+        help="keep this PR's review ledger local; nothing is posted to GitHub",
+    )
+    start.add_argument("--restart-approval-id", help="transactionally consume this user-recorded approval")
+    start.add_argument("--owner-transition-id", help="bind the separately authorized ownership transition")
     start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")
     plan = start.add_mutually_exclusive_group()
     plan.add_argument("--sequence", help="legacy alias for --cycle")
@@ -1584,6 +1900,14 @@ def _parser() -> argparse.ArgumentParser:
     state.add_argument("--repo", required=True)
     state.add_argument("--pr", required=True, type=int)
     state.set_defaults(handler=_run_state)
+
+    transition = commands.add_parser("transition-run", help="record human-approved abandonment without forging an old-actor end")
+    for field in ("repo", "run-id", "from-actor", "to-actor", "approval-id"):
+        transition.add_argument(f"--{field}", required=True)
+    transition.add_argument("--head", required=True, type=_sha)
+    transition.add_argument("--pr", required=True, type=int)
+    transition.add_argument("--run-comment-id", required=True, type=int)
+    transition.set_defaults(handler=_transition_run)
 
     authorize = commands.add_parser("authorize-pass")
     authorize.add_argument("--run-id")
@@ -1643,6 +1967,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if getattr(args, "round", 1) < 1:
         _fail("round must be positive")
+    _enter_silent_scope(args)
     args.handler(args)
     return 0
 
