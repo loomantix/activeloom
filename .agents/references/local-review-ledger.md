@@ -76,6 +76,52 @@ The authenticated relay actor owns the roster chain, and every local engine in
 the relay must use that same pinned actor. `read-roster` returns the effective
 declaration and the chain that produced it.
 
+### Cross-actor lifecycle
+
+Lifecycle discovery is PR-wide; findings, dispositions, attestations and coverage
+remain actor-owned. `review-ledger lifecycle-state --repo <repo> --pr <n>`
+partitions run/supersession chains by actor before resolving ownership. Run v1
+digests alone are not repository/PR/actor-qualified identities. Complete pagination
+and immutable GitHub edit metadata are required. Conflicting active chains,
+edited markers or competing transitions block rather than selecting the newest.
+
+An explicit ownership transition is a separate record by the new authenticated
+actor. It preserves the old run, its terminal status (if any), findings and pins.
+It never forges an old-actor end, marks convergence, grants a fresh budget, imports
+foreign coverage, changes the author engine or modifies a running relay's pins.
+Late old-owner findings remain historical context; a competing successor blocks.
+
+The user creates a one-shot approval in their own terminal:
+
+```text
+python3 -I <herd-config.py> approve-transition --repo <repo> --pr <n> --head <full-head> --run-id <old-run-digest> --run-comment-id <old-comment-id> --from-actor <old-login> --to-actor <new-login>
+```
+
+It prints the complete confirmation phrase and stores a private expiring record.
+Agents must not answer that prompt or manufacture the record. The approved worker
+uses `local-review-handoff.py transition-run` with those same scope arguments and
+`--approval-id <id>`. The new login must equal the live authenticated actor.
+The command rechecks head/lifecycle before and after publication and reserves a
+deterministic intent before writing. Retry uncertain publication with the identical
+saved command. Expired or consumed approvals can reconcile existing publication
+only; they cannot authorize another transition. Conflicts remain explicit blocks.
+
+After verified transition, obtain a separate explicit restart authorization and
+scope decision. `start-run --restart --owner-transition-id <transition-digest>
+--scope-decision keep` also needs the ordinary authorization file, tier, head,
+base and engine-plan arguments, and the existing restart approval mechanism when
+using a recorded approval. Transition authority is not restart authority.
+The new run binds the transition in its hashed authorization content, keeps the
+normal caps, and declares a fresh actor-owned roster. `next-pass`, pass/fix
+authorization, finish, handoff/recovery, runner resume and shipping coverage all
+use the same lifecycle guard. Earlier results cannot resurrect abandoned ownership.
+
+Distribute the controller, ledger bundle, skills and protocol together. A pinned
+older runner that lacks the lifecycle command must stop; do not replace its
+control hashes to make it resume. A new implementation cannot prevent an older
+client from attempting a write, but a current client rejects conflicting history
+and never counts that client's late foreign evidence as its own coverage.
+
 ### Re-declaring the roster
 
 Rosters supersede rather than replace. Posting a roster over an existing one
@@ -530,7 +576,8 @@ the legacy marker and checks that the target thread contains an actor-owned
 finding with that fingerprint. Preserve the original comments; never infer a
 fixed outcome merely from the resolved flag.
 
-At the start of every pass, read:
+At the start of every pass, read the following. On a silent PR, read the
+ledger items with `read-ledger`, as [Silent mode](#silent-mode) describes.
 
 - the PR description and changed files;
 - the current PR diff and commit list;
@@ -778,8 +825,9 @@ Report the unresolved action only when deterministic recovery cannot complete.
 The ledger guides a review; routine metadata drift is not a new permission
 boundary. Existing authorization to complete an unfinished review also covers
 reconciling posted comments, refreshing an unchanged roster at the live head,
-finishing a saved result, and resuming an aborted run within its original budget.
-These operations do not consume another model pass. Never silently reset the
+finishing a saved result, and, where the installed controller supports it,
+resuming an aborted run within its original budget. These operations do not
+consume another model pass. Never silently reset the
 budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
 
 ### Helper version prerequisite
@@ -1100,3 +1148,68 @@ instead of continuing an unbounded cycle.
 The next reviewer must read the ledger before reviewing the new head. That
 requirement is what carries prior rationale forward after local model context
 has been discarded.
+
+## Silent mode
+
+A silent PR keeps this ledger on the reviewer's machine. The helper holds every
+finding, reply, thread, resolution and marker in a local store, answers each
+ledger read and write from it in GitHub's shapes, and writes nothing to the
+PR. Every rule above still applies; only the ledger's location changes. The PR
+itself, its pushes, CI and `gh pr ready` are unchanged.
+
+**When a PR is silent.** Either of these makes it silent:
+
+- The user's review profile lists the repository
+  (`review-profile.py silent --add owner/name` or `owner/*`). The helper pins
+  the PR on first use, unless the PR already carries this actor's review-chain
+  comments: that PR finishes loud, the helper warns on stderr, and
+  `silent-status` reports `"silent": false`. Tell the user when that happens.
+- The user passed `silent` to the entry skill. Pin before the first pass with
+  `<ledger-helper> silent-pin --repo <owner/repo> --pr <number>`, or pass
+  `--silent` to `start-run`.
+
+`<ledger-helper> silent-status --repo <owner/repo> --pr <number>` reports the
+mode and the scratchpad path. A pin is refused on a PR that already carries this
+actor's review-chain comments, and a pinned PR stays silent until its review
+ends.
+
+Another actor's public lifecycle records block silent routing, including for
+an existing pin. Reconcile ownership before continuing; a local ledger must
+never hide a foreign public run or transition. Hosted review comments without
+lifecycle records do not block a pin.
+
+**Read the ledger through the helper.** In either mode,
+`<ledger-helper> read-ledger --repo <owner/repo> --pr <number>` returns
+`review_comments`, `issue_comments` and `threads`. Use it for every ledger read
+this protocol describes. On a silent PR it returns only the local ledger; raw
+`gh` reads see GitHub, where the ledger is absent.
+
+**Write the ledger through the helper.** Post findings, replies, dispositions,
+resolutions, rosters, tier markers and attestations exactly as the steps above
+say, and the helper keeps them local. The helper refuses any other PR write
+that passes through it. A raw `gh` command does not pass through it and is not
+refused, so on a silent PR never post with `gh pr comment`, `gh pr review` or a
+`gh api` write; put that text in the scratchpad instead.
+
+**Hosted reviewers.** They keep posting their own reviews, and their threads
+are not in the local ledger. Read and resolve them with `gh` directly; a
+resolution posts no comment. Record your response to each of their findings in
+the scratchpad rather than as a thread reply.
+
+**Scratchpad.** `scratchpad.md` in the store gets a line for every finding,
+reply, resolution and marker as it is written, and the user can read it at any
+time. Put anything you would otherwise have said on the PR there too.
+
+**End of the loop.** After `finish-run` exits 0 with any outcome, the session
+the user is talking to:
+
+1. runs `<ledger-helper> summary --repo <owner/repo> --pr <number>` and shows its
+   `summary` text verbatim;
+2. asks the user whether to post that summary to the PR;
+3. on yes, runs `<ledger-helper> post-summary --repo <owner/repo> --pr <number>
+--expected-summary-sha256 <sha256 from step 1> --confirmed`. On no, it posts
+   nothing and gives the scratchpad path.
+
+The summary is the only text silent mode ever writes to GitHub. A launched pane,
+or a pass with `AGENT_LOOP_NONINTERACTIVE=1`, has no user to ask: it reports
+`silent-status` and leaves the question to the session that started it.

@@ -109,6 +109,15 @@ Walk the **backfill** bucket from `candidates.py` and apply only steps 2 and the
 
 Process sequentially, one `gh` mutation at a time. Summarize at the end: tagged ready, excluded by category, needs labels applied by kind, priorities set by tier, re-scoped.
 
+### Running `refine` in Claude Cloud
+
+When the user asks for it, or the review profile's Claude worker `execution` is `cloud` (the `review-setup` helper's `resolve --engine claude --role worker --repo <owner/name>` reports it, with the worker model and effort; without `review-setup` installed, only the user's request dispatches), send `refine` to a Claude Cloud session instead of running it here. Say so before launching, and run it here if the user prefers. Every other mode stays local.
+
+1. **Pick the issues** with `candidates.py --json` (plus `--limit N`): the `unrefined` numbers, and the `reverify` ones for `--all`.
+2. **Launch** from the primary checkout. `claude --cloud` refuses to run without a terminal, and a shell tool is not one, so write the prompt to a file in this session's scratch directory and run the `review-setup` launch helper, `cloud-launch.py` beside its `review-profile.py`: `python3 -I <that directory>/cloud-launch.py --prompt-file <file> --model <worker model> --effort <worker effort>` (without a resolved worker setting, leave both flags out). It runs the CLI on a pseudo-terminal and prints JSON with the session's `url`; give the user that URL. Exit 1 means no URL was printed: show the user its `output_tail` and offer to run `refine` here. Without `review-setup` installed, run the CLI under `script` instead — `script -qec 'claude --cloud "$(cat <file>)"' /dev/null` on Linux, `script -q /dev/null sh -c 'claude --cloud "$(cat <file>)"'` on macOS — and take the `claude.ai/code/…` URL from its output; no URL is the same failure.
+3. **Prompt:** run `/backlog-refinement refine` in that session, following this skill as written, on exactly those issue numbers (as a `--batch` for more than a handful); change no file in the repository; finish with the batch report table and the assessors' `rubric_note` fields.
+4. **Retro here.** When the user brings back the notes, fold them into `.backlog/refinement.local.md` and the learnings log as the `--batch` retro step says.
+
 ## Mode: `assess <n> [--decision <draft-comment-file>]`
 
 Dry-run one issue: the priority you would set, the §1 verdict, the §2 transformations that would apply, the `needs:` label on an exclusion, and the proposed rewritten body — without mutating anything. `--decision` supplies a draft interview comment as hypothetical decision input, not permission to write. Read its full text and marker; explain how it settles the question and what remains. Without a draft, use the strictly newer posted decision, if any. Produce the plan entry and the complete preview below, including any approved-in-principle children and proposed close.
@@ -143,6 +152,93 @@ A split child has a stable key, initial body, and complete assessment using the 
 The applier creates and links each child as a GitHub sub-issue, then applies its assessment before changing the parent. It preserves a `refinement-child` marker in rewritten child bodies so retries can recover already-created children. Keep keys stable when resuming. It changes no assignees and refuses a handback if the issue acquired an assignee after assessment. Existing assigned issues receive only an approved decision comment; leave their handback for their owner.
 
 Done when every approved decision has a posted record and each plan entry has an applied result, or the user has a concrete partial-failure report. Do not hide a failed child creation behind a completed parent.
+
+### Existing children in a later pass
+
+Use a dedicated plan containing only coordination parents and owned children
+being carried. It does not create, adopt, close or change a child's ready/exclusion state, and it never starts or removes an interview. Each child preserves its existing verdict and labels:
+
+| Child's current state                                                      | Later pass                                                                                       |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `ready` (`dev: agent`)                                                     | Replacement body, or leave it out when the pass changes nothing for it.                          |
+| `agent-bail: epic`, `open-decision` or `spec-gap`, no `needs:` label       | Replacement body, or a no-change carry when the pass changes nothing for it.                     |
+| One of those three bails with `needs: grill` or `needs: product-grill`     | No-change carry only; a rewrite is refused.                                                      |
+| Any other bail with no `needs:` label, including the hold label on its own | Replacement body, or leave it out when the pass changes nothing for it.                          |
+| `agent-bail: stale`, more than one bail, or any other `needs:` state       | Refused. Leave it out, and record any change it needs as prose in the parent's decision comment. |
+
+A **no-change carry** sets both `"body": null` and `"comment": null`, and keeps `add_labels` equal to the child's current bail and any `needs:` label. The applier checks the same proof, links, body hash and state, then writes nothing to that child; a new refinement comment would displace its queued interview question. A linked child left out of `existing_children` is neither checked nor touched.
+
+**A child with a pending interview keeps its body until that interview runs.** If the pass changes something it carries, record each change in the parent's decision comment on its own line, `Owed to #<child>: <change>`, and continue the handback. An owed line naming anything other than a carried child of that parent with a pending interview is refused, and so is a line starting `Owed to` and an issue number in any other spelling, such as `- Owed to #<child>:` or `Owed to child #<child>:`. The child's body may be out of date until then: its reader learns that from the `Owed to #<child>:` lines in every parent decision comment newer than the child's own latest decision, reached through the native sub-issue link, and from any changes that decision lists as still owed. A later parent decision does not repeat them. The child's interview takes all of those as agenda. A handback that makes the child `ready` applies them in its new body. One that leaves it excluded cannot change its body, so the child's decision comment lists each change still owed.
+
+Example schema:
+
+```json
+{
+  "issues": [
+    {
+      "number": 101,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: epic"],
+      "remove_labels": [],
+      "comment": "Backlog refinement: settled coordination; child 102 remains excluded.",
+      "body": null,
+      "close_reason": null,
+      "decision_comment": "Confirmed contract; evidence remains owed by child 102.\nOwed to #103: use the confirmed retention period.\n\n<!-- grill-decision kind: product-grill; outcome: settled; next: refine -->",
+      "existing_children": [102, 103],
+      "expected_body_sha256": "<sha256 of current parent body>"
+    },
+    {
+      "number": 102,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: credential-gate"],
+      "remove_labels": [],
+      "comment": "Backlog refinement: revised evidence specification, still excluded.",
+      "body": "<complete approved replacement, retaining the exact child marker>",
+      "close_reason": null,
+      "handback_parent": 101,
+      "expected_body_sha256": "<sha256 of current child body>"
+    },
+    {
+      "number": 103,
+      "verdict": "exclude",
+      "add_labels": ["agent-bail: open-decision", "needs: grill"],
+      "remove_labels": [],
+      "comment": null,
+      "body": null,
+      "close_reason": null,
+      "handback_parent": 101,
+      "expected_body_sha256": "<sha256 of current child body>"
+    }
+  ]
+}
+```
+
+Keep the original split plan, its completed `<plan>.applied.json` and private
+`<plan>.children.json`. Pass its
+path with `--existing-child-plan <original-plan>` (repeat for separate splits).
+These artifacts are read without repair. The original plan digest, recorded
+child number/nonce, original completion and native parent link must match; a copied public marker
+is insufficient. Missing private proof is a block, never permission to fabricate
+a receipt or duplicate a child.
+
+Preview the exact new plan. This path always requires `--confirm-summary` and
+`--confirm-handback`, even with `grill-handback: auto`. Before any write, every
+participant must be OPEN, unassigned, still carry its current ready or bail state
+and have exactly the `needs:` label its entry declares; a parent declares none.
+Verify the parent's exact posted
+current settled/refine decision. Body hashes cover exact UTF-8 text; preserve all
+child markers in the replacement. Priority, assignment, ready/exclusion state and
+issue state stay unchanged. Unresolved parent questions require their genuine next
+interview.
+
+Children apply before parents. Private `<new-plan>.existing-handback.json` binds
+repository, exact plan, ownership proofs, rewrite mode, publication intent and
+completion. Re-read the whole scope before each mutation. Edit mode reconciles
+only an exact intended replacement after uncertain publication; suggest mode
+posts a body suggestion matching the child's existing ready or excluded verdict.
+Readbacks precede completion. Retry the identical plan/path; changed plans or proofs need a new
+preview/progress identity. Report partial writes: GitHub operations are sequential,
+not an atomic transaction.
 
 ## Mode: `rca [run-window]` — close the learning loop
 

@@ -22,6 +22,11 @@ runs it. The terminal prompt guards against accidents; it is not a barrier
 against a process running as the same user, so the skills' rule that agents
 never approve or write a record is the control.
 
+The protected system policy is a separate, human-installed authority. `policy`
+reports it read-only; `record-policy-restart` creates a policy-sourced record
+only after checking protection, launch containment/open mode and GitHub budget.
+The same gates run again at transactional reservation before publication.
+
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval.
 """
@@ -29,6 +34,9 @@ Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -38,9 +46,10 @@ import stat
 import subprocess
 import time
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, TypeGuard
 
 SCHEMA_VERSION = 1
 REPO_FILE = ".activeloom-herd.json"
@@ -49,6 +58,7 @@ ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
 TELEMETRY_STORES = ("pr", "issue")
+DEPLOY_TRIGGERS = ("merge", "manual")
 # The review ledger reads its metrics destination from this variable. Herd sets
 # it on every pane it opens, so the repository decides, not the engine harness.
 TELEMETRY_STORE_ENV = "LOOM_REVIEW_TELEMETRY_STORE"
@@ -68,8 +78,9 @@ REPO_SECTIONS = (
     "production_lanes",
     "promotion",
     "telemetry",
+    "manual_tests",
 )
-USER_SECTIONS = ("schema_version", "worktree_root", "push_notifications", "engines")
+USER_SECTIONS = ("schema_version", "worktree_root", "push_notifications", "engines", "promotion")
 
 BRANCH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}(?<!/)$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -102,7 +113,7 @@ def _check_keys(value: dict[str, Any], allowed: tuple[str, ...], where: str, err
         errors.append(f"{where}: unknown key {key!r}")
 
 
-def _is_text(value: Any) -> bool:
+def _is_text(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and value != "" and "\x00" not in value and "\n" not in value
 
 
@@ -311,12 +322,23 @@ def validate_repo(config: Any) -> dict[str, Any]:
             "skill": None,
             "production_branch": None,
             "risk_engine": None,
+            "deploy_trigger": None,
+            "deploy_runbook": None,
             "preflight": [],
             "deploy_workflows": [],
             "post_merge": [],
         }
     else:
-        allowed = ("skill", "production_branch", "risk_engine", "preflight", "deploy_workflows", "post_merge")
+        allowed = (
+            "skill",
+            "production_branch",
+            "risk_engine",
+            "deploy_trigger",
+            "deploy_runbook",
+            "preflight",
+            "deploy_workflows",
+            "post_merge",
+        )
         _check_keys(promotion, allowed, "promotion", errors)
         skill = promotion.get("skill", DEFAULT_PROMOTION_SKILL)
         if not isinstance(skill, str) or not SKILL_RE.match(skill):
@@ -329,11 +351,21 @@ def validate_repo(config: Any) -> dict[str, Any]:
         risk = promotion.get("risk_engine")
         if risk is not None and risk not in ENGINES:
             errors.append(f"promotion.risk_engine: unknown engine {risk!r}")
+        # No default: the promotion helper blocks on a missing trigger when it
+        # has no recipe file to read one from.
+        trigger = promotion.get("deploy_trigger")
+        if trigger is not None and trigger not in DEPLOY_TRIGGERS:
+            errors.append(f"promotion.deploy_trigger: must be one of {', '.join(DEPLOY_TRIGGERS)}")
+        runbook = _optional_text(promotion, "deploy_runbook", "promotion", errors)
+        if runbook is not None and trigger == "merge":
+            errors.append("promotion.deploy_runbook: only a manual deploy_trigger has a manual deploy step")
         effective["promotion"] = {
             "enabled": True,
             "skill": skill,
             "production_branch": production,
             "risk_engine": risk,
+            "deploy_trigger": trigger,
+            "deploy_runbook": runbook,
             "preflight": _argv_list(promotion.get("preflight", []), "promotion.preflight", errors),
             "deploy_workflows": _string_list(
                 promotion.get("deploy_workflows", []), "promotion.deploy_workflows", errors, unique=True
@@ -348,6 +380,10 @@ def validate_repo(config: Any) -> dict[str, Any]:
         errors.append(f"telemetry.store: must be one of {', '.join(TELEMETRY_STORES)}")
         store = None
     effective["telemetry"] = {"store": store}
+
+    manual = _section(config, "manual_tests", errors) or {}
+    _check_keys(manual, ("ux_globs",), "manual_tests", errors)
+    effective["manual_tests"] = {"ux_globs": _globs(manual.get("ux_globs", []), "manual_tests.ux_globs", errors)}
 
     if errors:
         raise ConfigError(errors)
@@ -502,6 +538,13 @@ def classify_paths(gate_fix: dict[str, Any], paths: list[str]) -> dict[str, Any]
     return {"eligible": not reasons, "reasons": reasons, "files": files}
 
 
+def ux_paths(manual_tests: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    """Changed paths that match the repository's manual-test UX globs."""
+    patterns = [glob_to_regex(glob) for glob in manual_tests["ux_globs"]]
+    matches = [path for path in paths if any(p.match(path) for p in patterns)]
+    return {"ux_globs": list(manual_tests["ux_globs"]), "matches": matches, "match": bool(matches)}
+
+
 def changed_paths(repo_dir: Path, base: str, head: str) -> list[str]:
     for value in (base, head):
         if value.startswith("-"):
@@ -550,12 +593,28 @@ def validate_user(config: Any) -> dict[str, Any]:
             entry = {}
         _check_keys(entry, ("launch_args", "permission_off_args"), where, errors)
         launch = _string_list(entry.get("launch_args", []), f"{where}.launch_args", errors)
-        permission = _string_list(entry.get("permission_off_args", []), f"{where}.permission_off_args", errors)
+        default_permission = []
+        if engine == "claude" and not any(
+            arg.split("=", 1)[0] in CLAUDE_PERMISSION_MODE_FLAGS for arg in launch
+        ):
+            default_permission = list(CLAUDE_AUTO_MODE)
+        permission = _string_list(
+            entry.get("permission_off_args", default_permission), f"{where}.permission_off_args", errors
+        )
         flags = [arg.split("=", 1)[0] for arg in launch + permission if arg.startswith("-")]
         duplicates = sorted({flag for flag in flags if flags.count(flag) > 1})
         if duplicates:
             errors.append(f"{where}: flag passed more than once: {', '.join(duplicates)}")
         engines[engine] = {"launch_args": launch, "permission_off_args": permission}
+    promotion = config.get("promotion", {})
+    if not isinstance(promotion, dict):
+        errors.append("promotion: must be an object")
+        promotion = {}
+    _check_keys(promotion, ("offer_manual_tests",), "promotion", errors)
+    offer = promotion.get("offer_manual_tests", False)
+    if not isinstance(offer, bool):
+        errors.append("promotion.offer_manual_tests: must be true or false")
+        offer = False
     if errors:
         raise ConfigError(errors)
     return {
@@ -563,6 +622,7 @@ def validate_user(config: Any) -> dict[str, Any]:
         "worktree_root": str(Path(root).expanduser()),
         "push_notifications": push,
         "engines": engines,
+        "promotion": {"offer_manual_tests": offer},
     }
 
 
@@ -669,6 +729,8 @@ FLAG_SPELLINGS = {
 REPEATABLE = {"codex": CODEX_CONFIG_FLAGS}
 # The Claude mode whose classifier needs the herd's settings entries.
 CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
+# An explicit launch mode suppresses the editing default.
+CLAUDE_PERMISSION_MODE_FLAGS = (CLAUDE_AUTO_MODE[0], "--dangerously-skip-permissions")
 # claude-cli-invocations:end
 PERMISSION_SCOPE = (
     "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "
@@ -728,6 +790,23 @@ def _turned_off(engine: str, args: list[str]) -> tuple[list[dict[str, str]], lis
     return found, unrecognized, ends_prompts
 
 
+SANDBOX_OFF = {CODEX_SANDBOX["danger-full-access"][0], CODEX_BYPASS[None][0]}
+
+
+def _sandbox_without_approval(engine: str, turned_off: list[dict[str, str]]) -> bool:
+    """Codex with approvals off and the sandbox kept: not a tier.
+
+    Commands the sandbox refuses then fail instead of asking. On macOS that
+    includes every `gh` call, because the sandbox cannot read the keyring that
+    holds the token, so `gh` runs unauthenticated (HTTP 401, or 404 on a
+    private repository).
+    """
+    if engine != "codex":
+        return False
+    off = {item["turns_off"] for item in turned_off}
+    return CODEX_APPROVAL["never"][0] in off and not off & SANDBOX_OFF
+
+
 def permission_report(
     loaded: dict[str, Any],
     engines: list[str],
@@ -745,12 +824,14 @@ def permission_report(
         entry = loaded["config"]["engines"][engine]
         turned_off, unrecognized, ends_off = _turned_off(engine, entry["permission_off_args"])
         in_launch, unknown_launch, ends_launch = _turned_off(engine, entry["launch_args"])
+        alias = alias_report(engine, entry, (type_texts or {}).get(engine))
         report[engine] = {
             "stops_at_prompts": not (ends_off or ends_launch),
+            "sandbox_without_approval": _sandbox_without_approval(engine, turned_off + in_launch + alias["turned_off"]),
             "turned_off": turned_off,
             "unrecognized": unknown_launch + unrecognized,
             "turned_off_in_read_only": in_launch,
-            "alias": alias_report(engine, entry, (type_texts or {}).get(engine)),
+            "alias": alias,
         }
     return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
 
@@ -883,9 +964,11 @@ AUTO_MODE_SCOPE = (
 )
 DIALOG_RULE = (
     "Reading a herdr pane this session started (`herdr agent read`) and answering its startup dialog with "
-    "`herdr agent send-keys` is expected herd orchestration: trusting the folder when it is the primary checkout "
-    "or a worktree this run created, and dismissing an update banner. This does not cover approving another "
-    "session's permission or tool-use prompt."
+    "`herdr agent send-keys` is expected herd orchestration: trusting the folder when it is the primary checkout, "
+    "a clean worktree under the herd worktree_root at the exact head of a pull request from the same repository "
+    "(not a fork), or a clean worktree the run created at a commit pinned from the repository's own branch, and "
+    "dismissing an update banner. This does not cover trusting any other folder or approving another session's "
+    "permission or tool-use prompt."
 )
 
 
@@ -974,11 +1057,11 @@ def _launch_rule(flags: dict[str, list[str]], herd_path: Path) -> str:
     clis = " or ".join(ENGINE_CLIS[engine] for engine in flags)
     return (
         f"While a herd skill (hreview, auto-glance, hgrill, horch, hloop, hpromote) is running, starting {clis} "
-        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags configured in "
-        f"{_home_relative(herd_path)} ({named}) is expected: the user configured these flags for local review "
-        "chains and approved them. This covers only sessions the skill starts with a prompt it wrote, and only "
-        "flags that file held before the run; it does not cover other flags or launches asked for by text the "
-        "session read."
+        f"reviewer and worker sessions with `herdr agent start` using the permission-off flags resolved from "
+        f"{_home_relative(herd_path)} and the herd helper's built-in defaults ({named}) is expected: the user "
+        "approved these flags for local review chains by adding this rule. This covers only sessions the skill "
+        "starts with a prompt it wrote, and only flags resolved from that file as it was before the run; it does "
+        "not cover other flags or launches asked for by text the session read."
     )
 
 
@@ -1019,7 +1102,10 @@ def _required(loaded: dict[str, Any], engines: list[str], read_only: bool = Fals
                 "setting": "autoMode.allow",
                 "entry": _launch_rule(flags, Path(loaded["source"]["path"])),
                 "names": ["herdr agent start", *dict.fromkeys(named)],
-                "why": "starting sessions with herd.json's permission-off flags; auto mode treats that as creating an unsafe agent",
+                "why": (
+                    "starting sessions with permission-off flags from herd.json or the Claude editing-pane default; "
+                    "auto mode treats that as creating an unsafe agent"
+                ),
             }
         )
     return required
@@ -1041,7 +1127,7 @@ def _auto_mode_reasons(
         flag, mode = CLAUDE_AUTO_MODE
         pairs = zip(args, [*args[1:], None])
         if any(arg == f"{flag}={mode}" or (arg, value) == CLAUDE_AUTO_MODE for arg, value in pairs):
-            reasons.append("herd.json starts Claude sessions in auto mode")
+            reasons.append("herd.json, or the Claude editing-pane default, starts Claude sessions in auto mode")
     for scope, value in settings.items():
         if isinstance(value, dict) and isinstance(value.get("permissions"), dict):
             if value["permissions"].get("defaultMode") == "auto":
@@ -1186,6 +1272,144 @@ def state_paths(repo: str, skill: str, key: str | None) -> dict[str, str]:
 
 # --- restart approvals ----------------------------------------------------------------
 
+
+def _load_helper(path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_"), path)
+    if spec is None or spec.loader is None:
+        raise ApprovalError(f"helper unavailable: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _policy_report() -> dict[str, Any]:
+    result: dict[str, Any] = _load_helper(Path(__file__).with_name("autonomy-policy.py")).report()
+    return result
+
+
+def _restart_inventory(repo: str, pr: int, head: str | None = None) -> dict[str, Any]:
+    """Read a complete actor inventory; shared protocol verifies hashes and ancestry."""
+    flat_repo(repo)
+    if pr < 1:
+        raise ApprovalError("PR must be positive")
+    path = Path(__file__).resolve().parents[2] / "critique/scripts/local-review-handoff.py"
+    if not path.exists():
+        # The canonical source tree is not an installed harness tree.
+        path = Path(__file__).resolve().parents[4] / "packages/review-ledger/protocol/local-review-handoff.py"
+    controller = _load_helper(path)
+    try:
+        actor = controller._current_actor()
+        pages = controller._json_output(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
+        rows = controller._flatten_pages(pages)
+        if any(type(row.get("id")) is not int or not isinstance(row.get("body"), str)
+               or not isinstance(row.get("user"), dict) or not row["user"].get("login") for row in rows):
+            raise ApprovalError("incomplete restart inventory")
+        if len({row["id"] for row in rows}) != len(rows):
+            raise ApprovalError("duplicate comment in restart inventory")
+        rows = [row for row in rows if row["user"]["login"] == actor]
+        records = controller._run_records(rows)
+        run_comments = {record["comment_id"] for record in records}
+        if any("<!-- local-review-restart:" in row["body"] and row["id"] not in run_comments for row in rows):
+            raise ApprovalError("orphan or duplicate restart marker in inventory")
+        used, identifiers = 0, set()
+        for index, record in enumerate(records):
+            content = record["content"]
+            markers = list(controller.RESTART_V1_RE.finditer(content))
+            if not markers and index == 0 and "<!-- local-review-restart:" not in content:
+                continue
+            if len(markers) != 1 or content.count("<!-- local-review-restart:") != 1:
+                raise ApprovalError("missing or inconsistent restart inventory")
+            marker = markers[0].groupdict()
+            if marker["id"] in identifiers:
+                raise ApprovalError("restart record reused by multiple runs")
+            identifiers.add(marker["id"])
+            parent = records[index - 1] if index else None
+            end = controller._run_end(rows, parent["run_id"]) if parent else None
+            if (marker["repo"] != repo or int(marker["pr"]) != pr or marker["head"] != record["start_head"]
+                    or marker["ended_run_id"] != (parent["run_id"] if parent else "none")
+                    or marker["ended_outcome"] != (end["outcome"] if end else "transitioned" if parent else "none")):
+                raise ApprovalError("restart marker binding does not match run history")
+            if marker["source"] == "autonomy-policy":
+                used += 1
+                if (parent is None or end is None or marker["policy_sha256"] == "none"
+                        or marker["budget_used"] != str(used)):
+                    raise ApprovalError("inconsistent automatic restart budget inventory")
+            elif marker["policy_sha256"] != "none" or marker["budget_used"] != "none":
+                raise ApprovalError("user approval carries automatic policy provenance")
+        if head is not None:
+            controller._verify_live_head(repo, pr, head)
+        lifecycle = controller._require_lifecycle_owner(repo, pr)
+        latest = records[-1] if records else None
+        if (lifecycle.get("run") or {}).get("id") != (latest["run_id"] if latest else None):
+            raise ApprovalError("restart inventory changed or is incomplete")
+        end = controller._run_end(rows, latest["run_id"]) if latest else None
+        return {"budget_used": used, "actor": actor, "latest": latest, "end": end, "state": lifecycle["state"]}
+    except controller.HandoffError as exc:
+        raise ApprovalError(f"restart inventory unavailable: {exc}") from exc
+
+
+def policy_report(repo: str | None = None, prs: list[int] | None = None) -> dict[str, Any]:
+    report = _policy_report()
+    report["budgets"] = {}
+    for pr in prs or []:
+        if repo is None:
+            raise UsageError("--pr requires --repo")
+        try:
+            used = _restart_inventory(repo, pr)["budget_used"]
+            report["budgets"][f"{repo}#{pr}"] = {"used": used, "limit": report["restart_budget"], "status": "verified"}
+        except (ApprovalError, OSError, ValueError) as exc:
+            report["budgets"][f"{repo}#{pr}"] = {"used": None, "status": "unavailable", "reason": str(exc)}
+    return report
+
+
+def _automatic_restart_gate(repo: str, pr: int, head: str, record: dict[str, Any] | None = None) -> dict[str, Any]:
+    policy = _policy_report()
+    if not policy["protected"] or policy["mode"] != "full" or policy["launch_blocked"]:
+        raise ApprovalError(f"automatic restart denied: {policy['reason']}")
+    if "restart" in policy["stops"]:
+        raise ApprovalError("automatic restart denied: restart stop")
+    if record is not None and record["policy_sha256"] != policy["policy_sha256"]:
+        raise ApprovalError("policy changed since the restart record was created")
+    inventory = _restart_inventory(repo, pr, head)
+    latest, end = inventory["latest"], inventory["end"]
+    if inventory["state"] != "ended" or latest is None or end is None:
+        raise ApprovalError("automatic restart needs an authenticated ended run")
+    if end["outcome"] == "exhausted":
+        if end["head"] == head:
+            raise ApprovalError("exhausted head is unchanged")
+        if "restart-after-exhausted" in policy["stops"]:
+            raise ApprovalError("automatic restart denied: restart-after-exhausted stop")
+    used = inventory["budget_used"]
+    if used >= policy["restart_budget"]:
+        raise ApprovalError(f"automatic restart budget spent for {repo}#{pr}: {used}/{policy['restart_budget']} used; use approve-restart in your terminal or ask horch to raise restart_budget")
+    values = {"source": "autonomy-policy", "policy_sha256": policy["policy_sha256"],
+              "ended_run_id": latest["run_id"], "ended_outcome": end["outcome"], "budget_used": used + 1}
+    if record is not None and any(record[key] != value for key, value in values.items()):
+        raise ApprovalError("restart inventory changed since the record was created")
+    return values
+
+
+def record_policy_restart(repo: str, pr: int, head: str, scope_decision: str | None = None) -> dict[str, Any]:
+    target = _approval_target(repo, pr, head)
+    if scope_decision not in (None, "keep"):
+        raise UsageError("split must finish before starting replacement PR runs")
+    with _approval_lock(target):
+        prior = None
+        if target.exists():
+            prior = _load_approval(target, repo, pr, head, transaction=True)
+            if prior.get("used") is None:
+                raise ApprovalError("restart record already exists; resume it instead of replacing it")
+        values = _automatic_restart_gate(repo, pr, head)
+        if prior is not None:
+            archive = target.with_name(f"{target.stem}.{prior['id']}.used.json")
+            _write_approval(archive, prior)
+        created = _now()
+        record = {"version": APPROVAL_VERSION, "id": secrets.token_hex(8), "repo": repo, "pr": pr,
+                  "head": head, "deep": False, "scope_decision": scope_decision, "created": _iso(created),
+                  "expires": _iso(created + timedelta(hours=4)), "used": None, **values}
+        _write_approval(target, record)
+        return {"path": str(target), **record}
+
 APPROVAL_VERSION = 1
 APPROVAL_MAX_TTL_HOURS = 72
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1227,9 +1451,17 @@ def approve_restart(
         raise UsageError(f"--ttl-hours must be between 1 and {APPROVAL_MAX_TTL_HOURS}")
     if scope_decision == "split":
         raise UsageError("a split must be done before a restart; approve the new PR's head instead")
-    target = _approval_target(repo, pr, head)
     if confirm.strip() != f"restart {pr}":
         raise UsageError("confirmation did not match; nothing written")
+    with _approval_lock(_approval_target(repo, pr, head)):
+        return _approve_restart_locked(repo, pr, head, ttl_hours, deep, scope_decision, confirm)
+
+
+def _approve_restart_locked(
+    repo: str, pr: int, head: str, ttl_hours: int, deep: bool,
+    scope_decision: str | None, confirm: str,
+) -> dict[str, Any]:
+    target = _approval_target(repo, pr, head)
     created = _now()
     record = {
         "version": APPROVAL_VERSION,
@@ -1242,6 +1474,11 @@ def approve_restart(
         "created": _iso(created),
         "expires": _iso(created + timedelta(hours=ttl_hours)),
         "used": None,
+        "source": "user-approval",
+        "policy_sha256": None,
+        "ended_run_id": None,
+        "ended_outcome": None,
+        "budget_used": None,
     }
     _private_dir(target.parent)
     temporary = target.with_suffix(".tmp")
@@ -1253,7 +1490,7 @@ def approve_restart(
     return {"path": str(target), **record}
 
 
-def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
+def _load_approval(path: Path, repo: str, pr: int, head: str, *, transaction: bool = False) -> dict[str, Any]:
     try:
         info = path.lstat()
     except FileNotFoundError as exc:
@@ -1266,11 +1503,31 @@ def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
         raise ApprovalError(f"{path}: unreadable approval record") from exc
     if not isinstance(record, dict) or record.get("version") != APPROVAL_VERSION:
         raise ApprovalError(f"{path}: unknown approval record version")
+    source = record.get("source", "user-approval")
+    if source not in ("user-approval", "autonomy-policy"):
+        raise ApprovalError("unknown restart source")
+    if source == "autonomy-policy" and (
+        not re.fullmatch(r"[0-9a-f]{64}", str(record.get("policy_sha256")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("ended_run_id")))
+        or record.get("ended_outcome") not in ("converged", "exhausted", "aborted")
+        or type(record.get("budget_used")) is not int or record["budget_used"] < 1
+        or record.get("deep") is not False
+    ):
+        raise ApprovalError("malformed policy restart record")
     for field, expected in (("repo", repo), ("pr", pr), ("head", head)):
         if record.get(field) != expected:
             raise ApprovalError(f"approval {field} does not match: recorded {record.get(field)!r}")
-    if record.get("used") is not None:
+    if record.get("used") is not None and not transaction:
         raise ApprovalError(f"approval {record.get('id')} was already used at {record['used']}")
+    if record.get("intent") is not None and not transaction:
+        raise ApprovalError("restart transaction pending; resume start-run with its original approval ID")
+    intent = record.get("intent")
+    if intent is not None and (
+        not isinstance(intent, dict)
+        or set(intent) != {"fingerprint", "run_id"}
+        or any(not isinstance(intent[key], str) or not re.fullmatch(r"[0-9a-f]{64}", intent[key]) for key in intent)
+    ):
+        raise ApprovalError("malformed restart transaction")
     if (
         not isinstance(record.get("id"), str)
         or not APPROVAL_ID_RE.match(record["id"])
@@ -1282,7 +1539,7 @@ def _load_approval(path: Path, repo: str, pr: int, head: str) -> dict[str, Any]:
     now = _now()
     if created > now or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
         raise ApprovalError(f"{path}: approval times out of range")
-    if expires <= now:
+    if expires <= now and not (transaction and record.get("intent")):
         raise ApprovalError(f"approval {record['id']} expired at {record['expires']}")
     return record
 
@@ -1303,9 +1560,29 @@ def check_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
 
 
 def claim_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
-    """Verify, then consume: the rename is atomic, so only one claim can win."""
+    """Legacy single-use claim, serialized with transactional startup."""
+    target = _approval_target(repo, pr, head)
+    with _approval_lock(target):
+        return _claim_restart_locked(repo, pr, head)
+
+
+@contextmanager
+def _approval_lock(target: Path) -> Iterator[None]:
+    _private_dir(target.parent)
+    descriptor = os.open(target.with_suffix(".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ApprovalError("unsafe restart lock")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _claim_restart_locked(repo: str, pr: int, head: str) -> dict[str, Any]:
     target = _approval_target(repo, pr, head)
     record = _load_approval(target, repo, pr, head)
+    if record.get("source") == "autonomy-policy":
+        raise ApprovalError("policy records require transactional start-run")
     used_path = target.with_name(f"{target.stem}.{record['id']}.used.json")
     try:
         os.rename(target, used_path)
@@ -1319,9 +1596,164 @@ def claim_restart(repo: str, pr: int, head: str) -> dict[str, Any]:
     return {"path": str(used_path), **record}
 
 
+def _write_approval(path: Path, record: dict[str, Any]) -> None:
+    """Replace a private transaction record durably while holding its lock."""
+    descriptor, temporary = tempfile.mkstemp(prefix=".restart-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def restart_transaction(repo: str, pr: int, head: str, approval_id: str, fingerprint: str, operation: Any) -> Any:
+    """Run validated startup once; retain an exact intent after uncertain publication.
+
+    The operation receives the approval and a reserve(run_id) callback. It must
+    finish all read-only validation before reserve, and reconcile an existing
+    run before publishing. A consumed record permits reconciliation only.
+    """
+    if not APPROVAL_ID_RE.fullmatch(approval_id):
+        raise ApprovalError("invalid approval ID")
+    target = _approval_target(repo, pr, head)
+    with _approval_lock(target):
+        record = _load_approval(target, repo, pr, head, transaction=True)
+        if record["id"] != approval_id:
+            raise ApprovalError("approval ID changed")
+        intent = record.get("intent")
+        if intent is not None and (not isinstance(intent, dict) or intent.get("fingerprint") != fingerprint):
+            raise ApprovalError("restart arguments differ from the reserved transaction")
+
+        def reserve(run_id: str) -> None:
+            if record.get("used") is not None:
+                raise ApprovalError("approval already consumed; only existing-run reconciliation is allowed")
+            if _parse_moment(target, record["expires"]) <= _now():
+                raise ApprovalError("approval expired; only existing-run reconciliation is allowed")
+            proposed = {"fingerprint": fingerprint, "run_id": run_id}
+            if intent is not None and intent != proposed:
+                raise ApprovalError("restart would create a different run")
+            if record.get("source") == "autonomy-policy":
+                _automatic_restart_gate(repo, pr, head, record)
+            record["intent"] = proposed
+            _write_approval(target, record)
+
+        result = operation(record, reserve)
+        if record.get("intent") is None:
+            raise ApprovalError("startup did not reserve a run")
+        record["used"] = record.get("used") or _iso(_now())
+        _write_approval(target, record)
+        return result
+
+
 def _private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
+
+
+def _transition_target(repo: str, pr: int, head: str, run_comment_id: int) -> Path:
+    _approval_target(repo, pr, head)
+    if run_comment_id < 1:
+        raise UsageError("--run-comment-id must be positive")
+    return approvals_dir(repo) / f"transition-{pr}-{run_comment_id}-{head}.json"
+
+
+def approve_transition(repo: str, pr: int, head: str, run_id: str, run_comment_id: int,
+                       from_actor: str, to_actor: str, ttl_hours: int, confirm: str) -> dict[str, Any]:
+    """Record only a human-approved ownership transition, never restart authority."""
+    target = _transition_target(repo, pr, head, run_comment_id)
+    login = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?"
+    if not re.fullmatch(r"[0-9a-f]{64}", run_id) or not all(re.fullmatch(login, value) for value in (from_actor, to_actor)) or from_actor == to_actor:
+        raise UsageError("invalid transition run or actors")
+    if not 1 <= ttl_hours <= APPROVAL_MAX_TTL_HOURS:
+        raise UsageError("transition TTL out of range")
+    expected = f"transition {pr} {run_comment_id} {from_actor} to {to_actor} at {head}"
+    if confirm.strip() != expected:
+        raise UsageError("transition confirmation did not match; nothing written")
+    now = _now()
+    identifier = secrets.token_hex(8)
+    binding = dict(version=1, approval_id=identifier, repo=repo, pr=pr, head=head,
+                   run_id=run_id, run_comment_id=run_comment_id, from_actor=from_actor,
+                   to_actor=to_actor, created=_iso(now), expires=_iso(now + timedelta(hours=ttl_hours)))
+    with _approval_lock(target):
+        if target.exists() or target.is_symlink():
+            scope = {key: binding[key] for key in ("repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor")}
+            previous = _load_transition(target, scope, allow_expired=True)
+            if (previous["intent"] is not None or previous["used"] is not None or
+                _parse_moment(target, previous["binding"]["expires"]) > now):
+                raise ApprovalError("transition approval already exists; reconcile it instead of replacing it")
+        record = dict(version=1, id=identifier, binding=binding, intent=None, used=None)
+        _write_approval(target, record)
+    return {"path": str(target), **record}
+
+
+def _load_transition(target: Path, scope: dict[str, Any], approval_id: str | None = None,
+                     *, allow_expired: bool = False) -> dict[str, Any]:
+    """Validate a saved approval before consumption or human-authorized renewal."""
+    try:
+        info = target.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ApprovalError("unsafe transition approval")
+        record = json.loads(target.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalError("transition approval unavailable") from exc
+    if (not isinstance(record, dict) or set(record) != {"version", "id", "binding", "intent", "used"} or
+        record.get("version") != 1 or not isinstance(record.get("id"), str) or
+        not APPROVAL_ID_RE.fullmatch(record["id"]) or
+        (approval_id is not None and record["id"] != approval_id)):
+        raise ApprovalError("transition approval ID or schema mismatch")
+    binding = record.get("binding")
+    binding_keys = {"version", "approval_id", "repo", "pr", "head", "run_id", "run_comment_id", "from_actor", "to_actor", "created", "expires"}
+    if (not isinstance(binding, dict) or set(binding) != binding_keys or binding.get("version") != 1 or
+        any(binding.get(key) != value for key, value in scope.items()) or binding.get("approval_id") != record["id"]):
+        raise ApprovalError("transition approval scope mismatch")
+    if record.get("used") is not None:
+        _parse_moment(target, record["used"])
+        if record.get("intent") is None:
+            raise ApprovalError("consumed transition has no publication intent")
+    created = _parse_moment(target, binding.get("created"))
+    expires = _parse_moment(target, binding.get("expires"))
+    if created > _now() or expires <= created or expires - created > timedelta(hours=APPROVAL_MAX_TTL_HOURS):
+        raise ApprovalError("invalid transition approval lifetime")
+    if expires <= _now() and not record.get("intent") and not allow_expired:
+        raise ApprovalError("transition approval expired")
+    intent = record.get("intent")
+    if intent is not None and (not isinstance(intent, str) or not re.fullmatch(r"[0-9a-f]{64}", intent)):
+        raise ApprovalError("malformed transition intent")
+    return record
+
+
+def transition_transaction(scope: dict[str, Any], approval_id: str, operation: Any) -> Any:
+    """Reserve once before publication; uncertain or consumed attempts only reconcile."""
+    target = _transition_target(scope["repo"], scope["pr"], scope["head"], scope["run_comment_id"])
+    with _approval_lock(target):
+        record = _load_transition(target, scope, approval_id)
+        binding = record["binding"]
+        expires = _parse_moment(target, binding["expires"])
+        intent = record["intent"]
+
+        def reserve(identifier: str) -> None:
+            if record.get("used") or expires <= _now():
+                raise ApprovalError("consumed or expired transition may only reconcile an existing marker")
+            if intent is not None and intent != identifier:
+                raise ApprovalError("transition intent changed")
+            record["intent"] = identifier
+            _write_approval(target, record)
+
+        result = operation(binding, reserve)
+        if record.get("intent") is None:
+            raise ApprovalError("transition was not reserved")
+        record["used"] = record.get("used") or _iso(_now())
+        _write_approval(target, record)
+        return result
 
 
 # --- command line -------------------------------------------------------------------
@@ -1334,6 +1766,15 @@ def _emit(value: Any) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
+
+    policy = commands.add_parser("policy", help="read-only protected policy and per-PR restart budgets")
+    policy.add_argument("--repo")
+    policy.add_argument("--pr", type=int, action="append")
+    automatic = commands.add_parser("record-policy-restart", help="record one policy-authorized restart")
+    automatic.add_argument("--repo", required=True)
+    automatic.add_argument("--pr", type=int, required=True)
+    automatic.add_argument("--head", required=True)
+    automatic.add_argument("--scope-decision", choices=("keep",))
 
     validate = commands.add_parser("validate", help="validate a working-tree .activeloom-herd.json")
     validate.add_argument("file", nargs="?", default=REPO_FILE)
@@ -1354,6 +1795,13 @@ def main(argv: list[str] | None = None) -> int:
     add_source(gate)
     gate.add_argument("--base", required=True)
     gate.add_argument("--head", required=True)
+
+    ux = commands.add_parser("ux-paths", help="changed paths matching manual_tests.ux_globs")
+    add_source(ux)
+    ux_from = ux.add_mutually_exclusive_group(required=True)
+    ux_from.add_argument("--head", help="compare with --base (merge base) in the repository")
+    ux_from.add_argument("--paths-file", type=Path, help="one changed path per line, e.g. from gh pr view --json files")
+    ux.add_argument("--base")
 
     user = commands.add_parser("user", help="effective per-user config")
     user.add_argument("--path", type=Path)
@@ -1418,9 +1866,28 @@ def main(argv: list[str] | None = None) -> int:
     approve.add_argument("--deep", action="store_true", help="the restart is a Deep review (trigger 6)")
     approve.add_argument("--scope-decision", choices=("keep", "split"))
 
+    transition = commands.add_parser("approve-transition", help="human-only: approve exact cross-actor abandonment, not a restart")
+    for field in ("repo", "head", "run-id", "from-actor", "to-actor"):
+        transition.add_argument(f"--{field}", required=True)
+    transition.add_argument("--pr", type=int, required=True)
+    transition.add_argument("--run-comment-id", type=int, required=True)
+    transition.add_argument("--ttl-hours", type=int, default=4)
+
     args = parser.parse_args(argv)
     try:
-        if args.command == "validate":
+        if args.command == "approve-transition":
+            if not sys.stdin.isatty():
+                raise UsageError("approve-transition requires the user's interactive terminal; nothing written")
+            expected = f"transition {args.pr} {args.run_comment_id} {args.from_actor} to {args.to_actor} at {args.head}"
+            print(f"Authorize abandonment/ownership transition only for {args.repo}; no restart or coverage is granted. Type '{expected}': ", end="", file=sys.stderr, flush=True)
+            _emit(approve_transition(args.repo, args.pr, args.head, args.run_id, args.run_comment_id,
+                                     args.from_actor, args.to_actor, args.ttl_hours, sys.stdin.readline()))
+            return 0
+        if args.command == "policy":
+            _emit(policy_report(args.repo, args.pr))
+        elif args.command == "record-policy-restart":
+            _emit(record_policy_restart(args.repo, args.pr, args.head, args.scope_decision))
+        elif args.command == "validate":
             path = Path(args.file)
             try:
                 text = path.read_text(encoding="utf-8")
@@ -1434,6 +1901,20 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "gate-fix-paths":
             loaded = read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
             result = classify_paths(loaded["config"]["gate_fix"], changed_paths(args.repo_dir, args.base, args.head))
+            _emit({"source": loaded["source"], **result})
+        elif args.command == "ux-paths":
+            loaded = read_repo(args.repo_dir, args.remote, args.default_branch, not args.no_fetch)
+            if args.paths_file is not None:
+                try:
+                    lines = args.paths_file.read_text(encoding="utf-8").splitlines()
+                except OSError as exc:
+                    raise UsageError(f"cannot read {args.paths_file}: {exc}") from exc
+                ux_changed_paths = [line.strip() for line in lines if line.strip()]
+            elif args.base is None:
+                raise UsageError("--head needs --base")
+            else:
+                ux_changed_paths = changed_paths(args.repo_dir, args.base, args.head)
+            result = ux_paths(loaded["config"]["manual_tests"], ux_changed_paths)
             _emit({"source": loaded["source"], **result})
         elif args.command == "user":
             _emit(read_user(args.path or user_config_path()))

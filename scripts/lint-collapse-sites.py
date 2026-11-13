@@ -2,7 +2,7 @@
 """Check every `collapse_empty_substitutions` key against its template sites.
 
 Ensures opted-in placeholders occur alone on their lines outside literal
-Markdown content (code blocks, raw HTML tags, comments), preventing
+Markdown content (code blocks, raw HTML tags, block-level HTML blocks, comments), preventing
 `sync-engine.py` from deleting lines from literal content in rendered files.
 """
 from __future__ import annotations
@@ -22,6 +22,16 @@ LIST_ITEM_FENCE_PREFIX_RE = re.compile(r"(?:^|[ \t>])(?:[-+*]|\d{1,9}[.)])[ \t]+
 RAW_TAG_EVENT_RE = re.compile(
     r"</(?P<close>pre|script|style|textarea)\s*>|<(?P<open>pre|script|style|textarea)\b",
     re.IGNORECASE,
+)
+# CommonMark HTML block type 6: a block-level tag opens a block that ends at the next blank line.
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
+    "header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|"
+    "param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+HTML_BLOCK_START_RE = re.compile(
+    rf"[ ]{{0,3}}</?(?:{HTML_BLOCK_TAGS})(?:[ \t\r]|/?>|$)", re.IGNORECASE
 )
 HTML_COMMENT_OPEN = "<!--"
 HTML_COMMENT_CLOSE = "-->"
@@ -67,6 +77,7 @@ def _scan_literal_lines(
     in_processing_instruction = False
     in_declaration = False
     in_cdata = False
+    in_html_block = False
     for index, line in enumerate(lines):
         if delimiter is not None:
             literal[index] = True
@@ -115,6 +126,12 @@ def _scan_literal_lines(
                 raw_literal = True
             elif raw_tag is not None and closing is not None and closing.lower() == raw_tag:
                 raw_tag = None
+
+        if not line.strip(" \t\r"):
+            in_html_block = False
+        elif in_html_block or HTML_BLOCK_START_RE.match(line):
+            in_html_block = True
+            raw_literal = True
 
         comment_open = line.rfind(HTML_COMMENT_OPEN)
         comment_close = line.rfind(HTML_COMMENT_CLOSE)

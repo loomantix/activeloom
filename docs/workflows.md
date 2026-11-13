@@ -207,7 +207,7 @@ For the review protocol behind the chain, see your harness's `REVIEW_WORKFLOW.md
 
 `ship-staging` fits only repositories that integrate on a `staging` branch and promote to `main` separately. It ships with the Codex and Gemini harnesses, not Claude.
 
-`ship-staging <PR>` checks that the PR targets `staging`, has every required check passing, and has no requested changes. It then asks you to confirm, marks the PR ready, and merges it with a merge commit. After merging it:
+`ship-staging <PR>` verifies the PR is open and targets `staging`, marks a draft ready, and checks CI and requested changes. Required and available checks must pass or be skipped/neutral; the helper then requires a fresh `MERGEABLE` result with `CLEAN` or `HAS_HOOKS` at the pinned head. Failed, cancelled, pending, missing CI, unreadable state, or a changed head stops shipment. A repository with zero required checks still needs available CI. Local tests-at-head and promotion gates remain required by their respective workflows. It then asks you to confirm and merges with a merge commit. After merging it:
 
 - labels the linked issues `status: on-staging` and removes `dev: agent`, so `issues ready` and `agent-loop` stop offering them;
 - fast-forwards your local staging checkout; and

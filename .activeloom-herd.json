@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
   "integration_branch": "main",
-  "glance": { "auto": true }
+  "glance": { "auto": true },
+  "telemetry": { "store": "issue" }
 }

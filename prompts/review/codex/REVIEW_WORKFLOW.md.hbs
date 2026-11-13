@@ -40,6 +40,8 @@ attestation, and bounded progression. Existing handoff sessions and the separate
 issue-implementation `agent-loop` keep their own contracts. An active legacy run
 is not silently converted to a new plan or granted a fresh budget.
 
+{{> review/chain-entry-point}}
+
 ## PR-First Rule
 
 Open a draft pull request before any structured review cleanup such as
@@ -128,10 +130,13 @@ modes silently in the middle of a round.
   run's pinned settings (recommended: `gemini-3.7-flash-high` at `high`) and pins
   accept-edits mode, unattended permissions, structured output, and the same
   60-minute default / 3600-second hard pass bound;
-  callers cannot supply or override them. It also requires Agy to resolve the
-  current `deepcritique` skill, resolves its real target, and validates a
-  structurally compatible relay surface from a clean, exact-commit companion
-  checkout before review. A consumer may explicitly retain Claude through the
+  callers cannot supply or override them. It also validates a structurally
+  compatible relay surface from a clean, exact-commit checkout of the canonical
+  upstream before review: the runner's own checkout when the runner launches it,
+  otherwise one the launcher builds once at its pin under the repository's Git
+  directory (`--repair-surface` preserves a refused one and rebuilds it). It
+  never uses Agy's skill discovery, which would find the review worktree's own
+  `.agents` copy. A consumer may explicitly retain Claude through the
   tested `run-claude-review.sh` launcher, which resolves its model and effort
   the same way. Agy starts a fresh one-shot by omitting continuation flags, but the
   current CLI has no equivalent of Claude's `--no-session-persistence`; retain
@@ -197,7 +202,8 @@ engine in a fresh terminal.
    existing run is unaffected.
 
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
-   on the same PR requires the current run to be ended and a new, explicit user
+   on the same PR requires the current run to be ended (or explicitly abandoned
+   through the protocol's governed cross-actor transition) and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.
    For an alternating chain, select each pass with `next-pass` as described
    below. With the bundled ledger 1.4, attestation identities
@@ -205,6 +211,13 @@ engine in a fresh terminal.
    1 without colliding with historical rounds. `authorize-pass` reports equal
    `round` and `run_round` values and enforces the two/four-round cap. Preserve
    earlier attestations; do not restart an active run to evade its remaining cap.
+
+   Actor-filtered `none` is not a lifecycle decision. Use the common PR-wide
+   `run-state`/`lifecycle-state` inventory. A foreign run requires an exact
+   user-approved ownership transition, followed by separate restart and scope
+   approvals, a fresh roster and fresh actor-owned coverage. Never forge an
+   old-actor terminal marker or import its attestations. See the ledger protocol's
+   **Cross-actor lifecycle** section.
 
    Before upgrading an in-flight review from an older controller, finalize its
    saved results with its original pinned helper. Never renumber a sealed result.
@@ -332,7 +345,9 @@ It requires ordered participation, a return to the initiating engine, and every
 participant's latest attestation on the current head with no material outcome.
 `finish-run --outcome converged` additionally runs `verify-ledger` and
 `verify-coverage`; neither a green test suite nor coverage alone replaces the
-sequence check. Report `exhausted` at the tier cap and leave the PR draft.
+sequence check. Report `exhausted` at the tier cap and leave the PR draft. On a
+silent PR, every `finish-run` is followed by the protocol's
+[end-of-loop summary](references/local-review-ledger.md#silent-mode).
 Existing unsequenced runs are not silently upgraded: preserve them or obtain
 explicit authorization to end and restart with a sequence.
 
@@ -547,7 +562,7 @@ identities, so their comments are context rather than actor-owned ledger
 evidence, and they do not attest. Coverage counts local engines only — a hosted
 pass does not turn a solo relay into a cross-model one.
 
-Invocation:
+Invocation, only when the user asks for hosted review:
 
 - **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
   loop. It verifies and deduplicates their findings, fixes confirmed issues,
@@ -650,6 +665,13 @@ Lean change that lands after one clean round has had enough review.
 A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
 rather than a licence for another round. Say which, and stop.
+
+A round spent only on integrating the base is neither. When an engine already
+attested the PR's diff against its base clean, and the current diff against the
+current base is byte-identical, that engine runs the round as the convergence
+round instead of stopping. Under agent-loop the runner makes this comparison
+itself and sets `$AGENT_LOOP_REVIEW_DIFF_UNCHANGED=1` when it holds; an engine
+that sees it set runs the convergence round without recomputing the diff.
 
 ### Escalate and de-escalate on evidence
 

@@ -113,6 +113,14 @@ class StubRunner implements GitHubRunner {
 
   runGh(args: string[]): string {
     const cmd = args.join(' ');
+    if (args[0] === 'api' && args[1] === 'user') {
+      return JSON.stringify({ login: this.actor });
+    }
+    if (
+      args.some((arg) => /\/issues\/\d+\/comments\?per_page=100$/.test(arg))
+    ) {
+      return JSON.stringify([[]]);
+    }
     if (cmd.includes('pr view') && cmd.includes('headRefOid')) {
       return this.prHead;
     }
@@ -132,11 +140,7 @@ class StubRunner implements GitHubRunner {
         },
       ]);
     }
-    return '{}';
-  }
-
-  currentActor(): string {
-    return this.actor;
+    throw new Error(`Unexpected stub GitHub operation: ${cmd}`);
   }
 
   gitCompare(_repo: string, before: string): unknown {
@@ -147,6 +151,7 @@ class StubRunner implements GitHubRunner {
 let runner: StubRunner;
 
 beforeEach(() => {
+  resetGitHubRunner();
   runner = new StubRunner();
   setGitHubRunner(runner);
   delete process.env['AGENT_LOOP_REVIEW_ACTOR'];

@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/loomantix/activeloom/manual-tests-plan.schema.json",
+  "title": "Manual test plan",
+  "description": "The engine-neutral plan the manual-tests skill writes. Any front-end renders it and writes results back; plan.py is the gate and owns the merge rules.",
+  "type": "object",
+  "required": [
+    "schema",
+    "repo",
+    "scope",
+    "target",
+    "environment",
+    "heads",
+    "updated_at",
+    "changes",
+    "cases",
+    "promotions"
+  ],
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "env": {
+      "type": ["object", "null"],
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["documented", "not documented"] },
+        "source": { "type": ["string", "null"] },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "result": {
+      "type": ["object", "null"],
+      "description": "The latest submission for this case: the applicable one if any, else the most recent. Notes and references never appear here.",
+      "additionalProperties": false,
+      "required": ["status", "rev", "basis", "tested_head", "recorded_at"],
+      "properties": {
+        "status": { "enum": ["passed", "failed", "blocked", "skipped"] },
+        "rev": { "type": "integer", "minimum": 1 },
+        "basis": { "type": "string" },
+        "tested_head": { "$ref": "#/$defs/sha" },
+        "recorded_at": { "type": "string" }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "activeloom.manual-tests.plan/v1" },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "scope": {
+      "type": "object",
+      "required": ["key", "kind", "prs", "title"],
+      "properties": {
+        "key": { "type": "string", "maxLength": 64 },
+        "kind": { "enum": ["pr", "prs", "integration"] },
+        "prs": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "title": { "type": "string" }
+      }
+    },
+    "target": {
+      "enum": ["local", "integration"],
+      "description": "local: the tester's own stack at the listed heads. integration: the deployed integration environment."
+    },
+    "environment": { "$ref": "#/$defs/env" },
+    "install": { "$ref": "#/$defs/env" },
+    "heads": {
+      "type": "object",
+      "properties": {
+        "integration": {
+          "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }]
+        },
+        "production": {
+          "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }]
+        }
+      }
+    },
+    "review": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pr", "head", "converged"],
+        "properties": {
+          "pr": { "type": "integer" },
+          "head": { "$ref": "#/$defs/sha" },
+          "converged": { "type": "boolean" }
+        }
+      }
+    },
+    "updated_at": { "type": "string" },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ref",
+          "title",
+          "head",
+          "merged",
+          "manual",
+          "reason",
+          "in_scope"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^(pr-[1-9][0-9]*|commit-[0-9a-f]{7})$"
+          },
+          "title": { "$ref": "#/$defs/text" },
+          "head": { "$ref": "#/$defs/sha" },
+          "merged": { "type": "boolean" },
+          "manual": { "type": "boolean" },
+          "reason": {
+            "type": ["string", "null"],
+            "description": "Why no manual test is needed; required when manual is false."
+          },
+          "in_scope": { "type": "boolean" }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "change",
+          "title",
+          "steps",
+          "pass",
+          "on_failure",
+          "platform",
+          "fix",
+          "rev",
+          "fingerprint",
+          "lifecycle",
+          "promotion",
+          "basis",
+          "latest",
+          "attempts",
+          "state",
+          "group"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(pr[1-9][0-9]*|commit-[0-9a-f]{7})-[a-z0-9][a-z0-9-]*$"
+          },
+          "change": { "type": "string" },
+          "title": { "$ref": "#/$defs/text" },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/text" }
+          },
+          "pass": { "$ref": "#/$defs/text" },
+          "on_failure": { "$ref": "#/$defs/text" },
+          "platform": {
+            "enum": ["web", "android", "ios", "desktop", "cli", "api", "any"]
+          },
+          "fix": {
+            "type": ["object", "null"],
+            "required": ["pr", "merged", "head"],
+            "properties": {
+              "pr": { "type": "integer" },
+              "merged": { "type": "boolean" },
+              "head": {
+                "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }]
+              }
+            }
+          },
+          "rev": { "type": "integer", "minimum": 1 },
+          "fingerprint": { "type": "string" },
+          "lifecycle": { "enum": ["active", "retired", "promoted"] },
+          "promotion": {
+            "type": ["integer", "null"],
+            "description": "Index into promotions when lifecycle is promoted."
+          },
+          "basis": {
+            "type": "string",
+            "description": "What a result must have been recorded against to count: the change head, plus +fix:<sha> once a linked fix merges."
+          },
+          "latest": { "$ref": "#/$defs/result" },
+          "attempts": { "type": "integer", "minimum": 0 },
+          "state": {
+            "enum": [
+              "not run",
+              "stale",
+              "passed",
+              "failed",
+              "blocked",
+              "skipped",
+              "fix pending"
+            ]
+          },
+          "group": {
+            "enum": [
+              "todo",
+              "done",
+              "carried",
+              "pending",
+              "retired",
+              "promoted"
+            ]
+          }
+        }
+      }
+    },
+    "promotions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "production_head", "changes"],
+        "properties": {
+          "date": { "type": "string" },
+          "production_head": { "$ref": "#/$defs/sha" },
+          "changes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

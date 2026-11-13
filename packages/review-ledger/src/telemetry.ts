@@ -24,6 +24,7 @@ import {
   assertLiveActor,
   deleteIssueComment,
   getIssueComments,
+  getGitHubRunner,
   getPostedCommentId,
   jsonOutput,
   verifyIssueComment,
@@ -34,6 +35,7 @@ import {
   telemetryStore,
 } from './telemetry-store.js';
 import { parseJsonOrFail } from './io.js';
+import { SilentRunner } from './silent-runner.js';
 import type {
   AggregateTelemetryTokenBucket,
   BuildTelemetryParams,
@@ -835,6 +837,14 @@ export function prCommentSink(target: {
   return commentSink(target);
 }
 
+/** A silent PR keeps its records in its own local ledger, whatever the store. */
+function storeForPr(repo: string, pr: number): 'pr' | 'issue' {
+  const runner = getGitHubRunner();
+  if (runner instanceof SilentRunner && runner.storeFor(repo, pr) !== null)
+    return 'pr';
+  return telemetryStore();
+}
+
 /** Resolve only the selected store; failures never fall back to the PR. */
 export function configuredTelemetrySink(target: {
   repo: string;
@@ -843,7 +853,7 @@ export function configuredTelemetrySink(target: {
 }): TelemetrySink {
   let store: 'pr' | 'issue';
   try {
-    store = telemetryStore();
+    store = storeForPr(target.repo, target.pr);
   } catch (error) {
     return {
       name: 'unresolved',
@@ -874,7 +884,7 @@ export function telemetryRecorded(target: {
   idempotencyKey: string;
 }): boolean {
   const issues =
-    telemetryStore() === 'issue'
+    storeForPr(target.repo, target.pr) === 'issue'
       ? metricsStores(target.repo, 'all').map((store) => store.number)
       : [target.pr];
   const actor = assertActor(target.actor);
@@ -949,7 +959,7 @@ export function enrichTelemetryDuration(params: {
     ) {
       fail('telemetry duration must be a finite non-negative number');
     }
-    const store = telemetryStore();
+    const store = storeForPr(params.repo, params.pr);
     result.sink = store === 'issue' ? 'store-issue' : 'pr-comment';
     const issues =
       store === 'issue'

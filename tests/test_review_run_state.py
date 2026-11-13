@@ -6,9 +6,17 @@ import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+if TYPE_CHECKING:
+    from tests.controller_remote import ControllerRemote
+else:
+    remote_spec = importlib.util.spec_from_file_location("controller_remote", Path(__file__).with_name("controller_remote.py"))
+    assert remote_spec and remote_spec.loader
+    remote_module = importlib.util.module_from_spec(remote_spec)
+    remote_spec.loader.exec_module(remote_module)
+    ControllerRemote = remote_module.ControllerRemote
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
@@ -16,12 +24,13 @@ BASE = "b" * 40
 
 
 @pytest.fixture
-def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def controller(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ModuleType:
     path = ROOT / ".claude/skills/critique/scripts/local-review-handoff.py"
     spec = importlib.util.spec_from_file_location("run_state_controller", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    ControllerRemote(module, monkeypatch, tmp_path)
     return module
 
 
@@ -64,7 +73,7 @@ def state(
     commits: int = 0,
     patchless: list[str] | None = None,
 ) -> dict[str, Any]:
-    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
+    ControllerRemote.for_controller(controller).rows = rows
     monkeypatch.setattr(
         controller,
         "_scope_signals",
@@ -100,6 +109,23 @@ def test_active_run_needs_no_restart(
     assert result["state"] == "active"
     assert result["run_id"] == run["run_id"]
     assert result["restart_required"] is False
+
+
+@pytest.mark.parametrize("ended", [False, True])
+def test_foreign_history_cannot_be_reported_as_actor_none(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], ended: bool,
+) -> None:
+    run = {**run_marker(controller), "user": {"login": "prior-owner"}}
+    rows = [run]
+    if ended:
+        rows.append({**end_marker(run["run_id"], "aborted"), "user": {"login": "prior-owner"}})
+    result = state(controller, monkeypatch, capsys, rows)
+    assert result["state"] == ("foreign-ended" if ended else "foreign-active")
+    assert result["transition_required"] is True
+    assert result["restart_required"] is ended
+    assert result["run_actor"] == "prior-owner"
+    assert result["actor"] == "review-bot"
 
 
 @pytest.mark.parametrize("outcome", ["converged", "exhausted", "aborted"])
