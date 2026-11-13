@@ -225,6 +225,9 @@ def _visudo_is_sudo_rs() -> bool:
 
 def _prove_inclusion(output: str) -> None:
     """Classic visudo lists every included file; visudo-rs reports only the top file."""
+    # sudo-rs reads sudoers-rs instead of sudoers when it exists; only sudoers is proven here.
+    if os.path.lexists(ETC / "sudoers-rs"):
+        raise PolicyError(f"{ETC / 'sudoers-rs'} exists; inclusion can be proven only in {ETC / 'sudoers'}")
     if f"{DROP_IN}: parsed OK" in output.splitlines():
         return
     sudoers = ETC / "sudoers"
@@ -239,7 +242,7 @@ def _prove_inclusion(output: str) -> None:
 
 
 def cleanup_hint() -> str:
-    return f"remove a failed install with: sudo rm -f {DROP_IN} && sudo rm -rf {POLICY.parent}"
+    return f"sudo rm -f {DROP_IN} && sudo rm -rf {POLICY.parent}"
 
 
 def _rollback(staged: Path) -> list[Path]:
@@ -264,7 +267,8 @@ def install() -> None:
     protected(DROP_IN.parent, directory=True)
     protected_program(Path("/usr/bin/python3"))
     if any(os.path.lexists(p) for p in (POLICY.parent, DROP_IN)):
-        raise PolicyError("installation already exists or is partial; inspect it, and " + cleanup_hint())
+        raise PolicyError("installation already exists or is partial; change a complete installation with set."
+                          " Only if inspection shows a failed install, remove it with: " + cleanup_hint())
     POLICY.parent.mkdir(mode=0o755)
     staged = POLICY.parent / "sudoers-check"
     try:
@@ -279,7 +283,7 @@ def install() -> None:
         _atomic(POLICY, (json.dumps(validate(DEFAULT), indent=2) + "\n").encode(), 0o644)
     except BaseException as exc:
         if _rollback(staged):
-            raise PolicyError(f"{exc}; rollback incomplete, " + cleanup_hint()) from exc
+            raise PolicyError(f"{exc}; rollback incomplete, remove the failed install with: " + cleanup_hint()) from exc
         raise
 
 

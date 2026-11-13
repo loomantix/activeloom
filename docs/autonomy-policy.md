@@ -47,8 +47,9 @@ not guess:
 - With no `/etc/activeloom/`, the report is never-installed: manual behavior,
   network unenforced, not launch-blocked. The reason notes the unsearchable
   directory. The installer creates `/etc/activeloom/` before the drop-in and a
-  failed install removes the drop-in before it, so the drop-in alone is not an
-  installation.
+  failed install removes the drop-in before the directory, so on such hosts a
+  drop-in without `/etc/activeloom/` is reported as never installed. Where the
+  drop-in is visible, it alone still counts as a partial installation.
 - With `/etc/activeloom/` present, the report is installed, unprotected and
   launch-blocked, with reason `sudoers drop-in unverifiable`. Automatic
   authority stays disabled on such hosts until the drop-in can be verified.
@@ -65,17 +66,22 @@ Inclusion evidence depends on the `visudo` in use, identified by `visudo -V`:
   sudoers file must carry a top-level `@includedir` or `#includedir` directive
   naming the drop-in's directory. A drop-in reached only through a nested or
   single-file `@include` is refused.
+- sudo-rs reads `/etc/sudoers-rs` instead of `/etc/sudoers` when it exists.
+  Inclusion is proven only in `/etc/sudoers`, so installation is refused while
+  `/etc/sudoers-rs` exists.
 
 Initial values are `full`, no stops, restart budget 2, and `restricted` with an
 empty additional allowlist. Installation refuses to overwrite an existing or
 partial installation. A failed installation removes the drop-in first, then
 everything else it created. A crash can leave protected partial artifacts.
 If drop-in removal fails, rollback stops and retains the policy directory so an
-unprivileged reader still detects the partial installation. The refusal names the
-exact cleanup (`sudo rm -f /etc/sudoers.d/activeloom-policy && sudo rm -rf
-/etc/activeloom`; `/private/etc` on macOS). Run it only after confirming the
-artifacts are a failed install. Partial artifacts are never treated as never
-installed.
+unprivileged reader still detects the partial installation. Both the
+incomplete-rollback error and the existing-installation refusal name the exact
+cleanup (`sudo rm -f /etc/sudoers.d/activeloom-policy && sudo rm -rf
+/etc/activeloom`; `/private/etc` on macOS). A complete installation is changed
+with `set`, not removed; run the cleanup only after confirming the artifacts are
+a failed install. Partial artifacts are never treated as never installed, except
+for a lone drop-in in an unsearchable sudoers directory (above).
 
 For a complete replacement on Linux (use `/private/etc` on macOS):
 

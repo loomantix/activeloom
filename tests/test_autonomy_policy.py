@@ -306,6 +306,33 @@ def test_failed_install_leaves_no_partial_state(installation: Path, monkeypatch:
     assert_nothing_installed(installation)
 
 
+@pytest.mark.parametrize("sudo_rs", [False, True])
+def test_install_refuses_when_sudo_rs_would_read_sudoers_rs(installation: Path, monkeypatch: pytest.MonkeyPatch, sudo_rs: bool) -> None:
+    # sudo-rs prefers /etc/sudoers-rs; a proof over /etc/sudoers says nothing about it.
+    (installation / "sudoers").write_text(f"@includedir {policy.DROP_IN.parent}\n")
+    (installation / "sudoers-rs").write_text("root ALL=(ALL:ALL) ALL\n")
+    fake_installer(monkeypatch, sudo_rs=sudo_rs)
+    with pytest.raises(policy.PolicyError, match="sudoers-rs exists") as refused:
+        policy.install()
+    assert "rollback incomplete" not in str(refused.value)
+    (installation / "sudoers-rs").unlink()
+    assert_nothing_installed(installation)
+
+
+def test_interrupted_install_rolls_back_active_drop_in(installation: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (installation / "sudoers").write_text(f"@includedir {policy.DROP_IN.parent}\n")
+    fake_installer(monkeypatch)
+    def interrupted(path: Path) -> str:
+        if path == policy.ETC / "sudoers":
+            assert policy.DROP_IN.exists()  # the drop-in is already active
+            raise KeyboardInterrupt
+        return f"{path}: parsed OK\n"
+    monkeypatch.setattr(policy, "_syntax", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        policy.install()
+    assert_nothing_installed(installation)
+
+
 @pytest.mark.parametrize("hidden_drop_in", [False, True])
 def test_incomplete_rollback_prints_exact_cleanup(installation: Path, monkeypatch: pytest.MonkeyPatch, hidden_drop_in: bool) -> None:
     (installation / "sudoers").write_text("root ALL=(ALL:ALL) ALL\n")
