@@ -103,6 +103,9 @@ export const PSEUDO_V3_RE =
 export const DISPOSITION_V3_RE =
   /^<!-- local-review-disposition:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 
+export const SEVERITY_V3_RE =
+  /^<!-- local-review-severity:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) from=(?<from>blocking|major|minor|nit) to=(?<to>blocking|major|minor|nit) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
+
 export const ROSTER_V1_MARKER = '<!-- local-review-roster:v1';
 
 export const ROSTER_V1_RE =

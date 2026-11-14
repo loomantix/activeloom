@@ -26,7 +26,7 @@ import { readFileSync as readFileSync6 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.15.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.16.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -74,6 +74,7 @@ var PR_V1_MARKERS = [
 var FINDING_V3_RE = /^<!-- local-review:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var PSEUDO_V3_RE = /^<!-- local-review:v3 engine=(?:claude|gemini|antigravity) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+)(?: outcome=deferred)? -->$/m;
 var DISPOSITION_V3_RE = /^<!-- local-review-disposition:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
+var SEVERITY_V3_RE = /^<!-- local-review-severity:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) from=(?<from>blocking|major|minor|nit) to=(?<to>blocking|major|minor|nit) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var ROSTER_V1_MARKER = "<!-- local-review-roster:v1";
 var ROSTER_V1_RE = /^<!-- local-review-roster:v1 author=(?<author>codex|claude|gemini|antigravity) reviewers=(?<reviewers>none|(?:codex|claude|gemini|antigravity)(?:,(?:codex|claude|gemini|antigravity))?) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var ROSTER_V2_MARKER = "<!-- local-review-roster:v2";
@@ -286,6 +287,35 @@ function buildDispositionBody(params) {
   return { marker, body: `${marker}
 ${params.content}` };
 }
+function isUpwardSeverity(from, to) {
+  const fromIndex = SUPPORTED_SEVERITIES.indexOf(from);
+  const toIndex = SUPPORTED_SEVERITIES.indexOf(to);
+  return fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex;
+}
+function buildSeverityCorrectionBody(params) {
+  if (!SUPPORTED_ENGINES.includes(params.engine)) {
+    fail("engine must be one of: codex, claude, gemini, antigravity");
+  }
+  if (!Number.isSafeInteger(params.round) || params.round < 1) {
+    fail("round must be a positive integer");
+  }
+  if (!Number.isSafeInteger(params.occurrence) || params.occurrence < 1) {
+    fail("occurrence must be a positive integer");
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.from)) {
+    fail("from severity must be one of: blocking, major, minor, nit");
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.to)) {
+    fail("severity must be one of: blocking, major, minor, nit");
+  }
+  if (!isUpwardSeverity(params.from, params.to)) {
+    fail("severity correction must increase severity");
+  }
+  validateContentString(params.content);
+  const marker = `<!-- local-review-severity:v3 engine=${params.engine} round=${params.round} head=${requireSha(params.head, "head")} fingerprint=${requireToken(params.fingerprint, "fingerprint")} occurrence=${params.occurrence} from=${params.from} to=${params.to} content-sha256=${sha256Text(params.content)} -->`;
+  return { marker, body: `${marker}
+${params.content}` };
+}
 function matchProtocol(body, pattern, marker) {
   const matched = matchMarkerLine(body, pattern, marker);
   if (matched === null) {
@@ -378,6 +408,36 @@ function matchDisposition(body) {
     fingerprint: match.groups["fingerprint"],
     occurrence: parseInt(match.groups["occurrence"], 10),
     outcome: match.groups["outcome"],
+    contentSha: match.groups["content_sha"]
+  };
+}
+function matchSeverityCorrection(body) {
+  if (body.includes("<!-- local-review-severity:") && !body.includes("<!-- local-review-severity:v3")) {
+    fail("authenticated <!-- local-review-severity:v3 record is malformed");
+  }
+  const match = matchProtocol(
+    body,
+    SEVERITY_V3_RE,
+    "<!-- local-review-severity:v3"
+  );
+  if (!match || !match.groups) {
+    return null;
+  }
+  const from = match.groups["from"];
+  const to = match.groups["to"];
+  if (!isUpwardSeverity(from, to)) {
+    fail(
+      "authenticated <!-- local-review-severity:v3 record does not increase severity"
+    );
+  }
+  return {
+    engine: match.groups["engine"],
+    round: parseInt(match.groups["round"], 10),
+    head: match.groups["head"],
+    fingerprint: match.groups["fingerprint"],
+    occurrence: parseInt(match.groups["occurrence"], 10),
+    from,
+    to,
     contentSha: match.groups["content_sha"]
   };
 }
@@ -16890,6 +16950,7 @@ function threadProtocolRecords(thread, historicalCommentIds) {
   const actor = currentActor();
   const findingsV3 = [];
   const dispositionsV3 = [];
+  const severitiesV3 = [];
   const findingsV1 = [];
   const dispositionsV1 = [];
   for (let index = 0; index < comments.length; index++) {
@@ -16909,12 +16970,13 @@ function threadProtocolRecords(thread, historicalCommentIds) {
     const pseudo = matchPseudoV3(body);
     const findingV3 = matchFinding(body);
     const dispositionV3 = matchDisposition(body);
+    const severityV3 = matchSeverityCorrection(body);
     if (body.includes("<!-- local-review:v3") && !findingV3 && !pseudo) {
       fail("actor-owned local-review:v3 marker is malformed or unsupported");
     }
     const findingV1 = FINDING_V1_RE.exec(body);
     const dispositionV1 = DISPOSITION_V1_RE.exec(body);
-    if (PROTOCOL_THREAD_MARKER_RE.test(firstLine) && !findingV3 && !dispositionV3 && !findingV1 && !dispositionV1) {
+    if (PROTOCOL_THREAD_MARKER_RE.test(firstLine) && !findingV3 && !dispositionV3 && !severityV3 && !findingV1 && !dispositionV1) {
       fail("actor-owned local-review marker is malformed or unsupported");
     }
     if (findingV3) {
@@ -16922,6 +16984,9 @@ function threadProtocolRecords(thread, historicalCommentIds) {
     }
     if (dispositionV3) {
       dispositionsV3.push([index, dispositionV3]);
+    }
+    if (severityV3) {
+      severitiesV3.push([index, severityV3]);
     }
     const legacyMarker = LEGACY_THREAD_MARKER_RE.test(firstLine);
     if ((body.includes(FINDING_V1) || body.includes(DISPOSITION_V1) || legacyMarker) && !findingV1 && !dispositionV1) {
@@ -16975,7 +17040,47 @@ function threadProtocolRecords(thread, historicalCommentIds) {
       }
     }
   }
-  return { findingsV3, dispositionsV3, findingsV1, dispositionsV1 };
+  applyThreadSeverityCorrections(findingsV3, dispositionsV3, severitiesV3);
+  return {
+    findingsV3,
+    dispositionsV3,
+    severitiesV3,
+    findingsV1,
+    dispositionsV1
+  };
+}
+function applyThreadSeverityCorrections(findingsV3, dispositionsV3, severitiesV3) {
+  for (const [correctionIndex, correction] of severitiesV3) {
+    const matchingFindings = findingsV3.filter(
+      ([findingIndex2, finding2]) => findingIndex2 < correctionIndex && finding2.engine === correction.engine && finding2.round === correction.round && finding2.head === correction.head && finding2.fingerprint === correction.fingerprint && finding2.occurrence === correction.occurrence
+    );
+    if (matchingFindings.length !== 1) {
+      fail(
+        "local-review severity correction does not match an earlier finding in the same thread"
+      );
+    }
+    const [findingIndex, finding] = matchingFindings[0];
+    if (dispositionsV3.some(
+      ([dispIndex, disp]) => dispIndex < correctionIndex && disp.engine === finding.engine && disp.round === finding.round && disp.fingerprint === finding.fingerprint && disp.occurrence === finding.occurrence
+    )) {
+      fail(
+        "local-review severity correction was posted after its finding was disposed"
+      );
+    }
+    if (findingsV3.some(
+      ([nextIndex, nextFinding]) => nextIndex > findingIndex && nextIndex < correctionIndex && nextFinding.fingerprint === finding.fingerprint
+    )) {
+      fail(
+        "local-review severity correction was posted after a later occurrence reopened the finding"
+      );
+    }
+    if (correction.from !== finding.severity || !isUpwardSeverity(finding.severity, correction.to)) {
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
+    }
+    finding.severity = correction.to;
+  }
 }
 function pairDispositions(findings, dispositions) {
   const matched = [];
@@ -17491,14 +17596,65 @@ function fixableFindingSeverity(comments, params, stance) {
   return severity;
 }
 function findingRows(comments, fingerprint) {
-  const rows = [];
-  for (const row of comments) {
-    const match = matchFinding(String(row.body ?? ""));
-    if (match !== null && match.fingerprint === fingerprint) {
-      rows.push({ row, match });
+  const findings = [];
+  const dispositions = [];
+  const corrections = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
+    const body = String(row.body ?? "");
+    const finding = matchFinding(body);
+    const disposition = matchDisposition(body);
+    const correction = matchSeverityCorrection(body);
+    if (finding !== null && finding.fingerprint === fingerprint) {
+      findings.push({ index, row, match: { ...finding } });
+    }
+    if (disposition !== null && disposition.fingerprint === fingerprint) {
+      dispositions.push({ index, row, match: disposition });
+    }
+    if (correction !== null && correction.fingerprint === fingerprint) {
+      corrections.push({ index, row, match: correction });
     }
   }
-  return rows;
+  const rootEntries = findings.filter((entry) => entry.match.occurrence === 1);
+  const rootId = rootEntries.length === 1 ? rootEntries[0].row.databaseId ?? rootEntries[0].row.id : void 0;
+  for (const corr of corrections) {
+    const inReplyTo = corr.row["in_reply_to_id"];
+    if (typeof rootId === "number" && typeof inReplyTo === "number" && inReplyTo !== rootId) {
+      fail(
+        "local-review severity correction does not belong to the finding root thread"
+      );
+    }
+    const matching = findings.filter(
+      (f) => f.index < corr.index && f.match.engine === corr.match.engine && f.match.round === corr.match.round && f.match.head === corr.match.head && f.match.fingerprint === corr.match.fingerprint && f.match.occurrence === corr.match.occurrence
+    );
+    if (matching.length !== 1) {
+      fail(
+        "local-review severity correction does not match an earlier finding in the same thread"
+      );
+    }
+    const target = matching[0];
+    if (dispositions.some(
+      (d) => d.index < corr.index && d.match.engine === target.match.engine && d.match.round === target.match.round && d.match.fingerprint === target.match.fingerprint && d.match.occurrence === target.match.occurrence
+    )) {
+      fail(
+        "local-review severity correction was posted after its finding was disposed"
+      );
+    }
+    if (findings.some(
+      (f) => f.index > target.index && f.index < corr.index && f.match.fingerprint === target.match.fingerprint
+    )) {
+      fail(
+        "local-review severity correction was posted after a later occurrence reopened the finding"
+      );
+    }
+    if (corr.match.from !== target.match.severity || !isUpwardSeverity(target.match.severity, corr.match.to)) {
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
+    }
+    target.match.severity = corr.match.to;
+  }
+  return findings.map(({ row, match }) => ({ row, match }));
 }
 function assertRootComment(rows, commentId) {
   const roots = rows.filter((entry) => entry.match.occurrence === 1);
@@ -17739,6 +17895,155 @@ function dispose(params) {
     verified: true
   };
 }
+function correctSeverity(params) {
+  const content = resolveContent(params);
+  if (content === void 0) {
+    fail("correct-severity requires content or content-file");
+  }
+  const occurrence = params.occurrence ?? 1;
+  if (!Number.isSafeInteger(occurrence) || occurrence < 1) {
+    fail("occurrence must be a positive integer");
+  }
+  if (params.from !== void 0 && !isUpwardSeverity(params.from, params.severity)) {
+    fail("severity correction must increase severity");
+  }
+  const actor = assertLiveActor(assertActor());
+  verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
+  const comments = getReviewComments(params.repo, params.pr);
+  if (rowsHaveHistoricalMarkers(comments)) {
+    verifyHistoricalThreads(params.repo, params.pr);
+  }
+  const resolved = getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  });
+  if (resolved) {
+    fail("cannot correct severity on a resolved review thread");
+  }
+  const rawFindings = [];
+  const rawDispositions = [];
+  const rawCorrections = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
+    const body2 = String(row.body ?? "");
+    const finding = matchFinding(body2);
+    const disposition = matchDisposition(body2);
+    const correction = matchSeverityCorrection(body2);
+    if (finding !== null && finding.fingerprint === params.fingerprint) {
+      rawFindings.push({ index, row, match: { ...finding } });
+    }
+    if (disposition !== null && disposition.fingerprint === params.fingerprint) {
+      rawDispositions.push({ index, row, match: disposition });
+    }
+    if (correction !== null && correction.fingerprint === params.fingerprint) {
+      rawCorrections.push({ index, row, body: body2, match: correction });
+    }
+  }
+  assertRootComment(rawFindings, params.commentId);
+  const targetFindings = rawFindings.filter(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+  );
+  if (targetFindings.length !== 1) {
+    fail(
+      "severity correction does not identify an existing finding occurrence at this head, engine, and round"
+    );
+  }
+  if (rawFindings.some(({ match }) => match.occurrence > occurrence)) {
+    fail("severity correction requires the latest finding occurrence");
+  }
+  if (rawDispositions.some(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.fingerprint === params.fingerprint && match.occurrence === occurrence
+  )) {
+    fail("cannot correct severity of a disposed finding");
+  }
+  const targetCorrections = rawCorrections.filter(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+  );
+  const lastCorrection = targetCorrections.at(-1);
+  let fromSeverity;
+  let marker;
+  let body;
+  if (lastCorrection !== void 0 && lastCorrection.match.to === params.severity && (params.from === void 0 || lastCorrection.match.from === params.from)) {
+    const priorRecords = findingRows(
+      comments.slice(0, lastCorrection.index),
+      params.fingerprint
+    );
+    const priorTarget = priorRecords.find(
+      ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+    );
+    if (!priorTarget || priorTarget.match.severity !== lastCorrection.match.from || rawCorrections.some((corr) => corr.index > lastCorrection.index)) {
+      fail("local-review severity correction conflicts with current finding severity");
+    }
+    fromSeverity = lastCorrection.match.from;
+    const built = buildSeverityCorrectionBody({
+      engine: params.engine,
+      round: params.round,
+      head: params.head,
+      fingerprint: params.fingerprint,
+      occurrence,
+      from: fromSeverity,
+      to: params.severity,
+      content
+    });
+    marker = built.marker;
+    body = built.body;
+    if (lastCorrection.body !== body) {
+      fail(
+        "severity correction identity already exists with conflicting content or severity"
+      );
+    }
+  } else {
+    const records = findingRows(comments, params.fingerprint);
+    const targetRecord = records.find(
+      ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+    );
+    const currentSeverity = targetRecord.match.severity;
+    fromSeverity = params.from ?? currentSeverity;
+    if (fromSeverity !== currentSeverity) {
+      fail(
+        `severity correction from=${fromSeverity} does not match current finding severity ${currentSeverity}`
+      );
+    }
+    const built = buildSeverityCorrectionBody({
+      engine: params.engine,
+      round: params.round,
+      head: params.head,
+      fingerprint: params.fingerprint,
+      occurrence,
+      from: fromSeverity,
+      to: params.severity,
+      content
+    });
+    marker = built.marker;
+    body = built.body;
+  }
+  const { commentId, replayed } = postReviewComment(
+    params.repo,
+    params.pr,
+    params.head,
+    marker,
+    body,
+    { replyTo: params.commentId }
+  );
+  const threadReplayed = setThreadState(
+    params.threadId,
+    false,
+    params.commentId,
+    { repo: params.repo, pr: params.pr }
+  );
+  verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
+  return {
+    comment_id: commentId,
+    from_severity: fromSeverity,
+    severity: params.severity,
+    replayed,
+    thread_replayed: threadReplayed,
+    resolved: false,
+    verified: true
+  };
+}
 function reply(params) {
   const content = resolveContent(params);
   let body;
@@ -17965,31 +18270,80 @@ function reconcile(params) {
   }
   const findingRows2 = [];
   const dispositionRows = [];
-  for (const row of comments) {
+  const severityCorrectionRows = [];
+  const findingEntries = [];
+  const dispositionEntries = [];
+  const correctionEntries = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
     const body = String(row.body ?? "");
     const finding = matchFinding(body);
     const disposition = matchDisposition(body);
+    const correction = matchSeverityCorrection(body);
     if (finding && finding.fingerprint === params.fingerprint) {
-      findingRows2.push({ id: row.databaseId ?? row.id, ...finding });
+      const rowObj = {
+        id: row.databaseId ?? row.id,
+        ...finding
+      };
+      findingRows2.push(rowObj);
+      findingEntries.push({ index, rowObj, match: { ...finding } });
     }
     if (disposition && disposition.fingerprint === params.fingerprint) {
       dispositionRows.push({ id: row.databaseId ?? row.id, ...disposition });
+      dispositionEntries.push({ index, match: disposition });
+    }
+    if (correction && correction.fingerprint === params.fingerprint) {
+      severityCorrectionRows.push({
+        id: row.databaseId ?? row.id,
+        ...correction
+      });
+      correctionEntries.push({
+        index,
+        inReplyTo: row["in_reply_to_id"],
+        match: correction
+      });
     }
   }
   const occurrences = findingRows2.map((row) => row["occurrence"]).sort((a, b) => a - b);
   const sequenceValid = occurrences.every((val, idx) => val === idx + 1);
+  const rootIds = findingRows2.filter((row) => row["occurrence"] === 1).map((row) => row["id"]).filter((id) => typeof id === "number");
+  const rootCommentId = rootIds.length === 1 ? rootIds[0] : void 0;
+  let correctionsValid = true;
+  for (const corr of correctionEntries) {
+    if (rootCommentId !== void 0 && typeof corr.inReplyTo === "number" && corr.inReplyTo !== rootCommentId) {
+      correctionsValid = false;
+      break;
+    }
+    const matching = findingEntries.filter(
+      (f) => f.index < corr.index && f.match.engine === corr.match.engine && f.match.round === corr.match.round && f.match.head === corr.match.head && f.match.fingerprint === corr.match.fingerprint && f.match.occurrence === corr.match.occurrence
+    );
+    if (matching.length !== 1) {
+      correctionsValid = false;
+      break;
+    }
+    const target = matching[0];
+    if (dispositionEntries.some(
+      (d) => d.index < corr.index && d.match.engine === target.match.engine && d.match.round === target.match.round && d.match.fingerprint === target.match.fingerprint && d.match.occurrence === target.match.occurrence
+    ) || findingEntries.some(
+      (f) => f.index > target.index && f.index < corr.index && f.match.fingerprint === target.match.fingerprint
+    ) || corr.match.from !== target.match.severity || !isUpwardSeverity(target.match.severity, corr.match.to)) {
+      correctionsValid = false;
+      break;
+    }
+    target.match.severity = corr.match.to;
+    target.rowObj["severity"] = corr.match.to;
+  }
   const identity2 = (row) => `${String(row["engine"])}|${String(row["round"])}|${String(row["fingerprint"])}|${String(row["occurrence"])}`;
   const findingKeys = new Set(findingRows2.map(identity2));
   const dispositionKeys = dispositionRows.map(identity2);
   const disposed = new Set(
     dispositionRows.map((row) => row["occurrence"])
   );
-  const ledgerValid = sequenceValid && new Set(dispositionKeys).size === dispositionKeys.length && dispositionKeys.every((key) => findingKeys.has(key));
+  const ledgerValid = sequenceValid && correctionsValid && new Set(dispositionKeys).size === dispositionKeys.length && dispositionKeys.every((key) => findingKeys.has(key));
   const undisposed = occurrences.filter((occ) => !disposed.has(occ));
   const nextAction = !ledgerValid ? "repair-sequence" : undisposed.length > 0 ? "dispose" : occurrences.length > 0 ? "reopen-occurrence" : "post-finding";
   let threadId = null;
   let threadResolved = null;
-  const rootIds = findingRows2.filter((row) => row["occurrence"] === 1).map((row) => row["id"]).filter((id) => typeof id === "number");
   if (ledgerValid && rootIds.length === 1) {
     const candidate = findRootThread(params.repo, params.pr, rootIds[0]);
     if (candidate === null) {
@@ -18004,6 +18358,7 @@ function reconcile(params) {
   return {
     findings: findingRows2,
     dispositions: dispositionRows,
+    severityCorrections: severityCorrectionRows,
     sequenceValid,
     ledgerValid,
     nextOccurrence: sequenceValid ? occurrences.length + 1 : null,
@@ -21736,12 +22091,16 @@ function renderSummary(store, state) {
     for (const reply2 of replies) {
       const occurrence = matchFinding(reply2.body);
       if (occurrence?.fingerprint === finding.fingerprint && occurrence.occurrence > finding.occurrence) {
-        finding = occurrence;
+        finding = { ...occurrence };
         findingBody = reply2.body;
       }
     }
     let last = null;
     for (const reply2 of replies) {
+      const correction = matchSeverityCorrection(reply2.body);
+      if (last === null && correction?.fingerprint === finding.fingerprint && correction.occurrence === finding.occurrence && correction.engine === finding.engine && correction.round === finding.round && correction.head === finding.head && correction.from === finding.severity && isUpwardSeverity(finding.severity, correction.to)) {
+        finding = { ...finding, severity: correction.to };
+      }
       const disposition = matchDisposition(reply2.body);
       if (disposition?.fingerprint === finding.fingerprint && disposition.occurrence === finding.occurrence && disposition.engine === finding.engine && disposition.round === finding.round)
         last = { ...disposition, body: reply2.body };
@@ -22072,7 +22431,11 @@ function parseCliArgs(argv) {
       case "--occurrence":
         args.occurrence = parsePositiveInteger(parseVal(arg), arg);
         break;
+      case "--from-severity":
+        args.fromSeverity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
+        break;
       case "--severity":
+      case "--to-severity":
         args.severity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
         break;
       case "--lens":
@@ -22196,10 +22559,12 @@ function validateArgs(args) {
   if (args.expectedResultSha256 !== void 0 && !SHA_64_RE.test(args.expectedResultSha256)) {
     fail("--expected-result-sha256 must be a lowercase SHA-256 digest");
   }
-  if (args.contentFile && (args.command === "post-finding" || args.command === "reopen-occurrence" || args.command === "dispose")) {
+  if (args.contentFile && (args.command === "post-finding" || args.command === "reopen-occurrence" || args.command === "correct-severity" || args.command === "dispose")) {
     const required = ["engine", "round", "fingerprint"];
     if (args.command === "post-finding") {
       required.push("severity", "lens");
+    } else if (args.command === "correct-severity") {
+      required.push("severity");
     }
     const missing = required.filter((r) => args[r] === void 0);
     if (missing.length > 0) {
@@ -22358,6 +22723,27 @@ function runCliCommand(argv) {
         occurrence: args.occurrence,
         severity: args.severity,
         lens: args.lens,
+        commentId: args.commentId,
+        threadId: args.threadId,
+        contentFile: args.contentFile
+      });
+      process.stdout.write(JSON.stringify(out) + "\n");
+      break;
+    }
+    case "correct-severity": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || args.commentId === void 0 || !args.threadId || !args.contentFile) {
+        fail("correct-severity missing required parameters");
+      }
+      const out = correctSeverity({
+        repo: args.repo,
+        pr: args.pr,
+        head: args.head,
+        engine: args.engine,
+        round: args.round,
+        fingerprint: args.fingerprint,
+        occurrence: args.occurrence,
+        from: args.fromSeverity,
+        severity: args.severity,
         commentId: args.commentId,
         threadId: args.threadId,
         contentFile: args.contentFile

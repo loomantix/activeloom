@@ -2,7 +2,12 @@ import { fail } from './errors.js';
 import { sha256Text } from './hash.js';
 import { parseJsonOrFail } from './io.js';
 import type { LocalState, LocalStore } from './local-store.js';
-import { matchDisposition, matchFinding } from './protocol.js';
+import {
+  isUpwardSeverity,
+  matchDisposition,
+  matchFinding,
+  matchSeverityCorrection,
+} from './protocol.js';
 import type { DelegateRunner } from './silent-runner.js';
 
 /**
@@ -70,12 +75,25 @@ export function renderSummary(
         occurrence?.fingerprint === finding.fingerprint &&
         occurrence.occurrence > finding.occurrence
       ) {
-        finding = occurrence;
+        finding = { ...occurrence };
         findingBody = reply.body;
       }
     }
     let last: { outcome: string; head: string; body: string } | null = null;
     for (const reply of replies) {
+      const correction = matchSeverityCorrection(reply.body);
+      if (
+        last === null &&
+        correction?.fingerprint === finding.fingerprint &&
+        correction.occurrence === finding.occurrence &&
+        correction.engine === finding.engine &&
+        correction.round === finding.round &&
+        correction.head === finding.head &&
+        correction.from === finding.severity &&
+        isUpwardSeverity(finding.severity, correction.to)
+      ) {
+        finding = { ...finding, severity: correction.to };
+      }
       const disposition = matchDisposition(reply.body);
       if (
         disposition?.fingerprint === finding.fingerprint &&

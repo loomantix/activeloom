@@ -54,6 +54,18 @@ export interface DispositionV3Match {
   contentSha: string;
 }
 
+/** Fields parsed from a v3 severity correction marker. */
+export interface SeverityV3Match {
+  engine: SupportedEngine;
+  round: number;
+  head: string;
+  fingerprint: string;
+  occurrence: number;
+  from: SupportedSeverity;
+  to: SupportedSeverity;
+  contentSha: string;
+}
+
 /** Fields parsed from a legacy v1 finding marker. */
 export interface FindingV1Match {
   engine: SupportedEngine;
@@ -263,6 +275,34 @@ export interface ReopenOccurrenceResult {
   verified: true;
 }
 
+/** Parameters for `correctSeverity`. */
+export interface CorrectSeverityParams {
+  repo: string;
+  pr: number;
+  head: string;
+  engine: SupportedEngine;
+  round: number;
+  fingerprint: string;
+  occurrence?: number | undefined;
+  from?: SupportedSeverity | undefined;
+  severity: SupportedSeverity;
+  commentId: number;
+  threadId: string;
+  contentFile?: string | undefined;
+  content?: string | undefined;
+}
+
+/** Result of `correctSeverity`. */
+export interface CorrectSeverityResult {
+  comment_id: number;
+  from_severity: SupportedSeverity;
+  severity: SupportedSeverity;
+  replayed: boolean;
+  thread_replayed: boolean;
+  resolved: false;
+  verified: true;
+}
+
 /** Parameters for `dispose`. */
 export interface DisposeParams {
   repo: string;
@@ -366,6 +406,7 @@ export interface ReconcileParams {
 export interface ReconcileResult {
   findings: Array<Record<string, unknown>>;
   dispositions: Array<Record<string, unknown>>;
+  severityCorrections?: Array<Record<string, unknown>> | undefined;
   sequenceValid: boolean;
   ledgerValid: boolean;
   nextOccurrence: number | null;

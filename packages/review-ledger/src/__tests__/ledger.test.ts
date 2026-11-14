@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  correctSeverity,
   dispose,
   postFinding,
   preflightAnchor,
@@ -7,6 +8,7 @@ import {
   preflightPublish,
   buildFindingBody,
   buildDispositionBody,
+  buildSeverityCorrectionBody,
   sha256Text,
   reconcile,
   reopenOccurrence,
@@ -795,5 +797,384 @@ describe('ledger operations and workflow verification', () => {
     } finally {
       if (existsSync(resultFile)) unlinkSync(resultFile);
     }
+  });
+
+  it('appends verified upward severity corrections for unresolved findings and unlocks convergence fix gates only for the corrected finding', () => {
+    const postRes1 = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'security',
+      content: 'Initial major finding prose.',
+    });
+    const postRes2 = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-still-major',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'correctness',
+      content: 'Unrelated major finding prose.',
+    });
+
+    mock.threads.push(
+      {
+        id: 'PRRT_escalated',
+        isResolved: false,
+        repository: { nameWithOwner: 'loomantix/platform-oss' },
+        pullRequest: { number: 10 },
+        comments: {
+          nodes: [{ databaseId: postRes1.comment_id }],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+      {
+        id: 'PRRT_still_major',
+        isResolved: false,
+        repository: { nameWithOwner: 'loomantix/platform-oss' },
+        pullRequest: { number: 10 },
+        comments: {
+          nodes: [{ databaseId: postRes2.comment_id }],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    );
+
+    // Before correction, convergence preflight refuses the major finding.
+    expect(() =>
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-escalated occurrence 1 is major/,
+    );
+
+    const originalRootBody = String(mock.reviewComments[0]!['body']);
+    const corrRes = correctSeverity({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      from: 'major',
+      severity: 'blocking',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content:
+        'Verified unauthenticated callers reach the write path and corrupt persistent records.',
+    });
+
+    expect(corrRes).toEqual({
+      comment_id: expect.any(Number),
+      from_severity: 'major',
+      severity: 'blocking',
+      replayed: false,
+      thread_replayed: true,
+      resolved: false,
+      verified: true,
+    });
+    // Original finding marker and comment body are preserved verbatim.
+    expect(mock.reviewComments[0]!['body']).toBe(originalRootBody);
+    expect(mock.threads[0]!.isResolved).toBe(false);
+
+    // Idempotent replay does not duplicate the correction comment.
+    const countAfterFirst = mock.reviewComments.length;
+    const replayRes = correctSeverity({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'blocking',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content:
+        'Verified unauthenticated callers reach the write path and corrupt persistent records.',
+    });
+    expect(replayRes.replayed).toBe(true);
+    expect(replayRes.comment_id).toBe(corrRes.comment_id);
+    expect(mock.reviewComments.length).toBe(countAfterFirst);
+
+    // Now preflightFix and preflightPublish authorize ONLY fp-escalated.
+    expect(
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+      }),
+    ).toEqual({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'blocking',
+      stance: 'convergence',
+      verified: true,
+    });
+
+    expect(
+      preflightPublish({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        findings: [{ fingerprint: 'fp-escalated', occurrence: 1 }],
+      }).findings,
+    ).toEqual([
+      { fingerprint: 'fp-escalated', occurrence: 1, severity: 'blocking' },
+    ]);
+
+    // Uncorrected major finding on the same PR is still refused.
+    expect(() =>
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-still-major',
+        occurrence: 1,
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-still-major occurrence 1 is major/,
+    );
+    expect(() =>
+      preflightPublish({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        findings: [
+          { fingerprint: 'fp-escalated', occurrence: 1 },
+          { fingerprint: 'fp-still-major', occurrence: 1 },
+        ],
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-still-major occurrence 1 is major/,
+    );
+
+    // Reconcile reflects effective blocking severity and the correction record.
+    const reconciled = reconcile({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      fingerprint: 'fp-escalated',
+    });
+    expect(reconciled.ledgerValid).toBe(true);
+    expect(reconciled.nextAction).toBe('dispose');
+    expect(reconciled.findings[0]!['severity']).toBe('blocking');
+    expect(reconciled.severityCorrections).toHaveLength(1);
+
+    // Deferring or dismissing the corrected blocker is rejected.
+    expect(() =>
+      dispose({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+        outcome: 'deferred',
+        commentId: postRes1.comment_id,
+        threadId: 'PRRT_escalated',
+        content: 'Attempted deferral.',
+      }),
+    ).toThrowError('blocking local-review findings must be fixed');
+
+    // Fixing the corrected blocker succeeds.
+    const dispRes = dispose({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      outcome: 'fixed',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content: 'Fixed by enforcing authentication before handler execution.',
+    });
+    expect(dispRes.resolved).toBe(true);
+  });
+
+  it('fails closed on invalid severity correction attempts and reconciles corrupted corrections', () => {
+    const postRes = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'security',
+      content: 'Initial major finding.',
+    });
+    mock.threads.push({
+      id: 'PRRT_guard',
+      isResolved: false,
+      repository: { nameWithOwner: 'loomantix/platform-oss' },
+      pullRequest: { number: 10 },
+      comments: {
+        nodes: [{ databaseId: postRes.comment_id }],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+
+    const baseParams = {
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      commentId: postRes.comment_id,
+      threadId: 'PRRT_guard',
+      content: 'Impact evidence.',
+    };
+
+    // Lowering or same-severity attempts fail closed.
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'minor' }),
+    ).toThrowError('severity correction must increase severity');
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'major' }),
+    ).toThrowError('severity correction must increase severity');
+
+    // Wrong from-severity fails closed.
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        from: 'minor',
+        severity: 'blocking',
+      }),
+    ).toThrowError(
+      'severity correction from=minor does not match current finding severity major',
+    );
+
+    // Wrong engine, round, occurrence, or root commentId fail closed.
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        engine: 'claude',
+        severity: 'blocking',
+      }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        round: 2,
+        severity: 'blocking',
+      }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        occurrence: 2,
+        severity: 'blocking',
+      }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        commentId: 999,
+        severity: 'blocking',
+      }),
+    ).toThrowError('--comment-id is not the root comment of --thread-id');
+
+    // Resolved thread fails closed.
+    mock.threads[0]!.isResolved = true;
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'blocking' }),
+    ).toThrowError('cannot correct severity on a resolved review thread');
+    mock.threads[0]!.isResolved = false;
+
+    // Disposed finding fails closed.
+    dispose({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      outcome: 'deferred',
+      commentId: postRes.comment_id,
+      threadId: 'PRRT_guard',
+      content: 'Deferred to follow-up.',
+    });
+    mock.threads[0]!.isResolved = false;
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'blocking' }),
+    ).toThrowError('cannot correct severity of a disposed finding');
+
+    // A correction injected after disposition causes reconcile to report repair-sequence.
+    const postDispCorrection = buildSeverityCorrectionBody({
+      engine: 'codex',
+      round: 3,
+      head: headSha,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      from: 'major',
+      to: 'blocking',
+      content: 'Late correction after disposition.',
+    });
+    mock.reviewComments.push({
+      id: 888,
+      databaseId: 888,
+      user: { login: mock.actor },
+      author: { login: mock.actor },
+      body: postDispCorrection.body,
+    });
+    const badReconcile = reconcile({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      fingerprint: 'fp-guard',
+    });
+    expect(badReconcile.ledgerValid).toBe(false);
+    expect(badReconcile.nextAction).toBe('repair-sequence');
   });
 });
