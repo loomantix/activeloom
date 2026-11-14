@@ -1749,7 +1749,9 @@ export function correctSeverity(
       priorTarget.match.severity !== lastCorrection.match.from ||
       rawCorrections.some((corr) => corr.index > lastCorrection.index)
     ) {
-      fail('local-review severity correction conflicts with current finding severity');
+      fail(
+        'local-review severity correction conflicts with current finding severity',
+      );
     }
     fromSeverity = lastCorrection.match.from;
     const built = buildSeverityCorrectionBody({

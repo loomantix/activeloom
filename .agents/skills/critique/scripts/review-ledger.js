@@ -17973,7 +17973,9 @@ function correctSeverity(params) {
       ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
     );
     if (!priorTarget || priorTarget.match.severity !== lastCorrection.match.from || rawCorrections.some((corr) => corr.index > lastCorrection.index)) {
-      fail("local-review severity correction conflicts with current finding severity");
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
     }
     fromSeverity = lastCorrection.match.from;
     const built = buildSeverityCorrectionBody({

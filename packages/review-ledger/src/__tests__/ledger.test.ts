@@ -1079,11 +1079,7 @@ describe('ledger operations and workflow verification', () => {
 
     // Wrong from-severity fails closed.
     expect(() =>
-      correctSeverity({
-        ...baseParams,
-        from: 'minor',
-        severity: 'blocking',
-      }),
+      correctSeverity({ ...baseParams, from: 'minor', severity: 'blocking' }),
     ).toThrowError(
       'severity correction from=minor does not match current finding severity major',
     );
@@ -1099,29 +1095,17 @@ describe('ledger operations and workflow verification', () => {
       'severity correction does not identify an existing finding occurrence at this head, engine, and round',
     );
     expect(() =>
-      correctSeverity({
-        ...baseParams,
-        round: 2,
-        severity: 'blocking',
-      }),
+      correctSeverity({ ...baseParams, round: 2, severity: 'blocking' }),
     ).toThrowError(
       'severity correction does not identify an existing finding occurrence at this head, engine, and round',
     );
     expect(() =>
-      correctSeverity({
-        ...baseParams,
-        occurrence: 2,
-        severity: 'blocking',
-      }),
+      correctSeverity({ ...baseParams, occurrence: 2, severity: 'blocking' }),
     ).toThrowError(
       'severity correction does not identify an existing finding occurrence at this head, engine, and round',
     );
     expect(() =>
-      correctSeverity({
-        ...baseParams,
-        commentId: 999,
-        severity: 'blocking',
-      }),
+      correctSeverity({ ...baseParams, commentId: 999, severity: 'blocking' }),
     ).toThrowError('--comment-id is not the root comment of --thread-id');
 
     // Resolved thread fails closed.
