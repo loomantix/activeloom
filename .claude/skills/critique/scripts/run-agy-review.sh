@@ -56,7 +56,7 @@ done
 # Pinned loomantix/activeloom commit whose `.agents` tree is the only
 # relay surface this launcher exposes to the unattended reviewer. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="b0df0a90a3d344796417c26277a07c578f3e5e1b"
+agy_surface_sha="797a94d2fbd6fc7b457e28aaeff87f512169d3d2"
 
 # The companion surface must speak this engine's ledger protocol. Reading the
 # expectation from the vendored version file beside this script keeps the two

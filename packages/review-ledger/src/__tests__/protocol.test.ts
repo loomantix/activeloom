@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDispositionBody,
   buildFindingBody,
+  buildSeverityCorrectionBody,
+  isUpwardSeverity,
   matchDisposition,
   matchFinding,
   matchPseudoV3,
+  matchSeverityCorrection,
   validateContentString,
 } from '../protocol.js';
 import { sha256Text } from '../hash.js';
@@ -140,5 +143,80 @@ describe('protocol serialization and parsing', () => {
     expect(pseudo).not.toBeNull();
     expect(pseudo?.fingerprint).toBe('fp1');
     expect(pseudo?.outcome).toBe('deferred');
+  });
+
+  it('builds and parses upward v3 severity correction body and rejects non-upward or malformed markers', () => {
+    expect(isUpwardSeverity('nit', 'minor')).toBe(true);
+    expect(isUpwardSeverity('minor', 'major')).toBe(true);
+    expect(isUpwardSeverity('major', 'blocking')).toBe(true);
+    expect(isUpwardSeverity('nit', 'blocking')).toBe(true);
+    expect(isUpwardSeverity('major', 'major')).toBe(false);
+    expect(isUpwardSeverity('blocking', 'major')).toBe(false);
+    expect(isUpwardSeverity('major', 'minor')).toBe(false);
+
+    const content =
+      'Independently verified that unauthenticated callers reach the handler and corrupt state.';
+    const { marker, body } = buildSeverityCorrectionBody({
+      engine: 'codex',
+      round: 3,
+      head: headSha,
+      fingerprint: 'auth-bypass',
+      occurrence: 1,
+      from: 'major',
+      to: 'blocking',
+      content,
+    });
+    expect(marker).toContain('from=major to=blocking');
+    expect(marker).toContain(`content-sha256=${sha256Text(content)}`);
+    expect(matchSeverityCorrection(body)).toEqual({
+      engine: 'codex',
+      round: 3,
+      head: headSha,
+      fingerprint: 'auth-bypass',
+      occurrence: 1,
+      from: 'major',
+      to: 'blocking',
+      contentSha: sha256Text(content),
+    });
+
+    expect(() =>
+      buildSeverityCorrectionBody({
+        engine: 'codex',
+        round: 3,
+        head: headSha,
+        fingerprint: 'auth-bypass',
+        occurrence: 1,
+        from: 'blocking',
+        to: 'major',
+        content,
+      }),
+    ).toThrowError('severity correction must increase severity');
+
+    expect(() =>
+      buildSeverityCorrectionBody({
+        engine: 'codex',
+        round: 3,
+        head: headSha,
+        fingerprint: 'auth-bypass',
+        occurrence: 1,
+        from: 'major',
+        to: 'major',
+        content,
+      }),
+    ).toThrowError('severity correction must increase severity');
+
+    const downwardBody =
+      `<!-- local-review-severity:v3 engine=codex round=3 head=${headSha} fingerprint=auth-bypass occurrence=1 from=blocking to=major content-sha256=${sha256Text(content)} -->\n` +
+      content;
+    expect(() => matchSeverityCorrection(downwardBody)).toThrowError(
+      'authenticated <!-- local-review-severity:v3 record does not increase severity',
+    );
+
+    const unsupportedVersionBody =
+      `<!-- local-review-severity:v2 engine=codex round=3 head=${headSha} fingerprint=auth-bypass occurrence=1 from=major to=blocking content-sha256=${sha256Text(content)} -->\n` +
+      content;
+    expect(() => matchSeverityCorrection(unsupportedVersionBody)).toThrowError(
+      'authenticated <!-- local-review-severity:v3 record is malformed',
+    );
   });
 });
