@@ -143,6 +143,9 @@ orchestration belong to the caller. A `split` never records a restart for the
 original PR; the caller persists the partition plan with `split-plan` and
 tracks each replacement with `split-record`, `split-status` and
 `split-supersede` (records under `$XDG_CONFIG_HOME/activeloom/herd-splits/`).
+Every split command requires `--head` with the freshly observed original PR
+head. Recovery and mutations refuse a head different from the recorded plan;
+preserve the record and reconcile scope before continuing after drift.
 
 `start-run --restart --restart-approval-id <id>` stamps
 `local-review-restart:v1` into the hashed run content after scope/plan markers.

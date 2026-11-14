@@ -1886,20 +1886,24 @@ def split_plan(repo: str, pr: int, head: str, plan: Any) -> dict[str, Any]:
         return {"path": str(target), "resumed": False, **split_summary(record)}
 
 
-def _load_split(repo: str, pr: int) -> tuple[Path, dict[str, Any]]:
+def _load_split(repo: str, pr: int, head: str) -> tuple[Path, dict[str, Any]]:
+    if not SHA_RE.fullmatch(head):
+        raise UsageError("--head must be a full 40-character lowercase SHA")
     target = _split_target(repo, pr)
     record = _read_split(target)
     if record is None or record.get("repo") != repo or record.get("pr") != pr:
         raise SplitError(f"no split record for {repo}#{pr}")
+    if record.get("head") != head:
+        raise SplitError(f"original head changed for {repo}#{pr}; stop and reconcile the recorded split before continuing")
     return target, record
 
 
-def split_status(repo: str, pr: int) -> dict[str, Any]:
-    target, record = _load_split(repo, pr)
+def split_status(repo: str, pr: int, head: str) -> dict[str, Any]:
+    target, record = _load_split(repo, pr, head)
     return {"path": str(target), **split_summary(record)}
 
 
-def split_record(repo: str, pr: int, partition: str, branch: str | None, replacement_pr: int | None) -> dict[str, Any]:
+def split_record(repo: str, pr: int, head: str, partition: str, branch: str | None, replacement_pr: int | None) -> dict[str, Any]:
     """Record one partition's created branch or replacement PR; never overwrite a different one."""
     if branch is None and replacement_pr is None:
         raise UsageError("give --branch, --replacement-pr or both")
@@ -1908,7 +1912,7 @@ def split_record(repo: str, pr: int, partition: str, branch: str | None, replace
     if replacement_pr is not None and (replacement_pr < 1 or replacement_pr == pr):
         raise UsageError("--replacement-pr must be a new positive PR number")
     with _approval_lock(_split_target(repo, pr)):
-        target, record = _load_split(repo, pr)
+        target, record = _load_split(repo, pr, head)
         if record["superseded"] is not None:
             raise SplitError("the original PR is already marked superseded")
         entry = next((part for part in record["partitions"] if part["id"] == partition), None)
@@ -1930,10 +1934,10 @@ def split_record(repo: str, pr: int, partition: str, branch: str | None, replace
         return {"path": str(target), **split_summary(record)}
 
 
-def split_supersede(repo: str, pr: int) -> dict[str, Any]:
+def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
     """Mark the original superseded, only once every partition has a replacement PR."""
     with _approval_lock(_split_target(repo, pr)):
-        target, record = _load_split(repo, pr)
+        target, record = _load_split(repo, pr, head)
         summary = split_summary(record)
         if not summary["accounted"]:
             raise SplitError("original scope not accounted for: partitions "
@@ -2062,7 +2066,6 @@ def main(argv: list[str] | None = None) -> int:
     transition.add_argument("--ttl-hours", type=int, default=4)
 
     plan = commands.add_parser("split-plan", help="persist a scope split's partition plan (identical replan resumes)")
-    plan.add_argument("--head", required=True)
     plan.add_argument("--plan-file", required=True, type=Path,
                       help='JSON {"paths": [original PR paths], "partitions": [{"id": slug, "paths": [...]}]}')
     record = commands.add_parser("split-record", help="record a partition's created branch or replacement PR")
@@ -2074,6 +2077,7 @@ def main(argv: list[str] | None = None) -> int:
     for command in (plan, record, status, supersede):
         command.add_argument("--repo", required=True)
         command.add_argument("--pr", required=True, type=int)
+        command.add_argument("--head", required=True, help="freshly observed original PR head; must match the recorded split")
 
     args = parser.parse_args(argv)
     try:
@@ -2096,11 +2100,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise UsageError(f"cannot read {args.plan_file}: {exc}") from exc
             _emit(split_plan(args.repo, args.pr, args.head, plan_value))
         elif args.command == "split-record":
-            _emit(split_record(args.repo, args.pr, args.partition, args.branch, args.replacement_pr))
+            _emit(split_record(args.repo, args.pr, args.head, args.partition, args.branch, args.replacement_pr))
         elif args.command == "split-status":
-            _emit(split_status(args.repo, args.pr))
+            _emit(split_status(args.repo, args.pr, args.head))
         elif args.command == "split-supersede":
-            _emit(split_supersede(args.repo, args.pr))
+            _emit(split_supersede(args.repo, args.pr, args.head))
         elif args.command == "validate":
             path = Path(args.file)
             try:

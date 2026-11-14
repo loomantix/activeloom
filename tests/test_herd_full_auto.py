@@ -114,22 +114,22 @@ def test_plan_that_loses_or_invents_scope_writes_nothing(partitions: list[Any], 
 
 def test_interrupted_split_resumes_without_duplicate_prs() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
-    herd.split_record(REPO, PR, "alpha", "feat/alpha-42", None)
-    herd.split_record(REPO, PR, "alpha", None, 50)
-    herd.split_record(REPO, PR, "beta", "feat/beta-42", None)
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", None)
+    herd.split_record(REPO, PR, HEAD, "alpha", None, 50)
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", None)
     # The orchestrator restarts here: an identical replan resumes the same record.
     resumed = herd.split_plan(REPO, PR, HEAD, plan())
     assert resumed["resumed"] is True
     assert resumed["needs_branch"] == [] and resumed["needs_pr"] == ["beta"]
     # Repeating a step already recorded is idempotent; a different value is refused.
-    herd.split_record(REPO, PR, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
     with pytest.raises(herd.SplitError, match="never duplicate"):
-        herd.split_record(REPO, PR, "alpha", None, 51)
+        herd.split_record(REPO, PR, HEAD, "alpha", None, 51)
     with pytest.raises(herd.SplitError, match="never duplicate"):
-        herd.split_record(REPO, PR, "beta", "feat/beta-again", None)
+        herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-again", None)
     with pytest.raises(herd.SplitError, match="another partition"):
-        herd.split_record(REPO, PR, "beta", None, 50)
-    assert herd.split_status(REPO, PR)["partitions"][1]["replacement_pr"] is None
+        herd.split_record(REPO, PR, HEAD, "beta", None, 50)
+    assert herd.split_status(REPO, PR, HEAD)["partitions"][1]["replacement_pr"] is None
 
 
 def test_a_different_plan_for_the_same_pr_is_refused() -> None:
@@ -147,14 +147,14 @@ def test_a_different_plan_for_the_same_pr_is_refused() -> None:
 def test_replacement_pr_needs_its_branch_first() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     with pytest.raises(herd.SplitError, match="branch before"):
-        herd.split_record(REPO, PR, "alpha", None, 50)
+        herd.split_record(REPO, PR, HEAD, "alpha", None, 50)
     with pytest.raises(herd.UsageError):
-        herd.split_record(REPO, PR, "alpha", "feat/a", PR)
+        herd.split_record(REPO, PR, HEAD, "alpha", "feat/a", PR)
 
 
 def test_a_replacement_partition_is_never_split_again() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
-    herd.split_record(REPO, PR, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
     with pytest.raises(herd.SplitError, match="never split it again"):
         herd.split_plan(REPO, 50, "b" * 40, plan())
     assert not herd._split_target(REPO, 50).exists()
@@ -162,37 +162,60 @@ def test_a_replacement_partition_is_never_split_again() -> None:
 
 def test_original_is_superseded_only_after_all_scope_is_accounted() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
-    herd.split_record(REPO, PR, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
     with pytest.raises(herd.SplitError, match="partitions beta have no replacement PR"):
-        herd.split_supersede(REPO, PR)
-    assert herd.split_status(REPO, PR)["superseded"] is None
-    herd.split_record(REPO, PR, "beta", "feat/beta-42", 51)
-    done = herd.split_supersede(REPO, PR)
+        herd.split_supersede(REPO, PR, HEAD)
+    assert herd.split_status(REPO, PR, HEAD)["superseded"] is None
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
+    done = herd.split_supersede(REPO, PR, HEAD)
     assert done["accounted"] is True and done["superseded"]
-    assert herd.split_supersede(REPO, PR)["superseded"] == done["superseded"]
+    assert herd.split_supersede(REPO, PR, HEAD)["superseded"] == done["superseded"]
     with pytest.raises(herd.SplitError, match="already marked superseded"):
-        herd.split_record(REPO, PR, "beta", "feat/beta-42", 52)
+        herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 52)
 
 
 def test_unsafe_split_record_is_refused() -> None:
     result = herd.split_plan(REPO, PR, HEAD, plan())
     os.chmod(result["path"], 0o666)
     with pytest.raises(herd.SplitError, match="owned and writable only"):
-        herd.split_status(REPO, PR)
+        herd.split_status(REPO, PR, HEAD)
+
+
+@pytest.mark.parametrize("operation", ["status", "record", "supersede"])
+def test_original_head_drift_refuses_recovery_without_changing_the_plan(operation: str) -> None:
+    result = herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
+    path = Path(result["path"])
+    before = path.read_bytes()
+    changed_head = "b" * 40
+    with pytest.raises(herd.SplitError, match="original head changed"):
+        if operation == "record":
+            herd.split_record(REPO, PR, changed_head, "alpha", "feat/alpha-42", 50)
+        elif operation == "supersede":
+            herd.split_supersede(REPO, PR, changed_head)
+        else:
+            herd.split_status(REPO, PR, changed_head)
+    assert path.read_bytes() == before
+    assert herd.split_status(REPO, PR, HEAD)["superseded"] is None
 
 
 def test_cli_reports_refusals_with_exit_5(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     plan_file = tmp_path / "plan.json"
     plan_file.write_text(json.dumps(plan()))
-    base = ["--repo", REPO, "--pr", str(PR)]
+    base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
     assert herd.main(["split-status", *base]) == 5
     assert "no split record" in capsys.readouterr().err
-    assert herd.main(["split-plan", *base, "--head", HEAD, "--plan-file", str(plan_file)]) == 0
+    assert herd.main(["split-plan", *base, "--plan-file", str(plan_file)]) == 0
     assert json.loads(capsys.readouterr().out)["needs_pr"] == ["alpha", "beta"]
     assert herd.main(["split-record", *base, "--partition", "alpha", "--branch", "feat/a", "--replacement-pr", "50"]) == 0
     capsys.readouterr()
     assert herd.main(["split-supersede", *base]) == 5
     assert "not accounted for" in capsys.readouterr().err
+    for command in ("split-status", "split-record", "split-supersede"):
+        extra = ["--partition", "alpha", "--branch", "feat/a"] if command == "split-record" else []
+        assert herd.main([command, "--repo", REPO, "--pr", str(PR), "--head", "b" * 40, *extra]) == 5
+        assert "original head changed" in capsys.readouterr().err
 
 
 # --- policy restart guards -----------------------------------------------------------
@@ -286,6 +309,10 @@ def test_horch_policy_restart_split_and_relay(root: str) -> None:
     assert "never rewrite its branch or history" in split
     for command in ("split-status", "split-plan", "split-record", "split-supersede"):
         assert command in split, command
+    assert "pass it as `--head <head>`" in split
+    assert "recheck before each dispatch" in split.lower()
+    assert "stop and alert for scope reconciliation" in split
+    assert "record's immutable `head`" in split
     assert "Never open a second PR for a partition" in split
     assert "its own first run" in split
     assert "Never mark it superseded earlier" in split

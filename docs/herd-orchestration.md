@@ -492,6 +492,11 @@ without asking you:
   record without opening a second PR for any partition, and a replacement
   partition is never split again. A standalone `hreview` records the plan and
   stops with a `SPLIT PLANNED` block pointing at `horch`.
+  Every split command takes `--head` with the freshly observed original PR
+  head. Before dispatch, adoption, recording or superseding, a mismatch with
+  the persisted head stops recovery for scope reconciliation. Builds use the
+  record's immutable head and paths; the existing record and replacements stay
+  intact when the original PR changes.
 - **Spent budget.** An `AUTOMATIC RESTART BUDGET SPENT` alert names the PR,
   `n/n` used, the `approve-restart` command, and that `horch` prints the
   protected `set --restart-budget` command for you to run on request.
