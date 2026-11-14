@@ -327,12 +327,15 @@ def capture_proof() -> str | None:
     sudoers = ETC / "sudoers"
     entries = sorted(os.listdir(DROP_IN.parent))
     fingerprint = _fingerprint(entries)
-    include = re.compile(r"[ \t]*[@#]include(?:dir)?[ \t]")
+    # visudo-rs needs no blank after the keyword (`@include"/x"`) and never
+    # continues a comment, so match the bare keyword on every physical line:
+    # a keyword cannot span a continuation, and a stray match fails closed.
+    include = re.compile(r"[ \t]*[@#]include")
     top = re.compile(rf"[ \t]*[@#]includedir[ \t]+{re.escape(str(DROP_IN.parent))}/?[ \t]*")
     # Only the proven top-level includedir may pull in rules; anything else
     # could change outside the fingerprint.
     for path in (sudoers, *(DROP_IN.parent / e for e in entries)):
-        for line in path.read_text().replace("\\\n", "").splitlines():
+        for line in path.read_text().splitlines():
             if include.match(line) and not (path == sudoers and top.fullmatch(line)):
                 return f"{path} includes other sudoers files; sudo-rs permission proof not recorded"
     listing = _run([str(SUDO), "-n", "-l", "-U", user, str(SETTER), "--check"])

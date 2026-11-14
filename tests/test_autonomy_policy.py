@@ -164,8 +164,10 @@ def test_protected_paths_reject_unsafe_components(monkeypatch: pytest.MonkeyPatc
     ((0, "exact", ""), (1, "", "sudo: Sorry, user fixture may not run /etc/activeloom/activeloom-policy on host."), False),
     ((0, "exact", ""), (1, "", "sudo: A terminal is required to authenticate"), False),
 ])
-def test_authentication_requires_positive_permission_and_exact_diagnostic(monkeypatch: pytest.MonkeyPatch, listing: Any, probe: Any, expected: bool) -> None:
+def test_authentication_requires_positive_permission_and_exact_diagnostic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listing: Any, probe: Any, expected: bool) -> None:
     monkeypatch.setattr(policy, "protected", lambda *a, **kw: None)
+    # A sudo-rs listing refusal defers to the proof; never read the host's real one.
+    monkeypatch.setattr(policy, "PROOF", tmp_path / "missing-proof.json")
     results = [listing, probe, (0, "User fixture may run the following commands on host:\n    (ALL : ALL) ALL\n", "")]
     def run(argv: list[str]) -> Any:
         status, out, err = results.pop(0)
@@ -748,12 +750,15 @@ def test_classic_sudo_records_no_proof_and_ignores_one(sudo_rs_host: dict[str, A
 
 
 @pytest.mark.parametrize("directive", ["@include", "#include", "@includedir", "#includedir"])
+@pytest.mark.parametrize("spelling", ["{k}\\\n /etc/outside", "{k}\\\n/etc/outside", "{k}/etc/outside",
+                                      '{k}"/etc/outside"', "# note \\\n{k} /etc/outside"])
 @pytest.mark.parametrize("source", ["sudoers", "sudoers.d/other"])
-def test_sudo_rs_capture_refuses_continued_includes(sudo_rs_host: dict[str, Any], directive: str, source: str) -> None:
+def test_sudo_rs_capture_refuses_continued_includes(sudo_rs_host: dict[str, Any], directive: str, spelling: str, source: str) -> None:
+    # visudo-rs 0.2.13 follows each spelling; a continued comment does not hide the next line.
     assert policy.capture_proof() is None
     path = policy.ETC / source
     original = path.read_text() if path.exists() else ""
-    path.write_text(original + directive + "\\\n /etc/outside-rules\n")
+    path.write_text(original + spelling.format(k=directive) + "\n")
     assert "includes other sudoers files" in (policy.capture_proof() or "")
     assert not policy.PROOF.exists()
     assert not policy.authentication_status()[0]
