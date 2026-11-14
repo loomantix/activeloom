@@ -264,7 +264,8 @@ runs the same controller against the same markers. Its commands are `start-run`,
 (latest run state, restart and scope-decision requirements). It implements neither `status` nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
-`start-run --restart` requires fresh explicit user authorization and starts
+`start-run --restart` requires fresh explicit restart authorization (the
+user's own words, a restart approval the user recorded, or in a herd chain, a policy-sourced restart record from a protected full-auto autonomy policy, claimed through `start-run --restart-approval-id`) and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
 
 Lifecycle inventory is PR-wide, while evidence stays actor-owned. A foreign active

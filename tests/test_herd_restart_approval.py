@@ -161,7 +161,8 @@ def test_skills_start_transaction_but_never_write_an_approval(root: str) -> None
     assert ended.index("check-restart") < ended.index("do not claim it") < ended.index("--restart-approval-id")
     assert "instead of calling `claim-restart` separately" in ended
     assert "user restart approval <id>, recorded <created>" in ended
-    assert "Never run `approve-restart` or write a record" in ended
+    assert "Never run `approve-restart` or write a user-approval record" in ended
+    assert "The only record an agent creates is a policy-sourced one" in ended
     assert "approve-restart --repo <repo> --pr <n> --head <full head sha>" in ended
     assert "A pre-publication validation failure leaves the approval available" in ended
     assert "resume the identical saved command and authorization file" in ended

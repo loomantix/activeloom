@@ -466,7 +466,8 @@ runs the same controller against the same markers. Its commands are `start-run`,
 (latest run state, restart and scope-decision requirements). It implements neither `status` nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
-`start-run --restart` requires fresh explicit user authorization and starts
+`start-run --restart` requires fresh explicit restart authorization (the
+user's own words, a restart approval the user recorded, or in a herd chain, a policy-sourced restart record from a protected full-auto autonomy policy, claimed through `start-run --restart-approval-id`) and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
 
 Lifecycle inventory is PR-wide, while evidence stays actor-owned. A foreign active
@@ -568,7 +569,8 @@ and otherwise refuses. Never read the round to run from a replayed `start-run` â
 its `first_round` is always `1`; count this engine's pass markers after the run
 marker instead. An ended run requires the fresh restart authorization described
 under [The run controller](#the-run-controller), and that means a user statement
-naming the restart: neither a new session nor a repeated request to run the
+naming the restart, a restart approval the user recorded, or in a herd chain, a policy-sourced restart record from a protected full-auto autonomy policy, claimed through `start-run --restart-approval-id`:
+neither a new session, a peer's request nor a repeated request to run the
 chain is one.
 
 A one-pass reviewer invoked by a launcher or wrapper inherits the authorized
