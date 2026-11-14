@@ -738,6 +738,43 @@ def test_classic_sudo_records_no_proof_and_ignores_one(sudo_rs_host: dict[str, A
     assert policy.authentication_status()[0] is False
 
 
+@pytest.mark.parametrize("name", ["sudoers", "passwd", "group", "sudoers.d/linked-rule"])
+def test_sudo_rs_proof_refuses_linked_inputs(sudo_rs_host: dict[str, Any], name: str) -> None:
+    path = policy.ETC / name
+    if not path.exists():
+        path.write_text("fixture ALL=(ALL:ALL) ALL\n")
+    target = policy.ETC.parent / "linked-target"
+    path.rename(target)
+    path.symlink_to(target)
+    assert "regular file" in (policy._record_proof() or "")
+    assert not policy.PROOF.exists()
+    assert not policy.authentication_status()[0]
+
+
+def test_sudo_rs_new_entry_invalidates_proof_with_unchanged_metadata(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    assert policy.capture_proof() is None
+    fingerprint = json.loads(policy.PROOF.read_text())["fingerprint"]
+    monkeypatch.setattr(policy, "_fingerprint", lambda entries: fingerprint)
+    (policy.DROP_IN.parent / "zz-passwordless").write_text("fixture ALL=(ALL) NOPASSWD: ALL\n")
+    assert policy.authentication_status()[0] is False
+
+
+def test_sudo_rs_reader_refuses_legacy_proof_of_link(sudo_rs_host: dict[str, Any]) -> None:
+    assert policy.capture_proof() is None
+    proof = json.loads(policy.PROOF.read_text())
+    path = policy.ETC / "group"
+    target = policy.ETC.parent / "group-target"
+    path.rename(target)
+    path.symlink_to(target)
+    # Model a proof captured by the previous reader, which fingerprinted the link.
+    info = path.lstat()
+    proof["fingerprint"][str(path)] = [info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size,
+                                       info.st_mtime_ns, info.st_ctime_ns]
+    policy.PROOF.write_text(json.dumps(proof))
+    target.write_text("sudo:x:27:\n")
+    assert policy.authentication_status()[0] is False
+
+
 def test_proof_failure_does_not_undo_install(installation: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (installation / "sudoers").write_text(f"@includedir {policy.DROP_IN.parent}\n")
     fake_installer(monkeypatch, sudo_rs=True)

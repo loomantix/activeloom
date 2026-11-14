@@ -136,7 +136,12 @@ include directive other than the top-level sudoers.d `includedir` is present. Th
 proof is bound to the invoking uid, the policy and setter SHA-256, and the `lstat`
 identity of the sudo binary, `/etc/sudoers`, the sudoers.d directory and each
 entry in it, `/etc/passwd` and `/etc/group`. The reader accepts it only when all
-of those still match. Any change, harmless or not, disables authority until the
+of those still match. These permission inputs must be regular files and the
+sudoers.d path must be a directory; symlinks are refused at capture and verification
+because changes to their targets would escape an `lstat` fingerprint.
+The reader also compares the live sudoers.d entry names with the recorded list,
+so new entries invalidate the proof even when directory metadata is unchanged.
+Any change, harmless or not, disables authority until the
 user re-runs `set` through sudo. Rules or group membership from non-file sources
 (for example LDAP) are outside the fingerprint. A failed capture keeps the install
 or `set`, removes any old proof, and prints a warning. Classic sudo never records

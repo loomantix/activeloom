@@ -127,6 +127,11 @@ def _fingerprint(entries: list[str]) -> dict[str, list[int]]:
     out = {}
     for path in paths:
         info = path.lstat()
+        if path == DROP_IN.parent:
+            if not stat.S_ISDIR(info.st_mode):
+                raise PolicyError(f"{path}: permission proof requires a directory")
+        elif not stat.S_ISREG(info.st_mode):
+            raise PolicyError(f"{path}: permission proof requires a regular file")
         out[str(path)] = [info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size,
                           info.st_mtime_ns, info.st_ctime_ns]
     return out
@@ -146,6 +151,7 @@ def _proof_status() -> tuple[bool, str]:
                 or proof.get("policy_sha256") != _sha256(POLICY) or proof.get("setter_sha256") != _sha256(SETTER)
                 or not isinstance(proof.get("entries"), list)
                 or any(not isinstance(e, str) or "/" in e or e in ("", ".", "..") for e in proof["entries"])
+                or proof["entries"] != sorted(os.listdir(DROP_IN.parent))
                 or proof.get("fingerprint") != _fingerprint(proof["entries"])):
             return False, stale
     except (OSError, ValueError):
@@ -316,6 +322,7 @@ def capture_proof() -> str | None:
     protected_program(SUDO)
     sudoers = ETC / "sudoers"
     entries = sorted(os.listdir(DROP_IN.parent))
+    fingerprint = _fingerprint(entries)
     include = re.compile(r"[ \t]*[@#]include(?:dir)?[ \t]")
     top = re.compile(rf"[ \t]*[@#]includedir[ \t]+{re.escape(str(DROP_IN.parent))}/?[ \t]*")
     # Only the proven top-level includedir may pull in rules; anything else
@@ -324,7 +331,6 @@ def capture_proof() -> str | None:
         for line in path.read_text().splitlines():
             if include.match(line) and not (path == sudoers and top.fullmatch(line)):
                 return f"{path} includes other sudoers files; sudo-rs permission proof not recorded"
-    fingerprint = _fingerprint(entries)
     listing = _run([str(SUDO), "-n", "-l", "-U", user, str(SETTER), "--check"])
     if listing.returncode or listing.stderr or listing.stdout.strip() != f"{SETTER} --check":
         return "setter not permitted for the invoking user; sudo-rs permission proof not recorded"
