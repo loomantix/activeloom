@@ -506,8 +506,9 @@ without asking you:
 - **Routine recovery.** `horch` also accepts a session's supported
   recommendation within the task's authorized scope, makes routine in-scope
   prerequisite corrections (stale workflow metadata, a missing prerequisite,
-  or a blocking label whose decision the authenticated owner recorded as
-  resolved, never a hold or review-gate label), and retries transient
+  or a blocking label whose decision you stated as resolved in a session tab
+  or the instruction of record, never from a GitHub comment and never a hold
+  or review-gate label), and retries transient
   failures, across the review, grill, refinement, build and promotion sessions
   it runs. Each correction and its reason are logged.
 - **Spent budget.** An `AUTOMATIC RESTART BUDGET SPENT` alert names the PR,

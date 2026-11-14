@@ -231,6 +231,36 @@ def test_a_split_pr_never_gets_a_policy_restart(authority: Any) -> None:
     assert not herd._approval_target(REPO, PR, HEAD).exists()
 
 
+def test_a_split_after_minting_still_blocks_the_policy_restart(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    record = herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    herd.split_plan(REPO, PR, HEAD, plan())
+    with pytest.raises(herd.ApprovalError, match="scope split record"):
+        herd.restart_transaction(REPO, PR, HEAD, record["id"], "f" * 64, lambda r, reserve: reserve("e" * 64))
+    assert json.loads(herd._approval_target(REPO, PR, HEAD).read_text()).get("intent") is None
+
+
+def test_a_dangling_split_link_blocks_the_policy_restart(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    target = herd._split_target(REPO, PR)
+    target.parent.mkdir(parents=True, mode=0o700)
+    target.symlink_to(target.parent / "missing.json")
+    with pytest.raises(herd.ApprovalError, match="scope split record"):
+        herd.record_policy_restart(REPO, PR, HEAD, "keep")
+
+
+def test_a_record_naming_another_pr_is_never_no_record(config_home: Path) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    target = herd._split_target(REPO, PR)
+    record = json.loads(target.read_text())
+    copy = target.with_name("pr-43.json")
+    copy.write_text(json.dumps(record))
+    copy.chmod(0o600)
+    with pytest.raises(herd.SplitError, match="not acme/widgets#43") as mismatch:
+        herd.split_status(REPO, 43, HEAD)
+    assert mismatch.value.reason == "refused"
+
+
 def test_replacement_pr_needs_its_branch_first() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     with pytest.raises(herd.SplitError, match="branch before"):
@@ -469,13 +499,19 @@ def test_split_dispatch_and_resume_never_overlap(root: str) -> None:
         assert reason in split, reason
     assert "treat every other exit 5 as a block" in split
     assert "only the user removes or replaces that record" in split
+    assert "--paginate repos/$repo/pulls/<n>/files" in split and "previous_filename" in split
+    assert "a split the user chose goes back to the user" in split
+    step = skill(root, "hreview").split("**Policy restart**", 1)[1].split("Log the record `id`", 1)[0]
+    assert "split-handoff" not in step and "previous_filename" in step
+    assert "names the record path and its recorded head" in step
 
 
 @pytest.mark.parametrize("root", ROOTS)
 def test_full_auto_and_relays_stay_inside_owner_authority(root: str) -> None:
     horch = skill(root, "horch")
     full = horch.split("## Full auto", 1)[1].split("## Holding", 1)[0]
-    assert "the authenticated owner actor recorded as resolved" in full
+    assert "the user stated as resolved in their own words" in full
+    assert "neither is any GitHub comment" in full
     assert "never remove a hold or review-gate label" in full
     relay = horch.split("**Relaying an owner decision.**", 1)[1].split("\n", 1)[0]
     hreview = skill(root, "hreview").split("Everything else is the herder's call.", 1)[1].split("\n", 1)[0]
@@ -500,7 +536,10 @@ def test_live_pr_scope_reads_head_and_every_changed_file(monkeypatch: pytest.Mon
     monkeypatch.setattr(herd, "_review_controller", lambda: controller)
     assert REAL_LIVE_PR_SCOPE(REPO, PR) == (HEAD, ["a.py", "b.py", "c.py"])
     assert calls[1][-1] == f"repos/{REPO}/pulls/{PR}/files?per_page=100"
-    for broken in ({**pulls, "changed_files": 4}, {**pulls, "state": "closed"}, {**pulls, "head": {}}):
+    pages[1].append({"filename": "d.py", "status": "renamed", "previous_filename": "old/d.py"})
+    pulls["changed_files"] = 4
+    assert REAL_LIVE_PR_SCOPE(REPO, PR) == (HEAD, ["a.py", "b.py", "c.py", "d.py", "old/d.py"])
+    for broken in ({**pulls, "changed_files": 5}, {**pulls, "state": "closed"}, {**pulls, "head": {}}):
         pulls.clear()
         pulls.update(broken)
         with pytest.raises(herd.SplitError, match="incomplete or closed"):

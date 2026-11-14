@@ -1385,6 +1385,12 @@ def _automatic_restart_gate(repo: str, pr: int, head: str, record: dict[str, Any
         raise ApprovalError("automatic restart denied: restart stop")
     if record is not None and record["policy_sha256"] != policy["policy_sha256"]:
         raise ApprovalError("policy changed since the restart record was created")
+    try:
+        _split_target(repo, pr).lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ApprovalError(f"{repo}#{pr} has a scope split record; resume the split instead of restarting the original")
     inventory = _restart_inventory(repo, pr, head)
     latest, end = inventory["latest"], inventory["end"]
     if inventory["state"] != "ended" or latest is None or end is None:
@@ -1408,8 +1414,6 @@ def record_policy_restart(repo: str, pr: int, head: str, scope_decision: str | N
     target = _approval_target(repo, pr, head)
     if scope_decision not in (None, "keep"):
         raise UsageError("split must finish before starting replacement PR runs")
-    if _split_target(repo, pr).exists():
-        raise ApprovalError(f"{repo}#{pr} has a scope split record; resume the split instead of restarting the original")
     with _approval_lock(target):
         prior = None
         if target.exists():
@@ -1898,10 +1902,14 @@ def _live_pr_scope(repo: str, pr: int) -> tuple[str, list[str]]:
         raise SplitError(f"cannot read {repo}#{pr} from GitHub: {exc}") from exc
     head = (info.get("head") or {}).get("sha") if isinstance(info, dict) else None
     names = [row.get("filename") for row in rows]
+    # A rename's old path is part of the change: some partition must carry its deletion.
+    previous = [row.get("previous_filename") for row in rows
+                if row.get("status") == "renamed" and row.get("previous_filename") is not None]
     if (not isinstance(info, dict) or info.get("state") != "open" or not _is_text(head)
-            or not all(_is_text(name) for name in names) or info.get("changed_files") != len(set(names))):
+            or not all(_is_text(name) for name in names + previous)
+            or info.get("changed_files") != len(set(names))):
         raise SplitError(f"{repo}#{pr}: GitHub returned an incomplete or closed PR")
-    return head, sorted(set(names))
+    return head, sorted(set(names) | set(previous))
 
 
 def _split_lineage(repo: str, pr: int) -> int | None:
@@ -1974,8 +1982,10 @@ def _load_split(repo: str, pr: int, head: str) -> tuple[Path, dict[str, Any]]:
         raise UsageError("--head must be a full 40-character lowercase SHA")
     target = _split_target(repo, pr)
     record = _read_split(target)
-    if record is None or record["repo"] != repo or record["pr"] != pr:
+    if record is None:
         raise SplitError(f"no split record for {repo}#{pr}", "no-record")
+    if record["repo"] != repo or record["pr"] != pr:
+        raise SplitError(f"{target}: records {record['repo']}#{record['pr']}, not {repo}#{pr}; repair or remove it")
     if record["head"] != head:
         raise _head_changed(repo, pr)
     return target, record
