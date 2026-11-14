@@ -42,6 +42,7 @@ def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(policy, "POLICY", etc / "activeloom/policy.json")
     monkeypatch.setattr(policy, "SETTER", etc / "activeloom/activeloom-policy")
     monkeypatch.setattr(policy, "DROP_IN", etc / "sudoers.d/activeloom-policy")
+    monkeypatch.setattr(policy, "PROOF", etc / "activeloom/sudo-rs-proof.json")
     return etc
 
 
@@ -606,3 +607,140 @@ def test_restart_marker_position(prefix: str) -> None:
     scope = "<!-- local-review-scope:v1 behaviour-commits=0 missing-patch-files=0 decision=keep -->\n\n"
     before = {"": "", "owner": owner, "sequence": sequence, "plan": plan, "scope": scope, "all": owner + plan + scope}[prefix]
     assert controller._with_restart_marker(before + "Authorization", "MARKER") == before + "MARKER\n\nAuthorization"
+
+
+# sudo-rs 0.2.13 requires authentication for `-l`; root captures the proof at install/set time.
+RS_AUTH = (1, "", "sudo: interactive authentication is required\n")
+RS_LISTING_OK = (0, "exact", "")
+RS_INVENTORY_OK = (0, "User fixture may run the following commands on host:\n    (ALL : ALL) ALL\n", "")
+
+
+@pytest.fixture
+def sudo_rs_host(installation: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A complete install on a fake sudo-rs host; `calls` records every sudo argv."""
+    write_install()
+    (installation / "sudoers").write_text(f"root ALL=(ALL:ALL) ALL\n@includedir {policy.DROP_IN.parent}\n")
+    (installation / "passwd").write_text("fixture:x:1000:1000::/home/fixture:/bin/sh\n")
+    (installation / "group").write_text("sudo:x:27:fixture\n")
+    sudo = installation / "sudo"
+    sudo.write_text("fake")
+    monkeypatch.setattr(policy, "SUDO", sudo)
+    monkeypatch.setattr(policy, "protected", lambda *a, **kw: None)
+    monkeypatch.setattr(policy, "protected_program", lambda *a, **kw: None)
+    monkeypatch.setattr(policy, "_atomic", lambda path, data, mode: path.write_bytes(data))
+    monkeypatch.setenv("SUDO_USER", "fixture")
+    monkeypatch.setenv("SUDO_UID", str(os.getuid()))
+    host: dict[str, Any] = {"calls": [], "root": {"listing": RS_LISTING_OK, "inventory": RS_INVENTORY_OK},
+                            "user": {"listing": RS_AUTH, "probe": RS_AUTH, "inventory": RS_AUTH}, "visudo": SUDO_RS_VISUDO_V}
+    def run(argv: list[str]) -> Any:
+        host["calls"].append(argv)
+        if argv == [str(policy.VISUDO), "-V"]:
+            return subprocess.CompletedProcess(argv, 0, host["visudo"], "")
+        who = "root" if "-U" in argv else "user"
+        kind = "probe" if "-l" not in argv else "listing" if str(policy.SETTER) in argv else "inventory"
+        status, out, err = host[who][kind]
+        return subprocess.CompletedProcess(argv, status, f"{policy.SETTER} --check\n" if out == "exact" else out, err)
+    monkeypatch.setattr(policy, "_run", run)
+    return host
+
+
+def test_sudo_rs_install_proof_reports_protected(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    assert policy.capture_proof() is None
+    proof = json.loads(policy.PROOF.read_text())
+    assert proof["uid"] == os.getuid() and proof["entries"] == ["activeloom-policy"]
+    assert [str(policy.SUDO), "-n", "-l", "-U", "fixture"] in sudo_rs_host["calls"]
+    assert policy.authentication_status() == (True, "command permitted by root-captured sudo-rs proof; fresh authentication required")
+    # `set` replaces the policy and re-records the proof for the new hash.
+    monkeypatch.setattr(policy.os, "geteuid", lambda: 0)
+    assert policy.main(["set", "--autonomy", "full", "--network", "open"]) == 0
+    assert json.loads(policy.PROOF.read_text())["policy_sha256"] != proof["policy_sha256"]
+    report = policy.report()
+    assert report["protected"] and report["mode"] == "full" and not report["launch_blocked"]
+
+
+@pytest.mark.parametrize("listing,probe,inventory,expected", [
+    # The three sudo-rs responses: probe accepted, listing and inventory defer to the proof.
+    (RS_AUTH, RS_AUTH, RS_AUTH, True),
+    (RS_LISTING_OK, RS_AUTH, RS_AUTH, True),
+    (RS_AUTH, RS_AUTH, RS_INVENTORY_OK, True),
+    # A passwordless probe or a listed passwordless rule still fails closed.
+    (RS_AUTH, (0, "", ""), RS_AUTH, False),
+    (RS_AUTH, RS_AUTH, (0, "User fixture may run the following commands on host:\n    (root) NOPASSWD: /unrelated\n", ""), False),
+    # Only the exact sudo-rs diagnostic defers; classic wording or other failures do not.
+    ((1, "", "sudo: a password is required\n"), RS_AUTH, RS_AUTH, False),
+    (RS_AUTH, RS_AUTH, (1, "", "sudo: a password is required\n"), False),
+    ((1, "x", "sudo: interactive authentication is required\n"), RS_AUTH, RS_AUTH, False),
+    ((2, "", "sudo: interactive authentication is required\n"), RS_AUTH, RS_AUTH, False),
+])
+def test_sudo_rs_responses_with_valid_proof(sudo_rs_host: dict[str, Any], listing: Any, probe: Any, inventory: Any, expected: bool) -> None:
+    assert policy.capture_proof() is None
+    sudo_rs_host["user"] = {"listing": listing, "probe": probe, "inventory": inventory}
+    assert policy.authentication_status()[0] is expected
+
+
+@pytest.mark.parametrize("change", [
+    "missing", "policy", "setter", "sudoers", "new-drop-in", "group", "uid", "corrupt", "bad-entry",
+])
+def test_sudo_rs_stale_or_missing_proof_fails_closed(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    assert policy.capture_proof() is None
+    etc = policy.ETC
+    proof = json.loads(policy.PROOF.read_text())
+    if change == "missing":
+        policy.PROOF.unlink()
+    elif change == "policy":
+        policy.POLICY.write_text(policy.POLICY.read_text() + " ")
+    elif change == "setter":
+        policy.SETTER.write_text("changed")
+    elif change == "sudoers":
+        (etc / "sudoers").write_text((etc / "sudoers").read_text() + "fixture ALL=(ALL) NOPASSWD: ALL\n")
+    elif change == "new-drop-in":
+        (policy.DROP_IN.parent / "zz-passwordless").write_text("fixture ALL=(ALL) NOPASSWD: ALL\n")
+    elif change == "group":
+        (etc / "group").write_text("sudo:x:27:fixture\nwheel:x:10:fixture\n")
+    elif change == "uid":
+        monkeypatch.setattr(policy.os, "getuid", lambda: proof["uid"] + 1)
+    elif change == "corrupt":
+        policy.PROOF.write_text("{")
+    else:
+        proof["entries"] = ["../sudoers"]
+        policy.PROOF.write_text(json.dumps(proof))
+    ok, reason = policy.authentication_status()
+    assert not ok and "proof missing or stale" in reason
+
+
+@pytest.mark.parametrize("case", ["root-nopasswd", "root-not-permitted", "extra-include", "no-sudo-user", "root-user"])
+def test_sudo_rs_capture_refuses_unprovable_state(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    policy.PROOF.write_text("stale")
+    if case == "root-nopasswd":
+        sudo_rs_host["root"]["inventory"] = (0, "User fixture may run the following commands on host:\n    (ALL) NOPASSWD: ALL\n", "")
+    elif case == "root-not-permitted":
+        sudo_rs_host["root"]["listing"] = (1, "", "")
+    elif case == "extra-include":
+        (policy.DROP_IN.parent / "other").write_text("@include /etc/elsewhere\n")
+    elif case == "no-sudo-user":
+        monkeypatch.delenv("SUDO_USER")
+    else:
+        monkeypatch.setenv("SUDO_USER", "root")
+    assert policy.capture_proof()
+    assert not policy.PROOF.exists()
+    assert not policy.authentication_status()[0]
+
+
+def test_classic_sudo_records_no_proof_and_ignores_one(sudo_rs_host: dict[str, Any]) -> None:
+    assert policy.capture_proof() is None  # a proof left from a sudo-rs era
+    sudo_rs_host["visudo"] = CLASSIC_VISUDO_V
+    sudo_rs_host["calls"].clear()
+    assert policy.capture_proof() is None
+    assert sudo_rs_host["calls"] == [[str(policy.VISUDO), "-V"]] and policy.PROOF.exists()
+    # Classic diagnostics never defer to a proof.
+    classic = (1, "", "sudo: a password is required\n")
+    sudo_rs_host["user"] = {"listing": classic, "probe": classic, "inventory": classic}
+    assert policy.authentication_status()[0] is False
+
+
+def test_proof_failure_does_not_undo_install(installation: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (installation / "sudoers").write_text(f"@includedir {policy.DROP_IN.parent}\n")
+    fake_installer(monkeypatch, sudo_rs=True)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    assert "proof not recorded" in (policy.install() or "")
+    assert json.loads(policy.POLICY.read_text()) == policy.DEFAULT and not policy.PROOF.exists()
