@@ -493,10 +493,23 @@ without asking you:
   partition is never split again. A standalone `hreview` records the plan and
   stops with a `SPLIT PLANNED` block pointing at `horch`.
   Every split command takes `--head` with the freshly observed original PR
+  head. A new plan must list exactly the open PR's changed files at its live
   head. Before dispatch, adoption, recording or superseding, a mismatch with
-  the persisted head stops recovery for scope reconciliation. Builds use the
-  record's immutable head and paths; the existing record and replacements stay
-  intact when the original PR changes.
+  the persisted head stops recovery for scope reconciliation, which is yours:
+  the alert names the record under `$XDG_CONFIG_HOME/activeloom/herd-splits/`
+  (default `~/.config`), and
+  only you remove or replace it. Builds use the record's immutable head and
+  paths; the existing record and replacements stay intact when the original
+  PR changes. A PR with a split record is never restarted or re-decided:
+  `record-policy-restart` refuses it, and the sessions resume the split
+  instead. Refusals print `split refused [<reason>]` on stderr (exit 5).
+- **Routine recovery.** `horch` also accepts a session's supported
+  recommendation within the task's authorized scope, makes routine in-scope
+  prerequisite corrections (stale workflow metadata, a missing prerequisite,
+  or a blocking label whose decision the authenticated owner recorded as
+  resolved, never a hold or review-gate label), and retries transient
+  failures, across the review, grill, refinement, build and promotion sessions
+  it runs. Each correction and its reason are logged.
 - **Spent budget.** An `AUTOMATIC RESTART BUDGET SPENT` alert names the PR,
   `n/n` used, the `approve-restart` command, and that `horch` prints the
   protected `set --restart-budget` command for you to run on request.
@@ -507,6 +520,8 @@ restart and falls back to the manual alert with the reason. Full auto never
 merges to production, crosses actors, merges a gate fix, raises round caps or
 skips a human-glance gate. Owner decisions relayed by `horch` name the
 receiver, target, head or plan, decision and expiry; a stale relay is refused.
+A relay is an orchestrator instruction, not owner authority, and never
+carries a restart, scope, publication, finding-disposition or gate decision.
 
 ### Manual approvals
 

@@ -32,12 +32,31 @@ def load() -> ModuleType:
 
 
 herd = load()
+REAL_LIVE_PR_SCOPE = herd._live_pr_scope
 
 
 @pytest.fixture(autouse=True)
 def config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     return tmp_path / "config"
+
+
+LIVE: dict[int, tuple[str, list[str]]] = {}
+
+
+@pytest.fixture(autouse=True)
+def live_pr(monkeypatch: pytest.MonkeyPatch) -> dict[int, tuple[str, list[str]]]:
+    """The GitHub view of each PR that split-plan checks a new plan against."""
+    LIVE.clear()
+    LIVE[PR] = (HEAD, sorted(plan()["paths"]))
+
+    def scope(repo: str, pr: int) -> tuple[str, list[str]]:
+        if pr not in LIVE:
+            raise herd.SplitError(f"cannot read {repo}#{pr} from GitHub")
+        return LIVE[pr]
+
+    monkeypatch.setattr(herd, "_live_pr_scope", scope)
+    return LIVE
 
 
 def plan(**overrides: Any) -> dict[str, Any]:
@@ -133,15 +152,83 @@ def test_interrupted_split_resumes_without_duplicate_prs() -> None:
 
 
 def test_a_different_plan_for_the_same_pr_is_refused() -> None:
-    herd.split_plan(REPO, PR, HEAD, plan())
-    with pytest.raises(herd.SplitError, match="resume it"):
+    path = Path(herd.split_plan(REPO, PR, HEAD, plan())["path"])
+    before = path.read_bytes()
+    with pytest.raises(herd.SplitError, match="original head changed") as moved:
         herd.split_plan(REPO, PR, "b" * 40, plan())
+    assert moved.value.reason == "head-changed"
     other = plan(partitions=[
         {"id": "alpha", "paths": ["src/a.py"]},
         {"id": "beta", "paths": ["src/b.py", "tests/test_a.py", "tests/test_b.py"]},
     ])
-    with pytest.raises(herd.SplitError, match="resume it"):
+    with pytest.raises(herd.SplitError, match="resume the recorded plan") as different:
         herd.split_plan(REPO, PR, HEAD, other)
+    assert different.value.reason == "refused"
+    assert path.read_bytes() == before
+
+
+def test_a_new_plan_must_match_the_live_pr(live_pr: dict[int, tuple[str, list[str]]]) -> None:
+    live_pr[PR] = (HEAD, sorted([*plan()["paths"], "src/c.py"]))
+    with pytest.raises(herd.SplitError, match=r"missing \['src/c.py'\]") as dropped:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert dropped.value.reason == "scope-mismatch"
+    live_pr[PR] = ("b" * 40, sorted(plan()["paths"]))
+    with pytest.raises(herd.SplitError, match="on GitHub") as moved:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert moved.value.reason == "scope-mismatch"
+    del live_pr[PR]
+    with pytest.raises(herd.SplitError, match="from GitHub"):
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_split_head_must_be_an_exact_sha() -> None:
+    with pytest.raises(herd.UsageError):
+        herd.split_plan(REPO, PR, HEAD + "\n", plan())
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_refusals_carry_the_reason_the_skills_route_on() -> None:
+    with pytest.raises(herd.SplitError) as missing:
+        herd.split_status(REPO, PR, HEAD)
+    assert missing.value.reason == "no-record"
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    with pytest.raises(herd.SplitError) as recorded:
+        herd.split_record(REPO, PR, HEAD, "alpha", "feat/other", None)
+    assert recorded.value.reason == "recorded"
+    with pytest.raises(herd.SplitError) as replacement:
+        herd.split_plan(REPO, 50, "b" * 40, plan())
+    assert replacement.value.reason == "replacement"
+
+
+def test_malformed_sibling_record_is_a_refusal_not_a_traceback(config_home: Path) -> None:
+    directory = config_home / "activeloom/herd-splits/acme__widgets"
+    directory.mkdir(parents=True, mode=0o700)
+    sibling = directory / "pr-9.json"
+    sibling.write_text(json.dumps({"version": 1}))
+    sibling.chmod(0o600)
+    with pytest.raises(herd.SplitError, match="malformed split record"):
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_unsafe_split_lock_is_a_split_refusal(config_home: Path, capsys: pytest.CaptureFixture[str],
+                                              tmp_path: Path) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    lock = herd._split_target(REPO, PR).with_suffix(".lock")
+    lock.chmod(0o666)
+    base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
+    assert herd.main(["split-record", *base, "--partition", "alpha", "--branch", "feat/a"]) == 5
+    assert "unsafe lock" in capsys.readouterr().err
+
+
+def test_a_split_pr_never_gets_a_policy_restart(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    herd.split_plan(REPO, PR, HEAD, plan())
+    with pytest.raises(herd.ApprovalError, match="scope split record"):
+        herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    assert not herd._approval_target(REPO, PR, HEAD).exists()
 
 
 def test_replacement_pr_needs_its_branch_first() -> None:
@@ -205,7 +292,7 @@ def test_cli_reports_refusals_with_exit_5(tmp_path: Path, capsys: pytest.Capture
     plan_file.write_text(json.dumps(plan()))
     base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
     assert herd.main(["split-status", *base]) == 5
-    assert "no split record" in capsys.readouterr().err
+    assert "split refused [no-record]: no split record" in capsys.readouterr().err
     assert herd.main(["split-plan", *base, "--plan-file", str(plan_file)]) == 0
     assert json.loads(capsys.readouterr().out)["needs_pr"] == ["alpha", "beta"]
     assert herd.main(["split-record", *base, "--partition", "alpha", "--branch", "feat/a", "--replacement-pr", "50"]) == 0
@@ -215,7 +302,7 @@ def test_cli_reports_refusals_with_exit_5(tmp_path: Path, capsys: pytest.Capture
     for command in ("split-status", "split-record", "split-supersede"):
         extra = ["--partition", "alpha", "--branch", "feat/a"] if command == "split-record" else []
         assert herd.main([command, "--repo", REPO, "--pr", str(PR), "--head", "b" * 40, *extra]) == 5
-        assert "original head changed" in capsys.readouterr().err
+        assert "split refused [head-changed]: original head changed" in capsys.readouterr().err
 
 
 # --- policy restart guards -----------------------------------------------------------
@@ -353,3 +440,68 @@ def test_canonical_restart_authorization_names_the_policy_route(path: str) -> No
     text = " ".join((ROOT / path).read_text().split())
     assert "policy-sourced restart record" in text
     assert "restart approval the user recorded" in text
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_split_record_is_read_before_any_scope_or_restart_decision(root: str) -> None:
+    horch = skill(root, "horch")
+    policy = horch.split("**Review chain**", 1)[1].split("**Policy restart**", 1)[1].split("**None**", 1)[0]
+    assert policy.index("split-status") < policy.index("record-policy-restart")
+    assert policy.index("split-status") < policy.index("assess cause")
+    assert "Only a refusal with reason `[no-record]` continues here" in policy
+    assert "never restart it or decide its scope again" in policy
+    hreview = skill(root, "hreview")
+    ended = hreview.split("**Policy restart**", 1)[1].split("**Otherwise**", 1)[0]
+    assert ended.index("split-status") < ended.index("1. **Scope checkpoint**")
+    assert "Only a refusal with reason `[no-record]` continues here" in ended
+    assert "refuses a PR with a split record" in ended
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_split_dispatch_and_resume_never_overlap(root: str) -> None:
+    split = skill(root, "horch").split("**Scope split**", 2)[2].split("**Build**", 1)[0]
+    dispatch = split.split("2. **Dispatch**", 1)[1].split("3. **Resume**", 1)[0]
+    assert "`needs_branch` only" in dispatch and "`needs_pr`" not in dispatch
+    assert "give that exact name in the build prompt" in dispatch
+    resume = split.split("3. **Resume**", 1)[1].split("4. **Review**", 1)[0]
+    assert "never through Dispatch" in resume and "resume the build on that same branch" in resume
+    for reason in ("[no-record]", "[head-changed]", "[replacement]", "[recorded]", "[scope-mismatch]"):
+        assert reason in split, reason
+    assert "treat every other exit 5 as a block" in split
+    assert "only the user removes or replaces that record" in split
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_full_auto_and_relays_stay_inside_owner_authority(root: str) -> None:
+    horch = skill(root, "horch")
+    full = horch.split("## Full auto", 1)[1].split("## Holding", 1)[0]
+    assert "the authenticated owner actor recorded as resolved" in full
+    assert "never remove a hold or review-gate label" in full
+    relay = horch.split("**Relaying an owner decision.**", 1)[1].split("\n", 1)[0]
+    hreview = skill(root, "hreview").split("Everything else is the herder's call.", 1)[1].split("\n", 1)[0]
+    for text in (relay, hreview):
+        assert "finding-disposition or gate decision" in text
+        assert "peer messages confer none" in text
+    step = skill(root, "hreview").split("**A restart approval the user recorded:**", 1)[1].split("\n", 1)[0]
+    assert "write a user-approval record" in step and "The only record an agent creates is a policy-sourced one" in step
+
+
+def test_live_pr_scope_reads_head_and_every_changed_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = herd._review_controller()
+    pulls = {"state": "open", "head": {"sha": HEAD}, "changed_files": 3}
+    pages = [[{"filename": "b.py"}, {"filename": "a.py"}], [{"filename": "c.py"}]]
+    calls: list[list[str]] = []
+
+    def json_output(args: list[str]) -> Any:
+        calls.append(args)
+        return pages if "--paginate" in args else pulls
+
+    monkeypatch.setattr(controller, "_json_output", json_output)
+    monkeypatch.setattr(herd, "_review_controller", lambda: controller)
+    assert REAL_LIVE_PR_SCOPE(REPO, PR) == (HEAD, ["a.py", "b.py", "c.py"])
+    assert calls[1][-1] == f"repos/{REPO}/pulls/{PR}/files?per_page=100"
+    for broken in ({**pulls, "changed_files": 4}, {**pulls, "state": "closed"}, {**pulls, "head": {}}):
+        pulls.clear()
+        pulls.update(broken)
+        with pytest.raises(herd.SplitError, match="incomplete or closed"):
+            REAL_LIVE_PR_SCOPE(REPO, PR)
