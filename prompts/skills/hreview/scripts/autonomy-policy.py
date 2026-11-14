@@ -319,6 +319,10 @@ def capture_proof() -> str | None:
     user, uid = os.environ.get("SUDO_USER", ""), os.environ.get("SUDO_UID", "")
     if not user or user == "root" or not uid.isdigit():
         return "no invoking sudo user; sudo-rs permission proof not recorded"
+    if os.path.lexists(ETC / "sudoers-rs"):
+        # Its rules would be listed now but /etc/sudoers fingerprinted, so the
+        # proof would outlive the file once it is removed.
+        return f"{ETC / 'sudoers-rs'} exists; sudo-rs permission proof not recorded"
     protected_program(SUDO)
     sudoers = ETC / "sudoers"
     entries = sorted(os.listdir(DROP_IN.parent))

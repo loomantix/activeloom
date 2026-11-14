@@ -132,7 +132,8 @@ sudo-rs install or `set`, the setter (running as root) runs
 `sudo -n -l -U <invoking user> <setter> --check` and `sudo -n -l -U <invoking user>`,
 and records `/etc/activeloom/sudo-rs-proof.json` only when the setter is permitted
 and the inventory has no `NOPASSWD` or `!authenticate` entry. It refuses when any
-include directive other than the top-level sudoers.d `includedir` is present. The
+include directive other than the top-level sudoers.d `includedir` is present, or
+when `/etc/sudoers-rs` exists. The
 proof is bound to the invoking uid, the policy and setter SHA-256, and the `lstat`
 identity of the sudo binary, `/etc/sudoers`, the sudoers.d directory and each
 entry in it, `/etc/passwd` and `/etc/group`. The reader accepts it only when all

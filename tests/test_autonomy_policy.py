@@ -708,15 +708,24 @@ def test_sudo_rs_stale_or_missing_proof_fails_closed(sudo_rs_host: dict[str, Any
     assert not ok and "proof missing or stale" in reason
 
 
-@pytest.mark.parametrize("case", ["root-nopasswd", "root-not-permitted", "extra-include", "no-sudo-user", "root-user"])
+@pytest.mark.parametrize("case", ["root-nopasswd", "root-not-permitted", "extra-include", "sudoers-includedir",
+                                  "sudoers-include", "sudoers-rs", "no-sudo-user", "root-user"])
 def test_sudo_rs_capture_refuses_unprovable_state(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     policy.PROOF.write_text("stale")
+    sudoers = policy.ETC / "sudoers"
     if case == "root-nopasswd":
         sudo_rs_host["root"]["inventory"] = (0, "User fixture may run the following commands on host:\n    (ALL) NOPASSWD: ALL\n", "")
     elif case == "root-not-permitted":
         sudo_rs_host["root"]["listing"] = (1, "", "")
     elif case == "extra-include":
         (policy.DROP_IN.parent / "other").write_text("@include /etc/elsewhere\n")
+    elif case == "sudoers-includedir":
+        sudoers.write_text(sudoers.read_text() + "@includedir /etc/other.d\n")
+    elif case == "sudoers-include":
+        sudoers.write_text(sudoers.read_text() + "#include /etc/sudoers.local\n")
+    elif case == "sudoers-rs":
+        # Its rules would be listed while only /etc/sudoers is fingerprinted.
+        (policy.ETC / "sudoers-rs").write_text("fixture ALL=(ALL:ALL) ALL\n")
     elif case == "no-sudo-user":
         monkeypatch.delenv("SUDO_USER")
     else:
@@ -749,6 +758,27 @@ def test_sudo_rs_proof_refuses_linked_inputs(sudo_rs_host: dict[str, Any], name:
     assert "regular file" in (policy._record_proof() or "")
     assert not policy.PROOF.exists()
     assert not policy.authentication_status()[0]
+
+
+def test_sudo_rs_reader_refuses_unprotected_proof(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    assert policy.capture_proof() is None
+    def protected(path: Path, mode: int | None = None, **kw: Any) -> None:
+        if path == policy.PROOF:
+            assert mode == 0o644
+            raise policy.PolicyError(f"unprotected path: {path}")
+    monkeypatch.setattr(policy, "protected", protected)
+    ok, reason = policy.authentication_status()
+    assert not ok and "proof missing or stale" in reason
+
+
+def test_sudo_rs_proof_records_invoking_uid_not_root(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    invoking = os.getuid() + 1  # the setter runs as root; the proof must name the sudo caller
+    monkeypatch.setenv("SUDO_UID", str(invoking))
+    assert policy.capture_proof() is None
+    assert json.loads(policy.PROOF.read_text())["uid"] == invoking
+    assert policy.authentication_status()[0] is False
+    monkeypatch.setattr(policy.os, "getuid", lambda: invoking)
+    assert policy.authentication_status()[0] is True
 
 
 def test_sudo_rs_new_entry_invalidates_proof_with_unchanged_metadata(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
