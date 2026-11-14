@@ -332,7 +332,7 @@ def capture_proof() -> str | None:
     # Only the proven top-level includedir may pull in rules; anything else
     # could change outside the fingerprint.
     for path in (sudoers, *(DROP_IN.parent / e for e in entries)):
-        for line in path.read_text().splitlines():
+        for line in path.read_text().replace("\\\n", "").splitlines():
             if include.match(line) and not (path == sudoers and top.fullmatch(line)):
                 return f"{path} includes other sudoers files; sudo-rs permission proof not recorded"
     listing = _run([str(SUDO), "-n", "-l", "-U", user, str(SETTER), "--check"])

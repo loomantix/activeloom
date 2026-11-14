@@ -747,6 +747,18 @@ def test_classic_sudo_records_no_proof_and_ignores_one(sudo_rs_host: dict[str, A
     assert policy.authentication_status()[0] is False
 
 
+@pytest.mark.parametrize("directive", ["@include", "#include", "@includedir", "#includedir"])
+@pytest.mark.parametrize("source", ["sudoers", "sudoers.d/other"])
+def test_sudo_rs_capture_refuses_continued_includes(sudo_rs_host: dict[str, Any], directive: str, source: str) -> None:
+    assert policy.capture_proof() is None
+    path = policy.ETC / source
+    original = path.read_text() if path.exists() else ""
+    path.write_text(original + directive + "\\\n /etc/outside-rules\n")
+    assert "includes other sudoers files" in (policy.capture_proof() or "")
+    assert not policy.PROOF.exists()
+    assert not policy.authentication_status()[0]
+
+
 @pytest.mark.parametrize("name", ["sudoers", "passwd", "group", "sudoers.d/linked-rule"])
 def test_sudo_rs_proof_refuses_linked_inputs(sudo_rs_host: dict[str, Any], name: str) -> None:
     path = policy.ETC / name
