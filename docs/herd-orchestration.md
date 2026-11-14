@@ -226,7 +226,7 @@ Where it stops:
 - **Out of rounds:** the run ends exhausted and the PR stays draft.
 - **Dependency update:** it runs `dep-analysis` in the same herder session instead of a chain, and reports the verdict. `dep-analysis` marks it ready once CI is green, and `horch` ships it on a `dependency-analysis:v1` comment at `verdict=clear` at the exact head: the authenticated actor's latest report, unedited. A dependency review override (a `review: full` label, even one since removed, or an always-Deep extension) sends it down the chain instead. On `gaps` it relays the analysis's draft fix PR, the dependency update plus the missing tests, as a `DEP-FIX-PR` line; `horch` starts that PR's own review chain.
 - **Glance-sized PR:** with `glance.auto: true`, it runs `auto-glance` in the same herder session and reports its result, forwarding the resolved author (`--author` takes precedence). With `false`, it stops for a human glance. Always-Deep surfaces and existing review runs stay on the chain path.
-- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the run controller will ask for one (six or more feat/fix/perf commits, or a changed file GitHub shows without a patch). Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so. Instead of typing, you can record a [restart approval](#restart-approvals) from your own terminal and then invoke `/hreview 42` again in that tab; the herder claims the approval before restarting.
+- **Run already ended:** a PR whose latest review run converged, exhausted or aborted needs a restart you name in the herder's own tab. It stops with a `RESTART NEEDS YOU` block giving the words to type, `/hreview 42 --restart`, plus `--scope-decision keep|split` when the run controller will ask for one (six or more feat/fix/perf commits, or a changed file GitHub shows without a patch). Add `--deep` to ask for a Deep review. A restart relayed by the orchestrator or another session does not count, and the block says so. Instead of typing, you can record a [restart approval](#restart-approvals) from your own terminal and then invoke `/hreview 42` again in that tab; the herder claims the approval before restarting. Under [full auto](#full-auto) it restarts or plans a split itself, within the policy's budget.
 - **Blocked:** anything it cannot decide within the rules.
 
 It never merges, marks a PR ready only through the converged path, the auto-glance clean-result and CI gate, or a `clear` dependency analysis and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
@@ -302,7 +302,7 @@ Reserved decisions: new product behavior and changes to external systems.
 
 `scheduled-builds-only` is another instruction override when each build should wait for explicit scheduling. These are instruction boundaries, not new configuration keys or changes to tool permissions. Holds, workspace isolation, concurrency limits and author/non-author independence remain in force. Production or restricted-environment mutations, deployment or promotion activation, destructive or external irreversible actions, live-data migrations or reconciliation, and reserved decisions still require repository policy and explicit owner approval. Promotion dispatch remains an explicit user request; production merge authority is never granted.
 
-Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one. Standing authority changes neither this approval nor review caps and exact-head evidence. Red CI or review failure grants no gate bypass or ad hoc retries.
+Before starting a chain it reads the PR's run state (`local-review-handoff.py run-state`). For a PR whose run has already ended it starts a herder only when you have recorded a [restart approval](#restart-approvals) for that PR at its current head; the herder claims it. Under [full auto](#full-auto) it may restart within budget or split the PR itself. Otherwise it starts none, because only you can authorize a restart. It alerts you with both ways forward: the words to type into a fresh session in a new tab, or the `approve-restart` command to run in your own terminal, each with the scope decision when the run controller will ask for one. Standing authority changes neither this approval nor review caps and exact-head evidence. Red CI or review failure grants no gate bypass or ad hoc retries.
 
 When a chain or build stops on a missing or stale skill, helper or reference, it works out where the gap is (herdr.md, _Missing or stale skills_). A gap in your install or the repository's sync is yours to fix, and it gives you the one command or PR. A gap upstream it fixes there, unless your instruction file says not to: it finds or opens an upstream issue, starts a build tab in your upstream clone that ends at a draft PR, and tells you the PR and the resync step. That PR is reviewed and merged in a workspace for the upstream repository; `horch` never ships outside its own.
 
@@ -459,11 +459,51 @@ It posts one `red-team:v1` comment on the PR listing non-security findings' outc
 
 ## Restart approvals
 
-The [protected autonomy policy foundation](autonomy-policy.md) adds a read-only
+The [protected autonomy policy](autonomy-policy.md) adds a read-only
 policy report and transactional policy-sourced restart records. It requires a
 separate human installation and currently reports restricted containment as
-unavailable. Automatic orchestration integration is separate work; these commands
-do not change the manual workflow below.
+unavailable. Without an effective protected `full` policy the manual workflow
+below is unchanged; with one, see [Full auto](#full-auto).
+
+### Full auto
+
+Full auto applies only when `herd-config.py policy` reports a protected `full`
+policy that is not launch-blocked: containment preflight passes for every
+worker and reviewer engine, or the policy explicitly sets `network.mode: open`.
+Then `horch`, `hloop` and a standalone `hreview` handle an ended review run
+without asking you:
+
+- **Restart.** With no `restart` stop and budget left (default 2 automatic
+  restarts per PR), the herder or orchestrator runs `record-policy-restart`
+  and the herder claims that record through `start-run`'s restart transaction.
+  An exhausted run needs a changed head. The tier is resolved fresh; a restart
+  alone never makes a review Deep. The record ID, policy digest, budget used
+  and reason go into the orchestrator's `state.md` and the final report.
+- **Scope checkpoint.** When the run controller asks for a scope decision and
+  `scope-decision` is not a stop, the session assesses the cause, the coupling
+  between the changes and whether each part can be reviewed and shipped alone,
+  then applies its recommended `keep` or `split`.
+- **Split.** No review run starts on the original PR. `horch` records the
+  partition plan with `split-plan`, builds each partition on a new branch with
+  its own draft PR (`split-record` notes each branch and PR), and gives each
+  replacement its first review run. The original stays draft and open until
+  `split-status` shows every partition has a PR; then `split-supersede` marks
+  it and `horch` links the replacements. An interrupted split resumes from the
+  record without opening a second PR for any partition, and a replacement
+  partition is never split again. A standalone `hreview` records the plan and
+  stops with a `SPLIT PLANNED` block pointing at `horch`.
+- **Spent budget.** An `AUTOMATIC RESTART BUDGET SPENT` alert names the PR,
+  `n/n` used, the `approve-restart` command, and that `horch` prints the
+  protected `set --restart-budget` command for you to run on request.
+
+Any failed guard (an unprotected, invalid or launch-blocked policy, an
+unreadable budget, a changed policy, a moved head) blocks the automatic
+restart and falls back to the manual alert with the reason. Full auto never
+merges to production, crosses actors, merges a gate fix, raises round caps or
+skips a human-glance gate. Owner decisions relayed by `horch` name the
+receiver, target, head or plan, decision and expiry; a stale relay is refused.
+
+### Manual approvals
 
 A review run that has ended (converged, exhausted, aborted) needs your approval for a new one. A message from the orchestrator or another session is not your approval, so an orchestrated restart either waits for you to type in the herder's tab, or uses a record you write yourself:
 

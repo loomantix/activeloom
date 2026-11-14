@@ -207,7 +207,7 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "an earlier run's end marker does not count" in horch
     assert "A run already ended at bind time is never the bound run" in horch
     assert "until a run whose `run_id` differs from the ended one is active" in horch
-    assert "A PR whose run has ended gets no herder" in skill("hloop")
+    assert "A PR whose run has ended gets a herder only through Review chain's restart rules" in skill("hloop")
 
     hreview = skill("hreview")
     ended = hreview.split("**Ended**", 1)[1].split("10. Roster", 1)[0]

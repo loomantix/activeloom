@@ -1,8 +1,10 @@
 # Protected autonomy policy
 
 This foundation provides a protected policy reader, a human-run installer/setter,
-and restart provenance. It does not enable automatic herd orchestration or wrap
-worker launches. The orchestration integration and containment are separate work.
+and restart provenance. `horch`, `hloop` and `hreview` use it for automatic
+restarts and scope splits under an effective protected `full` policy; see
+[Full auto](herd-orchestration.md#full-auto). It does not wrap worker launches;
+containment is separate work.
 
 With no installation, `herd-config.py policy` reports manual behavior and network
 unenforced. A partial or invalid installation disables automatic authority and
@@ -137,7 +139,10 @@ ordinal the new automatic restart will consume. It does not imply Deep review.
 Pending records are preserved; resume the original transaction instead of
 minting another. A consumed record is archived before a later ended run at the
 same head receives its next budgeted record. Scope choices and their
-orchestration belong to the caller.
+orchestration belong to the caller. A `split` never records a restart for the
+original PR; the caller persists the partition plan with `split-plan` and
+tracks each replacement with `split-record`, `split-status` and
+`split-supersede` (records under `$XDG_CONFIG_HOME/activeloom/herd-splits/`).
 
 `start-run --restart --restart-approval-id <id>` stamps
 `local-review-restart:v1` into the hashed run content after scope/plan markers.

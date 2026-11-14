@@ -887,7 +887,10 @@ completion after minor or material fixes; it does not assert overall relay
 convergence, which `verify-coverage` and `verify-ledger` decide. A converged or
 exhausted run whose terminal names another head yields `start-run` with
 `reason=terminal_head_stale`: the run is closed, and the new head needs its own
-authorized run, started with `--restart` under a fresh user authorization. For
+authorized run, started with `--restart` under fresh restart authorization:
+the user's own words, a restart approval the user recorded, or a
+policy-sourced restart record from a protected full-auto autonomy policy,
+which the run controller stamps as `local-review-restart:v1` provenance. For
 an aborted run use `resume-run --repo ... --pr ... --base
 <original-base> --head <current-head>`; this appends a recovery record referencing
 the aborted terminal marker and preserves the run identity, completed passes,
