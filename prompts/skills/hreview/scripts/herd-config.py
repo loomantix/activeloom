@@ -36,8 +36,8 @@ must cover exactly the open PR's changed files at its live head, from the base
 repository, after its run ended and with no restart pending; a PR with a split
 record never gets a policy restart. A replacement PR is recorded only after
 GitHub shows it open, a draft, same-repository and on its partition's branch,
-and the original is superseded only while every replacement is still open or
-merged on that branch.
+and the original is superseded only at its live recorded head while every
+replacement is still open or merged on that branch.
 
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval,
@@ -1827,13 +1827,15 @@ def _valid_split_record(record: Any) -> bool:
         return False
     if type(record.get("pr")) is not int or record["pr"] < 1 or not SHA_RE.fullmatch(record["head"]):
         return False
-    if record.get("superseded") is not None and not _is_text(record["superseded"]):
+    # Every nullable key must be present: later reads index it directly.
+    if "superseded" not in record or (record["superseded"] is not None and not _is_text(record["superseded"])):
         return False
     paths, parts = record.get("paths"), record.get("partitions")
     if not isinstance(paths, list) or not all(_is_text(path) for path in paths) or not isinstance(parts, list):
         return False
     for part in parts:
         if (not isinstance(part, dict) or not _is_text(part.get("id")) or not isinstance(part.get("paths"), list)
+                or "branch" not in part or "replacement_pr" not in part
                 or not (part.get("branch") is None or _is_text(part["branch"]))
                 or not (part.get("replacement_pr") is None or type(part["replacement_pr"]) is int)):
             return False
@@ -1967,9 +1969,9 @@ def split_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _head_changed(repo: str, pr: int) -> SplitError:
-    return SplitError(f"original head changed for {repo}#{pr}; stop and reconcile the recorded split before continuing",
-                      "head-changed")
+def _head_changed(repo: str, pr: int, target: Path, recorded: str, observed: str) -> SplitError:
+    return SplitError(f"original head changed for {repo}#{pr}; stop and reconcile the recorded split before continuing"
+                      f" (record {target}, recorded head {recorded}, observed head {observed})", "head-changed")
 
 
 def _require_no_restart(repo: str, pr: int, head: str) -> None:
@@ -2016,7 +2018,7 @@ def split_plan(repo: str, pr: int, head: str, plan: Any) -> dict[str, Any]:
         existing = _read_split(target)
         if existing is not None:
             if existing["head"] != head:
-                raise _head_changed(repo, pr)
+                raise _head_changed(repo, pr, target, existing["head"], head)
             same = (existing["paths"] == paths
                     and [(p["id"], p["paths"]) for p in existing["partitions"]]
                     == [(p["id"], p["paths"]) for p in partitions])
@@ -2048,7 +2050,7 @@ def _load_split(repo: str, pr: int, head: str) -> tuple[Path, dict[str, Any]]:
     if record["repo"] != repo or record["pr"] != pr:
         raise SplitError(f"{target}: records {record['repo']}#{record['pr']}, not {repo}#{pr}; repair or remove it")
     if record["head"] != head:
-        raise _head_changed(repo, pr)
+        raise _head_changed(repo, pr, target, record["head"], head)
     return target, record
 
 
@@ -2136,6 +2138,10 @@ def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
             raise SplitError("original scope not accounted for: partitions "
                              f"{', '.join(summary['needs_pr'])} have no replacement PR")
         if record["superseded"] is None:
+            # The caller's --head may be stale: supersede only at the original's live head.
+            live_head = _live_pr_scope(repo, pr)[0]
+            if live_head != record["head"]:
+                raise _head_changed(repo, pr, target, record["head"], live_head)
             for part in record["partitions"]:
                 _verify_replacement_pr(repo, part["replacement_pr"], part["branch"], recorded=True)
             record["superseded"] = _iso(_now())

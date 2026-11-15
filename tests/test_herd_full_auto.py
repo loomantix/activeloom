@@ -231,6 +231,41 @@ def test_malformed_sibling_record_is_a_refusal_not_a_traceback(config_home: Path
     assert not herd._split_target(REPO, PR).exists()
 
 
+def _complete_record(**overrides: Any) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "version": 1, "repo": REPO, "pr": 9, "head": "e" * 40, "created": "2026-01-01T00:00:00Z",
+        "paths": ["x.py", "y.py"], "superseded": None,
+        "partitions": [{"id": "x", "paths": ["x.py"], "branch": None, "replacement_pr": None},
+                       {"id": "y", "paths": ["y.py"], "branch": None, "replacement_pr": None}],
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.mark.parametrize("missing", ["superseded", "branch", "replacement_pr"])
+def test_a_sibling_record_missing_a_key_is_a_refusal_not_a_traceback(
+        config_home: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path, missing: str) -> None:
+    record = _complete_record()
+    if missing == "superseded":
+        del record["superseded"]
+    else:
+        for part in record["partitions"]:
+            del part[missing]
+    directory = config_home / "activeloom/herd-splits/acme__widgets"
+    directory.mkdir(parents=True, mode=0o700)
+    sibling = directory / "pr-9.json"
+    sibling.write_text(json.dumps(record))
+    sibling.chmod(0o600)
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(json.dumps(plan()))
+    base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
+    assert herd.main(["split-plan", *base, "--plan-file", str(plan_file)]) == 5
+    assert "split refused [refused]:" in capsys.readouterr().err
+    assert not herd._split_target(REPO, PR).exists()
+    sibling.write_text(json.dumps(_complete_record()))
+    assert herd.split_plan(REPO, PR, HEAD, plan())["resumed"] is False, "the complete record is valid"
+
+
 def test_unsafe_split_lock_is_a_split_refusal(config_home: Path, capsys: pytest.CaptureFixture[str],
                                               tmp_path: Path) -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
@@ -312,6 +347,22 @@ def test_original_is_superseded_only_after_all_scope_is_accounted() -> None:
         herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 52)
 
 
+def test_supersede_refuses_when_the_live_original_head_moved(live_pr: dict[int, tuple[str, list[str]]]) -> None:
+    result = herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
+    before = Path(result["path"]).read_bytes()
+    pushed = "b" * 40
+    live_pr[PR] = (pushed, live_pr[PR][1])
+    VERIFIED.clear()
+    with pytest.raises(herd.SplitError) as moved:
+        herd.split_supersede(REPO, PR, HEAD)
+    assert moved.value.reason == "head-changed"
+    assert f"recorded head {HEAD}, observed head {pushed}" in str(moved.value)
+    assert Path(result["path"]).read_bytes() == before
+    assert VERIFIED == [], "no replacement is rechecked once the original's head has moved"
+
+
 def test_unsafe_split_record_is_refused() -> None:
     result = herd.split_plan(REPO, PR, HEAD, plan())
     os.chmod(result["path"], 0o666)
@@ -353,7 +404,9 @@ def test_cli_reports_refusals_with_exit_5(tmp_path: Path, capsys: pytest.Capture
     for command in ("split-status", "split-record", "split-supersede"):
         extra = ["--partition", "alpha", "--branch", "feat/a"] if command == "split-record" else []
         assert herd.main([command, "--repo", REPO, "--pr", str(PR), "--head", "b" * 40, *extra]) == 5
-        assert "split refused [head-changed]: original head changed" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "split refused [head-changed]: original head changed" in err
+        assert f"(record {herd._split_target(REPO, PR)}, recorded head {HEAD}, observed head {'b' * 40})" in err
 
 
 # --- policy restart guards -----------------------------------------------------------
@@ -605,6 +658,32 @@ def test_an_inert_restart_record_does_not_block_a_split(authority: Any) -> None:
     record["expires"] = herd._iso(herd._now() - herd.timedelta(hours=1))
     herd._write_approval(target, record)
     assert herd.split_plan(REPO, PR, HEAD, plan())["resumed"] is False
+
+
+@pytest.mark.parametrize("damage", ["unsafe", "garbage", "dangling-link"])
+def test_an_unreadable_restart_record_blocks_a_split(damage: str, tmp_path: Path) -> None:
+    target = herd._approval_target(REPO, PR, HEAD)
+    herd._private_dir(target.parent)
+    if damage == "dangling-link":
+        target.symlink_to(tmp_path / "missing.json")
+    else:
+        target.write_text("{}" if damage == "unsafe" else "not json")
+        target.chmod(0o666 if damage == "unsafe" else 0o600)
+    with pytest.raises(herd.SplitError, match="unreadable restart record") as refused:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert refused.value.reason == "refused"
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_an_unreadable_run_inventory_blocks_a_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreadable(*args: Any) -> Any:
+        raise herd.ApprovalError("GitHub read failed")
+
+    monkeypatch.setattr(herd, "_restart_inventory", unreadable)
+    with pytest.raises(herd.SplitError, match="cannot confirm .* run ended") as refused:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert refused.value.reason == "refused"
+    assert not herd._split_target(REPO, PR).exists()
 
 
 @pytest.mark.parametrize("state", ["active", "none"])
