@@ -28,7 +28,11 @@ import {
 } from '../local-store.js';
 import { SilentRunner, type DelegateRunner } from '../silent-runner.js';
 import { postSummary, renderSummary } from '../silent-summary.js';
-import { buildFindingBody, buildDispositionBody } from '../protocol.js';
+import {
+  buildFindingBody,
+  buildDispositionBody,
+  buildSeverityCorrectionBody,
+} from '../protocol.js';
 
 const REPO = 'client/app';
 const PR = 7;
@@ -482,6 +486,50 @@ describe('silent summary', () => {
       ].join('\n'),
     );
     expect(summary.summary).not.toMatch(/<!--|claude|round/i);
+  });
+
+  it('renders corrected severity when an upward severity correction precedes the fix', () => {
+    const posted = finding(
+      'null-guard',
+      '**The handler dereferences a null user.**\n\nEvidence.',
+    );
+    const store = new LocalStore(root, REPO, PR);
+    const replies = `repos/${REPO}/pulls/${PR}/comments/${posted.comment_id}/replies`;
+    runner.runGh(['api', '-X', 'POST', replies], {
+      body: buildSeverityCorrectionBody({
+        engine: 'claude',
+        round: 1,
+        head: HEAD,
+        fingerprint: 'null-guard',
+        occurrence: 1,
+        from: 'major',
+        to: 'blocking',
+        content: 'Verified blocking impact.',
+      }).body,
+    });
+    const { threadId } = reconcile({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      fingerprint: 'null-guard',
+    });
+    dispose({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      engine: 'claude',
+      round: 1,
+      fingerprint: 'null-guard',
+      occurrence: 1,
+      outcome: 'fixed',
+      commentId: posted.comment_id,
+      threadId: threadId!,
+      content: `Fixed in ${HEAD}. Added a guard before the dereference.`,
+    });
+    const summary = renderSummary(store, store.read());
+    expect(summary.summary).toContain(
+      '- **blocking** `src/app.ts`: The handler dereferences a null user. Added a guard before the dereference. (1111111)',
+    );
   });
 
   it('posts only the approved bytes, once', () => {

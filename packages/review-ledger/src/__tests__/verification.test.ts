@@ -1634,3 +1634,230 @@ describe('thread read-back is bound to its pull request and root comment', () =>
     expect(getThreadState('PRRT_x', 11, { repo: REPO, pr: PR })).toBe(false);
   });
 });
+
+describe('severity correction verification in threads and results', () => {
+  function severityMarker(o: {
+    fingerprint: string;
+    occurrence?: number;
+    from?: string;
+    to?: string;
+    content: string;
+    head?: string;
+    round?: number;
+    engine?: string;
+  }): string {
+    return (
+      `<!-- local-review-severity:v3 engine=${o.engine ?? 'claude'} round=${o.round ?? 3} ` +
+      `head=${o.head ?? BEFORE} fingerprint=${o.fingerprint} ` +
+      `occurrence=${o.occurrence ?? 1} from=${o.from ?? 'major'} to=${o.to ?? 'blocking'} ` +
+      `content-sha256=${sha(o.content)} -->`
+    );
+  }
+
+  it('accepts a convergence fix backed by a valid major-to-blocking severity correction in writeResult and verifyLedger', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'verified blocking impact before disposition\n';
+    const dc = 'fixed in head\n';
+    runner.threadNodes = [
+      {
+        id: 'PRRT_escalated',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp-esc', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp-esc', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp-esc', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    const resultFile = join(dir, 'convergence-corrected-result.json');
+    const result = writeResult({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      engine: 'claude',
+      round: 3,
+      base: BASE,
+      before: BEFORE,
+      resultFile,
+      classification: 'material',
+    });
+    expect(result.status).toBe('changed');
+    expect(result.findingFingerprints).toEqual(['fp-esc']);
+    expect(
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 3,
+        base: BASE,
+        before: BEFORE,
+        resultFile,
+      }).verified,
+    ).toBe(true);
+  });
+
+  it('rejects deferring a finding whose effective severity was corrected to blocking', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'verified blocking impact\n';
+    const dc = 'deferred\n';
+    runner.threadNodes = [
+      {
+        id: 'PRRT_escalated_deferred',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp-esc', severity: 'major', round: 3, head: HEAD, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp-esc', round: 3, head: HEAD, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp-esc', round: 3, head: HEAD, outcome: 'deferred', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'blocking local-review findings must be fixed',
+    );
+  });
+
+  it('rejects post-disposition, wrong-head, orphan, and conflicting severity corrections in verifyLedger', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'severity correction\n';
+    const dc = 'fixed\n';
+
+    // Post-disposition correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_post_disp',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction was posted after its finding was disposed',
+    );
+
+    // Wrong head on correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_wrong_head',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, head: BEFORE, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, head: OTHER, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction does not match an earlier finding in the same thread',
+    );
+
+    // Conflicting duplicate correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_conflict',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 4,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction conflicts with current finding severity',
+    );
+  });
+});
