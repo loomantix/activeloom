@@ -28,6 +28,7 @@ import { readContent } from './protocol.js';
 import { requireSha } from './hash.js';
 import {
   attest,
+  correctSeverity,
   finalize,
   dispose,
   postFinding,
@@ -125,6 +126,7 @@ interface CliArgs {
   round?: number | undefined;
   fingerprint?: string | undefined;
   occurrence?: number | undefined;
+  fromSeverity?: SupportedSeverity | undefined;
   severity?: SupportedSeverity | undefined;
   lens?: string | undefined;
   outcome?: SupportedOutcome | undefined;
@@ -491,7 +493,11 @@ function parseCliArgs(argv: string[]): CliArgs {
       case '--occurrence':
         args.occurrence = parsePositiveInteger(parseVal(arg), arg);
         break;
+      case '--from-severity':
+        args.fromSeverity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
+        break;
       case '--severity':
+      case '--to-severity':
         args.severity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
         break;
       case '--lens':
@@ -634,11 +640,14 @@ function validateArgs(args: CliArgs): void {
     args.contentFile &&
     (args.command === 'post-finding' ||
       args.command === 'reopen-occurrence' ||
+      args.command === 'correct-severity' ||
       args.command === 'dispose')
   ) {
     const required: Array<keyof CliArgs> = ['engine', 'round', 'fingerprint'];
     if (args.command === 'post-finding') {
       required.push('severity', 'lens');
+    } else if (args.command === 'correct-severity') {
+      required.push('severity');
     }
     const missing = required.filter((r) => args[r] === undefined);
     if (missing.length > 0) {
@@ -836,6 +845,39 @@ function runCliCommand(argv: string[]): number {
         occurrence: args.occurrence,
         severity: args.severity,
         lens: args.lens,
+        commentId: args.commentId,
+        threadId: args.threadId,
+        contentFile: args.contentFile,
+      });
+      process.stdout.write(JSON.stringify(out) + '\n');
+      break;
+    }
+    case 'correct-severity': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.fingerprint ||
+        args.occurrence === undefined ||
+        !args.severity ||
+        args.commentId === undefined ||
+        !args.threadId ||
+        !args.contentFile
+      ) {
+        fail('correct-severity missing required parameters');
+      }
+      const out = correctSeverity({
+        repo: args.repo,
+        pr: args.pr,
+        head: args.head,
+        engine: args.engine,
+        round: args.round,
+        fingerprint: args.fingerprint,
+        occurrence: args.occurrence,
+        from: args.fromSeverity,
+        severity: args.severity,
         commentId: args.commentId,
         threadId: args.threadId,
         contentFile: args.contentFile,

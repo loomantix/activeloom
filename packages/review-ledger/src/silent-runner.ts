@@ -667,6 +667,7 @@ function threadNodes(
           .map((c) => ({
             databaseId: c.id,
             body: c.body,
+            createdAt: c.created_at,
             author: { login: c.user.login },
           })),
         pageInfo: { hasNextPage: comments.length > first },

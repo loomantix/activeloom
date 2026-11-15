@@ -3,6 +3,7 @@ import {
   DISPOSITION_V3_RE,
   FINDING_V3_RE,
   PSEUDO_V3_RE,
+  SEVERITY_V3_RE,
   SUPPORTED_ENGINES,
   SUPPORTED_OUTCOMES,
   SUPPORTED_SEVERITIES,
@@ -14,6 +15,7 @@ import type {
   DispositionV3Match,
   FindingV3Match,
   PseudoV3Match,
+  SeverityV3Match,
   SupportedEngine,
   SupportedOutcome,
   SupportedSeverity,
@@ -173,6 +175,58 @@ export function buildDispositionBody(params: {
 }
 
 /**
+ * Return true when `to` is strictly higher severity than `from`.
+ */
+export function isUpwardSeverity(
+  from: SupportedSeverity,
+  to: SupportedSeverity,
+): boolean {
+  const fromIndex = SUPPORTED_SEVERITIES.indexOf(from);
+  const toIndex = SUPPORTED_SEVERITIES.indexOf(to);
+  return fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex;
+}
+
+/**
+ * Build upward severity-correction marker and complete comment body.
+ */
+export function buildSeverityCorrectionBody(params: {
+  engine: SupportedEngine;
+  round: number;
+  head: string;
+  fingerprint: string;
+  occurrence: number;
+  from: SupportedSeverity;
+  to: SupportedSeverity;
+  content: string;
+}): { marker: string; body: string } {
+  if (!SUPPORTED_ENGINES.includes(params.engine)) {
+    fail('engine must be one of: codex, claude, gemini, antigravity');
+  }
+  if (!Number.isSafeInteger(params.round) || params.round < 1) {
+    fail('round must be a positive integer');
+  }
+  if (!Number.isSafeInteger(params.occurrence) || params.occurrence < 1) {
+    fail('occurrence must be a positive integer');
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.from)) {
+    fail('from severity must be one of: blocking, major, minor, nit');
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.to)) {
+    fail('severity must be one of: blocking, major, minor, nit');
+  }
+  if (!isUpwardSeverity(params.from, params.to)) {
+    fail('severity correction must increase severity');
+  }
+  validateContentString(params.content);
+  const marker =
+    `<!-- local-review-severity:v3 engine=${params.engine} round=${params.round} ` +
+    `head=${requireSha(params.head, 'head')} fingerprint=${requireToken(params.fingerprint, 'fingerprint')} ` +
+    `occurrence=${params.occurrence} from=${params.from} to=${params.to} ` +
+    `content-sha256=${sha256Text(params.content)} -->`;
+  return { marker, body: `${marker}\n${params.content}` };
+}
+
+/**
  * Match a protocol marker at the start of a body string and verify its content hash.
  *
  * The marker must be the first complete line of the body. Anything ahead of it
@@ -323,6 +377,43 @@ export function matchDisposition(body: string): DispositionV3Match | null {
     fingerprint: match.groups['fingerprint']!,
     occurrence: parseInt(match.groups['occurrence']!, 10),
     outcome: match.groups['outcome'] as SupportedOutcome,
+    contentSha: match.groups['content_sha']!,
+  };
+}
+
+/**
+ * Match upward severity-correction v3 marker in comment body.
+ */
+export function matchSeverityCorrection(body: string): SeverityV3Match | null {
+  if (
+    body.includes('<!-- local-review-severity:') &&
+    !body.includes('<!-- local-review-severity:v3')
+  ) {
+    fail('authenticated <!-- local-review-severity:v3 record is malformed');
+  }
+  const match = matchProtocol(
+    body,
+    SEVERITY_V3_RE,
+    '<!-- local-review-severity:v3',
+  );
+  if (!match || !match.groups) {
+    return null;
+  }
+  const from = match.groups['from'] as SupportedSeverity;
+  const to = match.groups['to'] as SupportedSeverity;
+  if (!isUpwardSeverity(from, to)) {
+    fail(
+      'authenticated <!-- local-review-severity:v3 record does not increase severity',
+    );
+  }
+  return {
+    engine: match.groups['engine'] as SupportedEngine,
+    round: parseInt(match.groups['round']!, 10),
+    head: match.groups['head']!,
+    fingerprint: match.groups['fingerprint']!,
+    occurrence: parseInt(match.groups['occurrence']!, 10),
+    from,
+    to,
     contentSha: match.groups['content_sha']!,
   };
 }

@@ -7,6 +7,7 @@ import {
   HUNK_WITH_LEFT_RE,
   PROTOCOL_VERSION,
   PSEUDO_V3_RE,
+  SEVERITY_V3_RE,
   SHA_RE,
   SUPPORTED_ENGINES,
   SUPPORTED_SEVERITIES,
@@ -66,6 +67,15 @@ describe('constants and protocol regexes', () => {
     expect(match).not.toBeNull();
     expect(match?.groups?.['engine']).toBe('antigravity');
     expect(match?.groups?.['outcome']).toBe('fixed');
+  });
+
+  it('matches valid v3 severity correction marker', () => {
+    const marker = `<!-- local-review-severity:v3 engine=codex round=3 head=0123456789abcdef0123456789abcdef01234567 fingerprint=fp1 occurrence=1 from=major to=blocking content-sha256=${'c'.repeat(64)} -->`;
+    const match = SEVERITY_V3_RE.exec(marker);
+    expect(match).not.toBeNull();
+    expect(match?.groups?.['engine']).toBe('codex');
+    expect(match?.groups?.['from']).toBe('major');
+    expect(match?.groups?.['to']).toBe('blocking');
   });
 
   it('matches legacy v1 finding and disposition', () => {

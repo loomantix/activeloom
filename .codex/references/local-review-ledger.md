@@ -701,14 +701,41 @@ edit unrelated findings. It is a cooperative preflight, not a filesystem write
 barrier. Final result validation remains required and rejects ineligible fixes
 even when the preflight was skipped.
 
+When an unresolved current finding occurrence was posted below its actual
+severity (for example, `major`) and is independently verified to meet a higher
+severity bar (such as `blocking`) before any disposition or source edit, append
+an upward severity correction to its existing root thread before running
+`authorize-fix`:
+
+```bash
+node <ledger-helper> correct-severity \
+  --repo <owner/repo> --pr <number> --head <current-pr-head> \
+  --engine <engine> --round <n> --fingerprint <stable-id> \
+  --occurrence <n> --from-severity <major|minor|nit> \
+  --severity <blocking|major|minor> \
+  --comment-id <root-comment-id> --thread-id <review-thread-id> \
+  --content-file <regular-utf8-file>
+```
+
+`correct-severity` verifies the authenticated actor, PR head, active review
+context, unresolved root thread, and undisposed latest occurrence, then appends
+a read-back-verified `<!-- local-review-severity:v3 ... -->` reply sealing the
+concrete impact explanation in `--content-file`. It preserves the original
+finding marker and occurrence identity, keeps the thread unresolved, and
+updates the effective severity consumed by `preflight-fix`, `authorize-fix`,
+`preflight-publish`, `dispose`, `write-result`, `verify-ledger`, and
+`reconcile`. Lowering severity, correcting a disposed or non-latest occurrence,
+or editing a marker in place is rejected.
+
 If a convergence result is rejected for a non-blocking fix, preserve the result
 and ledger evidence. Never edit a marker or relabel a finding just to satisfy
-validation. A demonstrably mistaken classification requires impact evidence
-and a supported ledger operation; if none exists, report that boundary. For a
-correctly classified non-blocking finding, remove only its ineligible code
-change and defer it through supported recovery. An already posted `fixed`
-disposition cannot be erased or overwritten to claim a clean pass. Recovery
-does not reset the run budget.
+validation. A demonstrably mistaken classification before disposition must be
+recorded with impact evidence through `correct-severity`; once a finding has
+been disposed or its fix published without authorization, it cannot be
+retroactively reclassified. For a correctly classified non-blocking finding,
+remove only its ineligible code change and defer it through supported recovery.
+An already posted `fixed` disposition cannot be erased or overwritten to claim
+a clean pass. Recovery does not reset the run budget.
 
 Under agent-loop, when `write-result` refuses a result after its fix was
 published, write a blocked result naming the refusal. If the ledger is otherwise
@@ -778,6 +805,12 @@ blocking finding must be `fixed`, not merely not-deferred. That rule governs
 what a review result may claim as same-round evidence, which is a different
 question from whether the ledger is internally consistent. Do not collapse the
 two.
+
+Same-round result evidence is scoped to the PR's latest run. An earlier run that
+ended, was aborted, or was superseded reuses the same engine and round labels,
+so a finding posted before the latest run marker never counts as this round's
+evidence. When either creation time is missing or unparseable, the finding
+counts, so evidence is never dropped on a guess.
 
 ## Fix, reply, and resolve
 
