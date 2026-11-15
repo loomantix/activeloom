@@ -9,11 +9,13 @@ import importlib.util
 import json
 import re
 import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -382,6 +384,30 @@ def test_serve_binds_loopback_and_guards_the_page(server: Any) -> None:
     assert request(server, "GET", "/?token=wrong")[0] == 403
     assert request(server, "GET", "/")[0] == 403
     assert request(server, "GET", "/?token=tok-123", headers={"Host": "attacker.example"})[0] == 403
+
+
+def test_page_navigation_remains_reloadable(server: Any) -> None:
+    # Execute the page script with an empty tab list; follow the resulting URL
+    # through the real HTTP handler, as a browser reload does.
+    probe = r"""
+const vm = require('node:vm');
+const fs = require('node:fs');
+let location = new URL(process.argv[1]);
+const node = () => ({appendChild() {}, setAttribute() {}});
+const document = {
+  getElementById: id => id === 'signoff-data' ? {textContent: '{"issues":[]}'} : node(),
+  createElement: node
+};
+vm.runInNewContext(fs.readFileSync(0, 'utf8'), {
+  document, URLSearchParams, location,
+  history: {replaceState: (_state, _title, path) => { location = new URL(path, location); }}
+});
+process.stdout.write(location.href);
+"""
+    result = subprocess.run(["node", "-e", probe, server.url()], input=so.PAGE_JS, text=True, capture_output=True, check=True)
+    url = urlsplit(result.stdout)
+    assert request(server, "GET", url.path + ("?" + url.query if url.query else ""))[0] == 200
+    assert request(server, "GET", "/")[0] == 403
 
 
 def test_post_accepts_valid_answers_and_writes_state(server: Any) -> None:

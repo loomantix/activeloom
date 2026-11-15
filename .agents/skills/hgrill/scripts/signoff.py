@@ -558,7 +558,6 @@ PAGE_JS = r"""
 var DATA=JSON.parse(document.getElementById('signoff-data').textContent);
 var q=new URLSearchParams(location.search);var TOKEN=q.get('token')||'';
 var SERVED=location.protocol==='http:'&&TOKEN!=='';
-if(SERVED){try{history.replaceState(null,'',location.pathname);}catch(e){}}
 var root=document.getElementById('app');
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;}
 function inline(parent,text){var parts=String(text).split('`');for(var i=0;i<parts.length;i++){if(i%2===1&&i<parts.length-1){parent.appendChild(el('code',null,parts[i]));}else{parent.appendChild(document.createTextNode((i%2===1?'`':'')+parts[i]));}}return parent;}
