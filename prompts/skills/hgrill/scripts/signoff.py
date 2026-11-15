@@ -149,6 +149,7 @@ SECTION_RES = (
 )
 NUMBERED_RE = re.compile(r"^(\d+)\.\s+(.*)$")
 BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
+HEADING_RE = re.compile(r"^\*\*[^*].*\*\*:?\s*$")
 WARN = "⚠"
 LABELS = {
     "Options": "options",
@@ -224,6 +225,8 @@ def _parse_item(item_id: str, kind: str, text: str) -> dict[str, Any]:
         value = value.strip()
         if name == "options":
             item["options"] = _parse_options(value)
+            if kind == "product" and not item["options"]:
+                raise SignoffError(f"{item_id}: no (a)-style options in: {value[:80]}")
         elif name in ("applied", "recommended"):
             m = LETTER_RE.match(value)
             item[name] = m.group(1) if m else None
@@ -235,9 +238,10 @@ def _parse_item(item_id: str, kind: str, text: str) -> dict[str, Any]:
         else:
             item[name] = _strip_sentence(value)
     keys = {o["key"] for o in item["options"]}
-    for name in ("applied", "recommended"):
-        if item[name] is not None and item[name] not in keys:
-            item[name] = None
+    if kind == "product":
+        for name in ("applied", "recommended"):
+            if item[name] is not None and item[name] not in keys:
+                raise SignoffError(f"{item_id}: {name} ({item[name]}) is not one of the options")
     if kind == "assumption":
         # An assumption's ⚠ marks a reconciled dispute; it never takes option radios.
         item["options"], item["applied"], item["recommended"] = [], None, None
@@ -274,6 +278,9 @@ def parse_legacy(inner: str) -> dict[str, Any]:
                 raise SignoffError(f"unrecognised line in the {section} section: {stripped[:80]}")
         elif stripped.startswith(">"):
             section = None
+        elif NUMBERED_RE.match(stripped) or HEADING_RE.match(stripped):
+            # An item or unknown heading outside the item sections would vanish.
+            raise SignoffError(f"unrecognised line outside the item sections: {stripped[:80]}")
         elif section == "checked":
             m = BULLET_RE.match(stripped)
             if m:
@@ -395,6 +402,8 @@ def load_snapshot(repo: str, issue: int, title: str, body: str) -> Snapshot:
     if copies:
         data = validate_snapshot(loads_strict(copies[0]))
         source, digest = SOURCE_JSON, json_hash(data)
+    elif SNAPSHOT_SCHEMA in inner:
+        raise SignoffError(f"the block names {SNAPSHOT_SCHEMA} but holds no parseable copy")
     else:
         data = parse_legacy(inner)
         source, digest = SOURCE_LEGACY, legacy_hash(inner)

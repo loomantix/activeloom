@@ -165,11 +165,37 @@ def test_legacy_refuted_entry() -> None:
         "**Assumptions:**\n1. **A one** — alpha.\n> aside\n2. **A two** — alpha.",
         # An unindented wrapped line is not silently discarded.
         "**Assumptions:**\n1. **A one** — alpha.\nwrapped without indent",
+        # A misspelled first heading must not drop the items under it.
+        "**Product call — yours:**\n1. **X** — alpha.\n\n**Assumptions:**\n1. **A** — alpha.",
+        # An unknown heading after Checked must not hide its items.
+        "**Assumptions:**\n1. **A** — alpha.\n**Checked, no longer assumptions:**\n- ✅ f.\n**Deferred calls:**\n1. **X** — alpha.",
+        # Numbered items in Owed are not silently skipped.
+        "**Assumptions:**\n1. **A** — alpha.\n**Owed to other issues — not yet done there:**\n1. **X** — alpha.",
     ],
 )
 def test_legacy_unclaimed_section_lines_fail_closed(inner: str) -> None:
     with pytest.raises(so.SignoffError, match="unrecognised line"):
         so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}")
+
+
+@pytest.mark.parametrize(
+    "tail, message",
+    [
+        ("Options: a) x — alpha; b) y — beta. Applied now: (b).", "no \\(a\\)-style options"),
+        ("Options: (a) x — alpha; (b) y — beta. Applied now: (c).", "applied \\(c\\) is not one of the options"),
+        ("Options: (a) x — alpha; (b) y — beta. Recommended: (d), because z.", "recommended \\(d\\) is not one"),
+    ],
+)
+def test_legacy_option_structure_fails_closed(tail: str, message: str) -> None:
+    inner = f"**Product calls — yours to confirm:**\n1. ⚠ **Q** — the passes disagreed. {tail}"
+    with pytest.raises(so.SignoffError, match=message):
+        so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}")
+
+
+def test_malformed_v1_copy_does_not_fall_back_to_prose() -> None:
+    body = f'{so.START}\n<!-- hgrill-assumptions:v1 {{"schema": "x" -->\n**Assumptions:**\n1. **A** — alpha.\n{so.END}'
+    with pytest.raises(so.SignoffError, match="no parseable copy"):
+        so.load_snapshot(REPO, 1, "t", body)
 
 
 def test_legacy_option_letters_need_parentheses() -> None:
@@ -523,6 +549,43 @@ def test_post_accepts_valid_answers_and_writes_state(server: Any) -> None:
 def test_post_rejects_bad_request_envelope(server: Any, headers: dict[str, str], status: int) -> None:
     assert request(server, "POST", "/answers", all_confirm(server.snap), headers)[0] == status
     assert not server.stored
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_post_accepts_the_browser_origin(server: Any, host: str) -> None:
+    # A browser fetch always sends Origin; http.client does not unless told to.
+    origin = f"http://{host}:{server.port}"
+    headers = {"Origin": origin, "Host": f"{host}:{server.port}"}
+    assert request(server, "POST", "/answers", all_confirm(server.snap), headers)[0] == 200
+
+
+@pytest.mark.parametrize("origin", ["null", "http://127.0.0.1:1", "https://127.0.0.1:{port}"])
+def test_post_rejects_near_miss_origins(server: Any, origin: str) -> None:
+    headers = {"Origin": origin.format(port=server.port)}
+    assert request(server, "POST", "/answers", all_confirm(server.snap), headers)[0] == 403
+    assert not server.stored
+
+
+def test_server_waits_for_every_issue_before_finishing(tmp_path: Path) -> None:
+    first = legacy()
+    second = so.load_snapshot("other-org/other-repo", 7, "Same number", FIXTURE.read_text(encoding="utf-8"))
+    snaps = [first, second]
+
+    def resolve(repo: str, issue: int) -> Path:
+        return tmp_path / repo.replace("/", "__") / f"{issue}" / "signoff-answers.json"
+
+    srv = so.SignoffServer(so.render_page(snaps).encode(), so.build_manifest(snaps), "tok-123", resolve_path=resolve)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert request(srv, "POST", "/answers", all_confirm(first))[0] == 200
+        assert not srv.all_done.is_set()
+        assert request(srv, "POST", "/answers", all_confirm(second))[0] == 200
+        assert srv.all_done.is_set()
+        assert resolve(first.repo, 7).is_file() and resolve(second.repo, 7).is_file()
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_post_rejects_wrong_hash_and_bad_items(server: Any) -> None:
