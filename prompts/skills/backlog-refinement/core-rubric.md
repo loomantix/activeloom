@@ -80,7 +80,7 @@ Each field contains one listed value. `rubric.py` parses the record and compares
 | Do not build | `dont-build; next: none` | Offer to close as `not planned`; close only with explicit issue-specific confirmation. |
 | Bounded children | `split; next: refine` | Under a confirmed handback (or separate human split approval), create GitHub sub-issues and apply each child's assessment. Parent is `agent-bail: epic` with no `needs:` label. |
 
-The local `<!-- grill-handback: ask -->` default requires one combined handback preview and confirmation. `auto` skips only that confirmation; it never skips summary confirmation or authorizes a close. Without a local rubric, offer only the decision comment and setup. The interview writes decision comments only; refinement alone applies bodies, labels, sub-issues, and closes. Preserve issue assignments and limit application to the session's issues and approved new children.
+The local `<!-- grill-handback: ask -->` default requires one combined handback preview and confirmation. A user's own `grill_handback` setting, outside the repository, overrides the local marker for that user only; the marker stays the shared default. `auto` skips only that confirmation; it never skips summary confirmation or authorizes a close. Without a local rubric, offer only the decision comment and setup. The interview writes decision comments only; refinement alone applies bodies, labels, sub-issues, and closes. Preserve issue assignments and limit application to the session's issues and approved new children.
 
 A later pass can retain a **settled decomposed coordination parent** as
 `exclude` + `agent-bail: epic`, `settled; next: refine`, with explicit

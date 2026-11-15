@@ -2,24 +2,33 @@
 
 Shared by `candidates.py`, `precheck.py`, and `apply-plan.py`. Settings live in
 `.backlog/refinement.local.md` at the repository root, falling back to a legacy
-per-harness `RUBRIC.md`. Every default that stands in for a missing setting is
+per-harness `RUBRIC.md`. One personal preference, the interview-handback
+confirmation, can also be set per user in `$XDG_CONFIG_HOME/activeloom/
+backlog-refinement.json`, which overrides the repository marker for that user
+only. Every default that stands in for a missing setting is
 announced on stderr, because a silent default changes what refinement does
 without anyone noticing.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 from typing import Any
+from pathlib import Path
 from typing import NamedTuple
 
 LOCAL_RUBRIC = os.path.join(".backlog", "refinement.local.md")
 LEGACY_HARNESS_ROOTS = (".claude", ".codex", ".agents")
 STALE_ACTIONS = ("recommend", "close")
 REWRITE_MODES = ("edit", "suggest")
+GRILL_HANDBACK_MODES = ("ask", "auto")
+USER_CONFIG_ENV = "ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG"
+USER_CONFIG_SCHEMA_VERSION = 1
+USER_CONFIG_KEYS = ("schema_version", "grill_handback")
 
 
 def marker(name: str) -> re.Pattern[str]:
@@ -110,6 +119,69 @@ def _setting(pattern: re.Pattern[str], text: str) -> str | None:
     return match.group(1).strip()
 
 
+def user_config_path() -> Path:
+    """The per-user settings file, outside any checkout."""
+    explicit = os.environ.get(USER_CONFIG_ENV)
+    if explicit:
+        path = Path(explicit)
+        if not path.is_absolute():
+            sys.stderr.write(f"{USER_CONFIG_ENV} must be an absolute path.\n")
+            sys.exit(1)
+        return path
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "activeloom" / "backlog-refinement.json"
+
+
+def user_grill_handback() -> tuple[str, str] | None:
+    """(mode, path) from the per-user settings file; None when it sets no mode.
+
+    A missing file is the ordinary case and says nothing. Anything present but
+    unreadable or off-shape exits, because guessing past a personal setting the
+    user believes is live would change what refinement asks without notice.
+    """
+    path = user_config_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"Could not read backlog-refinement user settings {path}: {exc}\n")
+        sys.exit(1)
+    problems: list[str] = []
+    if not isinstance(data, dict):
+        problems.append("top level must be a JSON object")
+        data = {}
+    unknown = sorted(set(data) - set(USER_CONFIG_KEYS))
+    if unknown:
+        problems.append(f"unknown keys {', '.join(unknown)}")
+    version = data.get("schema_version")
+    if isinstance(version, bool) or version != USER_CONFIG_SCHEMA_VERSION:
+        problems.append(f"schema_version must be {USER_CONFIG_SCHEMA_VERSION}")
+    mode = data.get("grill_handback")
+    if mode is not None and mode not in GRILL_HANDBACK_MODES:
+        problems.append("grill_handback must be ask or auto")
+    if problems:
+        sys.stderr.write(
+            f"Invalid backlog-refinement user settings {path}: {'; '.join(problems)}.\n"
+        )
+        sys.exit(1)
+    return (mode, str(path)) if mode is not None else None
+
+
+def resolve_grill_handback(repo_value: str) -> str:
+    """The user's override when set, else the repository's value."""
+    user = user_grill_handback()
+    if user is None:
+        return repo_value
+    mode, path = user
+    sys.stderr.write(
+        f"NOTE: grill-handback {mode} from user settings {path} "
+        f"(overrides the repository's {repo_value}).\n"
+    )
+    return mode
+
+
 def load_config(root: str) -> RubricConfig:
     """Repository settings, announcing on stderr whenever a default stands in."""
     path, is_legacy = locate_rubric(root)
@@ -118,7 +190,7 @@ def load_config(root: str) -> RubricConfig:
             f"NOTE: {LOCAL_RUBRIC} not found; using core defaults (no skip labels, "
             "priority off). Run `backlog-refinement setup` to configure this repository.\n"
         )
-        return RubricConfig(None, (), ())
+        return RubricConfig(None, (), (), grill_handback=resolve_grill_handback("ask"))
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -166,7 +238,7 @@ def load_config(root: str) -> RubricConfig:
         )
         sys.exit(1)
     handback = read_marker(GRILL_HANDBACK_MARKER, "grill-handback", text, path)
-    if handback is not None and handback not in (("ask",), ("auto",)):
+    if handback is not None and (len(handback) != 1 or handback[0] not in GRILL_HANDBACK_MODES):
         sys.stderr.write(f"Invalid grill-handback in {path}; expected ask or auto.\n")
         sys.exit(1)
     return RubricConfig(
@@ -177,7 +249,7 @@ def load_config(root: str) -> RubricConfig:
         stale_action,
         _setting(_INTEGRATION_BRANCH, text),
         rewrite_mode,
-        handback[0] if handback else "ask",
+        resolve_grill_handback(handback[0] if handback else "ask"),
     )
 
 
