@@ -1441,8 +1441,33 @@ def _pooled_budget_used(repo: str, pr: int, used: int) -> tuple[int, int | None]
     for part in record["partitions"]:
         sibling = part["replacement_pr"]
         if sibling is not None and sibling != pr:
-            total += _restart_inventory(repo, sibling)["budget_used"]
+            total += _reserved_budget_used(repo, sibling, _restart_inventory(repo, sibling)["budget_used"])
     return total, int(record["pr"])
+
+
+def _reserved_budget_used(repo: str, pr: int, used: int) -> int:
+    """Include a saved reservation until GitHub confirms its automatic restart."""
+    for path in approvals_dir(repo).glob(f"pr-{pr}-*.json"):
+        if not re.fullmatch(rf"pr-{pr}-[0-9a-f]{{12}}\.json", path.name):
+            continue
+        record = _load_approval(path, repo, pr, None, transaction=True, allow_expired=True)
+        if record.get("source") == "autonomy-policy" and record.get("intent") is not None:
+            used = max(used, record["budget_used"])
+    return used
+
+
+@contextmanager
+def _split_budget_lock(repo: str, pr: int) -> Iterator[None]:
+    """Serialize sibling reservations through publication using their original's split lock."""
+    try:
+        found = _split_origin(repo, pr)
+    except SplitError as exc:
+        raise ApprovalError(f"cannot read split lineage for {repo}#{pr}: {exc}") from exc
+    if found is None:
+        yield
+    else:
+        with _approval_lock(_split_target(repo, found[0]["pr"])):
+            yield
 
 
 def record_policy_restart(repo: str, pr: int, head: str, scope_decision: str | None = None) -> dict[str, Any]:
@@ -1546,12 +1571,13 @@ def _approve_restart_locked(
     return {"path": str(target), **record}
 
 
-def _load_approval(path: Path, repo: str, pr: int, head: str, *, transaction: bool = False,
+def _load_approval(path: Path, repo: str, pr: int, head: str | None, *, transaction: bool = False,
                    allow_expired: bool = False) -> dict[str, Any]:
     try:
         info = path.lstat()
     except FileNotFoundError as exc:
-        raise ApprovalError(f"no restart approval for {repo}#{pr} at {head[:12]}") from exc
+        suffix = f" at {head[:12]}" if head is not None else ""
+        raise ApprovalError(f"no restart approval for {repo}#{pr}{suffix}") from exc
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ApprovalError(f"{path}: not a regular file owned and writable only by this user")
     try:
@@ -1571,6 +1597,12 @@ def _load_approval(path: Path, repo: str, pr: int, head: str, *, transaction: bo
         or record.get("deep") is not False
     ):
         raise ApprovalError("malformed policy restart record")
+    if head is None:
+        head = record.get("head")
+        if not isinstance(head, str) or not SHA_RE.fullmatch(head):
+            raise ApprovalError(f"{path}: malformed approval head")
+        if path != _approval_target(repo, pr, head):
+            raise ApprovalError(f"{path}: approval head does not match its filename")
     for field, expected in (("repo", repo), ("pr", pr), ("head", head)):
         if record.get(field) != expected:
             raise ApprovalError(f"approval {field} does not match: recorded {record.get(field)!r}")
@@ -1682,7 +1714,7 @@ def restart_transaction(repo: str, pr: int, head: str, approval_id: str, fingerp
     if not APPROVAL_ID_RE.fullmatch(approval_id):
         raise ApprovalError("invalid approval ID")
     target = _approval_target(repo, pr, head)
-    with _approval_lock(target):
+    with _split_budget_lock(repo, pr), _approval_lock(target):
         record = _load_approval(target, repo, pr, head, transaction=True)
         if record["id"] != approval_id:
             raise ApprovalError("approval ID changed")

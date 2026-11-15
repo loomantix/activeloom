@@ -935,6 +935,79 @@ def test_a_replacement_restart_keeps_its_own_ordinal_within_the_shared_budget(
     assert record["budget_used"] == 1
 
 
+def test_sibling_restart_transactions_cannot_spend_the_last_slot_together(
+        authority: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    used = {PR: 0, 50: 0, 51: 0}
+    _split_with_replacements(authority, monkeypatch, used)
+    approvals = {pr: herd.record_policy_restart(REPO, pr, HEAD) for pr in (50, 51)}
+    reserved, release, attempting, second_started = (threading.Event() for _ in range(4))
+    errors: list[Exception] = []
+
+    def start(pr: int) -> None:
+        try:
+            def publish(record: Any, reserve: Any) -> None:
+                if pr == 51:
+                    second_started.set()
+                reserve(str(pr % 10) * 64)
+                if pr == 50:
+                    reserved.set()
+                    assert release.wait(5)
+                used[pr] += 1
+
+            if pr == 51:
+                attempting.set()
+            herd.restart_transaction(REPO, pr, HEAD, approvals[pr]["id"], "e" * 64, publish)
+        except Exception as exc:
+            errors.append(exc)
+
+    first, second = (threading.Thread(target=start, args=(pr,)) for pr in (50, 51))
+    first.start()
+    try:
+        assert reserved.wait(5)
+        second.start()
+        assert attempting.wait(5)
+        assert not second_started.wait(0.2)
+    finally:
+        release.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert used == {PR: 0, 50: 1, 51: 0}
+    assert len(errors) == 1 and isinstance(errors[0], herd.ApprovalError)
+    assert "2/2 used" in str(errors[0])
+    assert "intent" not in json.loads(herd._approval_target(REPO, 51, HEAD).read_text())
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_uncertain_sibling_publication_keeps_its_budget_reserved(
+        authority: Any, monkeypatch: pytest.MonkeyPatch, expired: bool) -> None:
+    used = {PR: 0, 50: 0, 51: 0}
+    _split_with_replacements(authority, monkeypatch, used)
+    first, second = (herd.record_policy_restart(REPO, pr, HEAD) for pr in (50, 51))
+
+    def uncertain(record: Any, reserve: Any) -> None:
+        reserve("e" * 64)
+        raise OSError("publication response lost")
+
+    with pytest.raises(OSError, match="response lost"):
+        herd.restart_transaction(REPO, 50, HEAD, first["id"], "f" * 64, uncertain)
+    target = herd._approval_target(REPO, 50, HEAD)
+    record = json.loads(target.read_text())
+    if expired:
+        record.update(created="2020-01-01T00:00:00Z", expires="2020-01-01T04:00:00Z")
+        herd._write_approval(target, record)
+    before = herd._approval_target(REPO, 51, HEAD).read_bytes()
+    with pytest.raises(herd.ApprovalError, match="2/2 used"):
+        herd.restart_transaction(REPO, 51, HEAD, second["id"], "f" * 64,
+                                 lambda record, reserve: reserve("e" * 64))
+    assert herd._approval_target(REPO, 51, HEAD).read_bytes() == before
+    assert herd.policy_report(REPO, [51])["budgets"][f"{REPO}#51"]["used"] == 2
+    # Once publication is visible, the saved reservation must not count twice.
+    used[50] = 1
+    assert herd.policy_report(REPO, [51])["budgets"][f"{REPO}#51"]["used"] == 2
+
+
 def test_a_replacement_names_its_original_and_partition() -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
