@@ -35,7 +35,9 @@ PRs and refuse to split a replacement partition a second time. A new plan
 must cover exactly the open PR's changed files at its live head, from the base
 repository, after its run ended and with no restart pending; a PR with a split
 record never gets a policy restart. A replacement PR is recorded only after
-GitHub shows it open, a draft, same-repository and on its partition's branch.
+GitHub shows it open, a draft, same-repository and on its partition's branch,
+and the original is superseded only while every replacement is still open or
+merged on that branch.
 
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval,
@@ -2092,13 +2094,20 @@ def split_record(repo: str, pr: int, head: str, partition: str, branch: str | No
         return {"path": str(target), **split_summary(record)}
 
 
-def _verify_replacement_pr(repo: str, number: int, branch: str) -> None:
-    """Refuse a replacement PR that GitHub does not show as this partition's own draft."""
+def _verify_replacement_pr(repo: str, number: int, branch: str, *, recorded: bool = False) -> None:
+    """Refuse a replacement PR that GitHub does not show as this partition's own draft.
+
+    A `recorded` replacement, rechecked before the original is superseded, may
+    since have been marked ready or merged, but never closed unmerged.
+    """
     info = _github_read(lambda controller: controller._json_output(["api", f"repos/{repo}/pulls/{number}"]),
                         f"{repo}#{number}")
     if not isinstance(info, dict) or info.get("number") != number:
         raise SplitError(f"GitHub returned no PR {repo}#{number}")
-    if info.get("state") != "open" or info.get("draft") is not True:
+    if recorded:
+        if info.get("state") != "open" and not (info.get("state") == "closed" and info.get("merged") is True):
+            raise SplitError(f"replacement {repo}#{number} was closed without merging; its partition is not carried")
+    elif info.get("state") != "open" or info.get("draft") is not True:
         raise SplitError(f"replacement {repo}#{number} is not an open draft PR")
     if not _same_repository(info, repo):
         raise SplitError(f"replacement {repo}#{number} has a head outside {repo}")
@@ -2119,7 +2128,7 @@ def _recorded_elsewhere(repo: str, pr: int, number: int) -> int | None:
 
 
 def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
-    """Mark the original superseded, only once every partition has a replacement PR."""
+    """Mark the original superseded, only once every partition has a live or merged replacement PR."""
     with _split_lock(_split_target(repo, pr)):
         target, record = _load_split(repo, pr, head)
         summary = split_summary(record)
@@ -2127,6 +2136,8 @@ def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
             raise SplitError("original scope not accounted for: partitions "
                              f"{', '.join(summary['needs_pr'])} have no replacement PR")
         if record["superseded"] is None:
+            for part in record["partitions"]:
+                _verify_replacement_pr(repo, part["replacement_pr"], part["branch"], recorded=True)
             record["superseded"] = _iso(_now())
             _write_approval(target, record)
         return {"path": str(target), **split_summary(record)}

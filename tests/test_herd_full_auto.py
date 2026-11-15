@@ -73,7 +73,7 @@ def github_split_checks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int,
     """An ended original run and replacement PRs GitHub would accept, unless a test says otherwise."""
     VERIFIED.clear()
     monkeypatch.setattr(herd, "_restart_inventory", lambda *a: {"state": "ended"})
-    monkeypatch.setattr(herd, "_verify_replacement_pr", lambda *a: VERIFIED.append(a), raising=False)
+    monkeypatch.setattr(herd, "_verify_replacement_pr", lambda *a, **k: VERIFIED.append(a), raising=False)
     return VERIFIED
 
 
@@ -428,7 +428,8 @@ def test_hreview_policy_restart_follows_user_routes_and_guards_first(root: str) 
 def test_hreview_refuses_stale_relays(root: str) -> None:
     text = skill(root, "hreview")
     assert "refuse a stale or mismatched relay" in text
-    assert "A relay is never a restart" in text
+    assert "A relay never carries a restart" in text
+    assert "apart from the restart and scope decisions step 9's Policy restart makes" in text
 
 
 @pytest.mark.parametrize("root", ROOTS)
@@ -705,6 +706,52 @@ def test_a_transient_github_failure_is_retried_before_refusing(monkeypatch: pyte
     failures[0] = 99
     with pytest.raises(herd.SplitError, match="cannot read"):
         REAL_VERIFY_REPLACEMENT(REPO, 50, "feat/alpha-42")
+
+
+def test_a_refused_replacement_pr_leaves_the_record_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", None)
+    target = herd._split_target(REPO, PR)
+    before = target.read_bytes()
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise herd.SplitError("replacement is not an open draft PR")
+
+    monkeypatch.setattr(herd, "_verify_replacement_pr", refuse)
+    for partition, branch in (("alpha", None), ("beta", "feat/beta-42")):
+        with pytest.raises(herd.SplitError, match="not an open draft") as refused:
+            herd.split_record(REPO, PR, HEAD, partition, branch, 50)
+        assert refused.value.reason == "refused"
+        assert target.read_bytes() == before
+    status = herd.split_status(REPO, PR, HEAD)
+    assert status["needs_pr"] == ["alpha", "beta"] and status["needs_branch"] == ["beta"]
+
+
+@pytest.mark.parametrize("pull, accepted", [
+    (replacement(number=51, head={"ref": "feat/beta-42", "repo": {"full_name": REPO}}), True),
+    (replacement(number=51, draft=False, head={"ref": "feat/beta-42", "repo": {"full_name": REPO}}), True),
+    (replacement(number=51, state="closed", merged=True, head={"ref": "feat/beta-42", "repo": {"full_name": REPO}}),
+     True),
+    (replacement(number=51, state="closed", merged=False, head={"ref": "feat/beta-42", "repo": {"full_name": REPO}}),
+     False),
+    (replacement(number=51, head={"ref": "feat/other", "repo": {"full_name": REPO}}), False),
+])
+def test_supersede_rechecks_every_replacement_on_github(monkeypatch: pytest.MonkeyPatch, pull: dict[str, Any],
+                                                        accepted: bool) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
+    assert REAL_VERIFY_REPLACEMENT is not None
+    monkeypatch.setattr(herd, "_verify_replacement_pr", REAL_VERIFY_REPLACEMENT)
+    calls = fake_github(monkeypatch, lambda args: replacement() if args[-1].endswith("/50") else pull)
+    if accepted:
+        assert herd.split_supersede(REPO, PR, HEAD)["superseded"]
+    else:
+        with pytest.raises(herd.SplitError) as refused:
+            herd.split_supersede(REPO, PR, HEAD)
+        assert refused.value.reason == "refused"
+        assert herd.split_status(REPO, PR, HEAD)["superseded"] is None
+    assert calls == [["api", f"repos/{REPO}/pulls/50"], ["api", f"repos/{REPO}/pulls/51"]]
 
 
 def live_pull(head_repo: Any) -> dict[str, Any]:

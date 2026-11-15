@@ -488,7 +488,8 @@ without asking you:
   its own draft PR (`split-record` notes each branch and PR), and gives each
   replacement its first review run. The original stays draft and open until
   `split-status` shows every partition has a PR; then `split-supersede` marks
-  it and `horch` links the replacements. An interrupted split resumes from the
+  it, refusing while any replacement is closed without merging, and `horch`
+  links the replacements. An interrupted split resumes from the
   record without opening a second PR for any partition, and a replacement
   partition is never split again. A standalone `hreview` records the plan and
   stops with a `SPLIT PLANNED` block pointing at `horch`.
@@ -500,9 +501,9 @@ without asking you:
   (default `~/.config`), and
   only you remove or replace it. Builds use the record's immutable head and
   paths; the existing record and replacements stay intact when the original
-  PR changes. A PR with a split record is never restarted or re-decided:
+  PR changes. A PR with a split record is never restarted automatically or re-decided:
   `record-policy-restart` refuses it, and the sessions resume the split
-  instead. Refusals print `split refused [<reason>]` on stderr (exit 5).
+  instead. Only your own restart continues the original. Refusals print `split refused [<reason>]` on stderr (exit 5).
 - **Routine recovery.** `horch` also accepts a session's supported
   recommendation within the task's authorized scope, makes routine in-scope
   prerequisite corrections (stale workflow metadata, a missing prerequisite,
@@ -606,7 +607,7 @@ Each engine launches with its model and effort from your review profile and its 
 
 **A ship refuses.** Read the gate line in the alert. Common causes: a required check still pending, no required checks with `ship.checks: required`, a CI run still running, or `ship-staging` refusing on its own guardrails (it currently ships only to `staging` and needs its `status: on-staging` label and webhook). The PR is left as it was.
 
-**A review run ended and the orchestrator will not restart it.** By design. Either open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`, or record a [restart approval](#restart-approvals) and tell the orchestrator to continue. The orchestrator cannot pass your approval on for you.
+**A review run ended and the orchestrator will not restart it.** By design, unless [full auto](#full-auto) applies and its restart budget is not spent; the alert names the failed guard. Either open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`, or record a [restart approval](#restart-approvals) and tell the orchestrator to continue. The orchestrator cannot pass your approval on for you.
 
 **`claim-restart` exits 4.** No approval matches the PR at its exact current head, unexpired and unused, or the record is malformed or has unsafe permissions; the stderr line names the cause. A push after you approved moves the head; approve again at the new head.
 
