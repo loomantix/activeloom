@@ -162,7 +162,7 @@ LABELS = {
 LABEL_RE = re.compile(r"(?:^|(?<=[\s.;)]))(" + "|".join(map(re.escape, LABELS)) + r"):\s*")
 OPTION_SPLIT_RE = re.compile(r"(?:^|;\s*)\(([a-z])\)\s*")
 ENGINES_TAIL_RE = re.compile(r"\s+[—–]\s+([^—–]+?)\s*$")
-LETTER_RE = re.compile(r"^\(?([a-z])\)?")
+LETTER_RE = re.compile(r"^\(([a-z])\)")
 
 
 def _title_and_rest(text: str) -> tuple[str, str]:
@@ -251,10 +251,7 @@ def parse_legacy(inner: str) -> dict[str, Any]:
     checked: list[str] = []
     for line in text.split("\n"):
         stripped = line.strip()
-        if not stripped or stripped.startswith(">") or stripped.startswith("<!--"):
-            if not stripped:
-                continue
-            section = None if stripped.startswith(">") else section
+        if not stripped or stripped.startswith("<!--"):
             continue
         matched = next((name for name, rx in SECTION_RES if rx.match(stripped)), None)
         if matched:
@@ -263,18 +260,20 @@ def parse_legacy(inner: str) -> dict[str, Any]:
         if stripped.startswith("Passes:"):
             section = None
             continue
-        if section in ("product", "assumption"):
-            m = NUMBERED_RE.match(stripped)
+        if section in ("product", "assumption", "refuted"):
+            # Fail closed: an unclaimed line here would leave an item off a "complete" sign-off.
+            if section == "refuted":
+                m, group = BULLET_RE.match(stripped), 1
+            else:
+                m, group = NUMBERED_RE.match(stripped), 2
             if m:
-                raw.append((section, [m.group(2)]))
+                raw.append((section, [m.group(group)]))
             elif raw and raw[-1][0] == section and line[:1].isspace():
                 raw[-1][1].append(stripped)
-        elif section == "refuted":
-            m = BULLET_RE.match(stripped)
-            if m:
-                raw.append((section, [m.group(1)]))
-            elif raw and raw[-1][0] == section and line[:1].isspace():
-                raw[-1][1].append(stripped)
+            else:
+                raise SignoffError(f"unrecognised line in the {section} section: {stripped[:80]}")
+        elif stripped.startswith(">"):
+            section = None
         elif section == "checked":
             m = BULLET_RE.match(stripped)
             if m:
@@ -600,17 +599,20 @@ DATA.issues.forEach(function(iss,ix){
     if(count(iss)!==iss.items.length)return;
     if(!SERVED){showCopy();return;}
     submit.disabled=true;status.textContent='Sending…';status.className='status';
-    fetch('/answers',{method:'POST',headers:{'Content-Type':'application/json','X-Signoff-Token':TOKEN},body:JSON.stringify(payload(iss))})
+    var body=JSON.stringify(payload(iss));
+    fetch('/answers',{method:'POST',headers:{'Content-Type':'application/json','X-Signoff-Token':TOKEN},body:body})
       .then(function(r){return r.json().catch(function(){return{ok:false,error:'HTTP '+r.status};}).then(function(b){if(!r.ok||!b.ok)throw new Error(b.error||('HTTP '+r.status));});})
-      .then(function(){status.textContent='Sent to the agent at '+new Date().toLocaleTimeString()+'.';status.className='status ok';iss.sent=true;refresh();})
+      .then(function(){status.textContent='Sent to the agent at '+new Date().toLocaleTimeString()+'.';status.className='status ok';iss.sent=body;refresh();})
       .catch(function(e){status.textContent='Not sent: '+e.message+'. Copy the block below instead.';status.className='status err';showCopy();refresh();});
   });
   function refresh(){
     saveDraft(iss);
     var n=count(iss),total=iss.items.length,rem=bulkable(iss).length;
+    var sent=!!iss.sent&&iss.sent===JSON.stringify(payload(iss));
+    if(iss.sent&&!sent&&status.className==='status ok'){status.textContent='Changed since it was sent: submit again.';status.className='status';}
     bulk.textContent='Accept all remaining ('+rem+')';bulk.disabled=rem===0;
     progress.textContent=n+' of '+total+' answered';
-    tab.textContent=iss.repo.split('/')[1]+'#'+iss.issue+' · '+n+'/'+total+(iss.sent?' ✓':'');
+    tab.textContent=iss.repo.split('/')[1]+'#'+iss.issue+' · '+n+'/'+total+(sent?' ✓':'');
     submit.disabled=n!==total;
     iss.items.forEach(function(it){cards[it.id].sync();});
     if(!copyWrap.hidden)showCopy();

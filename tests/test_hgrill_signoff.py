@@ -155,6 +155,34 @@ def test_legacy_refuted_entry() -> None:
 
 
 @pytest.mark.parametrize(
+    "inner",
+    [
+        # An unknown heading must not file the next assumption as a product call.
+        "**Product calls — yours to confirm:**\n1. **Call** — alpha.\n**Assumptions (reconciled):**\n1. **Hidden** — alpha.",
+        # A refuted entry in the numbered form must not vanish.
+        "**Refuted and not resolved — x:**\n1. ❌ **Numbered** is false: y.\n**Assumptions:**\n1. **A** — alpha.",
+        # A quote between items must not drop the items after it.
+        "**Assumptions:**\n1. **A one** — alpha.\n> aside\n2. **A two** — alpha.",
+        # An unindented wrapped line is not silently discarded.
+        "**Assumptions:**\n1. **A one** — alpha.\nwrapped without indent",
+    ],
+)
+def test_legacy_unclaimed_section_lines_fail_closed(inner: str) -> None:
+    with pytest.raises(so.SignoffError, match="unrecognised line"):
+        so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}")
+
+
+def test_legacy_option_letters_need_parentheses() -> None:
+    inner = (
+        "**Product calls — yours to confirm:**\n"
+        "1. ⚠ **Q** — the passes disagreed. Options: (a) one — x; (b) two — y. "
+        "Applied now: both, pending. Recommended: apply (a) now. Evidence: none."
+    )
+    p1 = by_id(so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}"))["P1"]
+    assert (p1["applied"], p1["recommended"]) == (None, None)
+
+
+@pytest.mark.parametrize(
     "body, message",
     [
         ("no block here", "no hgrill-assumptions block"),
