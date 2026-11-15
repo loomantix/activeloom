@@ -633,7 +633,7 @@ function card(iss,it,refresh){
   meta('Evidence',it.evidence);meta('Reconciled',it.reconciled);
   if(it.kind!=='refuted')meta('Note',it.detail);
   meta('If reversed',it.if_reversed);meta('If wrong',it.if_wrong);
-  var optNodes=[];var name='o-'+iss.issue+'-'+it.id;
+  var optNodes=[];var name='o-'+iss.repo+'#'+iss.issue+'-'+it.id;
   it.options.forEach(function(o){
     var row=el('label','opt');var r=el('input');r.type='radio';r.name=name;row.appendChild(r);
     var t=el('span');t.appendChild(el('b',null,'('+o.key+') '));inline(t,o.text);

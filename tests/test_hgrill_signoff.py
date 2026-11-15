@@ -354,6 +354,67 @@ def test_page_escapes_hostile_titles() -> None:
     assert "innerHTML" not in so.PAGE_JS
 
 
+def test_page_keeps_same_number_cross_repo_answers_selected() -> None:
+    snapshots = [so.load_snapshot(repo, 7, "Synthetic", v1_body(v1_snapshot())) for repo in (REPO, "example-org/other")]
+    probe = r"""
+const vm = require('node:vm');
+const fs = require('node:fs');
+const {script, data} = JSON.parse(fs.readFileSync(0, 'utf8'));
+const nodes = [];
+function node(tag) {
+  let checked = false;
+  const n = {tag, children: [], attrs: {}, listeners: {}, value: '',
+    classList: {toggle() {}},
+    appendChild(c) {this.children.push(c); return c;},
+    setAttribute(k, v) {this.attrs[k] = v;},
+    addEventListener(e, f) {this.listeners[e] = f;},
+    fire(e) {this.listeners[e]?.();},
+    get checked() {return checked;},
+    set checked(v) {
+      // Native radios with the same name and no form owner share a group,
+      // including radios in hidden tab panels.
+      if (v && this.type === 'radio') {
+        nodes.filter(o => o !== this && o.type === 'radio' && o.name === this.name)
+          .forEach(o => {o.checked = false;});
+      }
+      checked = v;
+    }
+  };
+  nodes.push(n); return n;
+}
+const document = {
+  getElementById: id => id === 'signoff-data' ? {textContent: JSON.stringify(data)} : node('main'),
+  createElement: node, createTextNode: text => ({textContent: text})
+};
+vm.runInNewContext(script, {document, URLSearchParams,
+  location: {protocol: 'file:', search: ''},
+  localStorage: {getItem() {return null;}, setItem() {}}});
+const tabs = nodes.filter(n => n.attrs.role === 'tab');
+const panels = nodes.filter(n => n.attrs.role === 'tabpanel');
+const selected = [];
+panels.forEach((panel, ix) => {
+  tabs[ix].fire('click');
+  const cards = panel.children.filter(n => n.className === 'card');
+  const option = cards[0].children.find(n => n.className === 'opt').children[0];
+  option.checked = true; option.fire('change');
+  const choices = cards[1].children.find(n => n.className === 'choices');
+  const action = choices.children[ix].children[0];
+  action.checked = true; action.fire('change');
+  selected.push(option, action);
+});
+tabs[0].fire('click');
+process.stdout.write(JSON.stringify(selected.map(n => n.checked)));
+"""
+    result = subprocess.run(
+        ["node", "-e", probe],
+        input=json.dumps({"script": so.PAGE_JS, "data": so.page_data(snapshots)}),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == [True, True, True, True]
+
+
 def test_render_cli_writes_private_files(tmp_path: Path) -> None:
     out = tmp_path / "out"
     code = so.main(["render", "--repo", REPO, "7", "--body", f"7={FIXTURE}", "--out-dir", str(out)])
