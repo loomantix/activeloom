@@ -140,7 +140,10 @@ Pending records are preserved; resume the original transaction instead of
 minting another. A consumed record is archived before a later ended run at the
 same head receives its next budgeted record. Scope choices and their
 orchestration belong to the caller. A `split` never records a restart for the
-original PR; the caller persists the partition plan with `split-plan` and
+original PR, but it is charged as one automatic restart of it: under protected
+`full` a split of a PR whose budget is spent is refused (`budget-spent`), and
+each replacement PR's automatic restarts draw on the original's remaining budget,
+shared with its sibling replacements. The caller persists the partition plan with `split-plan` and
 tracks each replacement with `split-record`, `split-status` and
 `split-supersede` (records under `$XDG_CONFIG_HOME/activeloom/herd-splits/`).
 Every split command requires `--head` with the freshly observed original PR

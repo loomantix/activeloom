@@ -486,9 +486,14 @@ without asking you:
 - **Split.** No review run starts on the original PR. `horch` records the
   partition plan with `split-plan`, builds each partition on a new branch with
   its own draft PR (`split-record` notes each branch and PR), and gives each
-  replacement its first review run. The original stays draft and open until
+  replacement its first review run. The split is charged as one automatic
+  restart of the original, so it is refused once that budget is spent, and the
+  replacements' automatic restarts share what remains of it. Each
+  replacement's reviewers also check the original's unresolved findings on its
+  paths. The original stays draft and open until
   `split-status` shows every partition has a PR; then `split-supersede` marks
-  it, refusing while any replacement is closed without merging, and `horch`
+  it, refusing while any replacement is closed without merging, targets another
+  base, or changes other than exactly its partition's paths, and `horch`
   links the replacements. An interrupted split resumes from the
   record without opening a second PR for any partition, and a replacement
   partition is never split again. A standalone `hreview` records the plan and

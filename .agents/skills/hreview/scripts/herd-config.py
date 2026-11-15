@@ -34,17 +34,22 @@ original is superseded. They let an interrupted split resume without duplicate
 PRs and refuse to split a replacement partition a second time. A new plan
 must cover exactly the open PR's changed files at its live head, from the base
 repository, after its run ended and with no restart pending; a PR with a split
-record never gets a policy restart. A replacement PR is recorded only after
-GitHub shows it open, a draft, same-repository and on its partition's branch,
-and the original is superseded only at its live recorded head while every
-replacement is still open or merged on that branch.
+record never gets a policy restart. A split is charged as one automatic
+restart of the original: a new plan under protected full auto needs the
+original's budget unspent, the record stores the charged count, and every
+replacement's automatic restarts draw on that same remaining budget, so a split
+never opens a fresh one. A replacement PR is recorded only after GitHub shows it
+open, a draft, same-repository, on its partition's branch and against the
+original's base branch, and the original is superseded only at its live recorded
+head while every replacement is still open or merged on that branch and base,
+with exactly its partition's paths changed.
 
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval,
 5 split record refused. A split refusal's stderr line is
 `split refused [<reason>]: ...`, the reason being one of `no-record`,
-`head-changed`, `replacement`, `recorded`, `scope-mismatch`, `restart-pending`
-or `refused`.
+`head-changed`, `replacement`, `recorded`, `scope-mismatch`, `restart-pending`,
+`budget-spent` or `refused`.
 """
 
 from __future__ import annotations
@@ -1375,8 +1380,9 @@ def policy_report(repo: str | None = None, prs: list[int] | None = None) -> dict
         if repo is None:
             raise UsageError("--pr requires --repo")
         try:
-            used = _restart_inventory(repo, pr)["budget_used"]
-            report["budgets"][f"{repo}#{pr}"] = {"used": used, "limit": report["restart_budget"], "status": "verified"}
+            used, origin = _pooled_budget_used(repo, pr, _restart_inventory(repo, pr)["budget_used"])
+            report["budgets"][f"{repo}#{pr}"] = {"used": used, "limit": report["restart_budget"], "status": "verified",
+                                                 "shared_with_split_of": origin}
         except (ApprovalError, OSError, ValueError) as exc:
             report["budgets"][f"{repo}#{pr}"] = {"used": None, "status": "unavailable", "reason": str(exc)}
     return report
@@ -1406,13 +1412,37 @@ def _automatic_restart_gate(repo: str, pr: int, head: str, record: dict[str, Any
         if "restart-after-exhausted" in policy["stops"]:
             raise ApprovalError("automatic restart denied: restart-after-exhausted stop")
     used = inventory["budget_used"]
-    if used >= policy["restart_budget"]:
-        raise ApprovalError(f"automatic restart budget spent for {repo}#{pr}: {used}/{policy['restart_budget']} used; use approve-restart in your terminal or ask horch to raise restart_budget")
+    pooled, origin = _pooled_budget_used(repo, pr, used)
+    if pooled >= policy["restart_budget"]:
+        shared = f" (shared with the split of #{origin})" if origin is not None else ""
+        raise ApprovalError(f"automatic restart budget spent for {repo}#{pr}: {pooled}/{policy['restart_budget']} used{shared}; use approve-restart in your terminal or ask horch to raise restart_budget")
     values = {"source": "autonomy-policy", "policy_sha256": policy["policy_sha256"],
               "ended_run_id": latest["run_id"], "ended_outcome": end["outcome"], "budget_used": used + 1}
     if record is not None and any(record[key] != value for key, value in values.items()):
         raise ApprovalError("restart inventory changed since the record was created")
     return values
+
+
+def _pooled_budget_used(repo: str, pr: int, used: int) -> tuple[int, int | None]:
+    """Automatic restarts counted against `pr`, and the split original whose budget it shares.
+
+    A replacement partition draws on its original's budget: the count charged
+    when the original was split plus every sibling replacement's own automatic
+    restarts plus its own. Any other PR counts only its own.
+    """
+    try:
+        found = _split_origin(repo, pr)
+    except SplitError as exc:
+        raise ApprovalError(f"cannot read split lineage for {repo}#{pr}: {exc}") from exc
+    if found is None:
+        return used, None
+    record = found[0]
+    total = record["budget_used"] + used
+    for part in record["partitions"]:
+        sibling = part["replacement_pr"]
+        if sibling is not None and sibling != pr:
+            total += _restart_inventory(repo, sibling)["budget_used"]
+    return total, int(record["pr"])
 
 
 def record_policy_restart(repo: str, pr: int, head: str, scope_decision: str | None = None) -> dict[str, Any]:
@@ -1794,7 +1824,9 @@ class SplitError(Exception):
     already recorded for that partition), `scope-mismatch` (the plan or head
     disagrees with the live PR), `restart-pending` (a restart record for this
     head is unused or reserved, or the run is no longer ended: follow the
-    restart instead) or `refused` for everything else, which blocks.
+    restart instead), `budget-spent` (the original's automatic restart budget
+    is spent, and a split would be charged one more) or `refused` for
+    everything else, which blocks.
     """
 
     def __init__(self, message: str, reason: str = "refused") -> None:
@@ -1829,6 +1861,8 @@ def _valid_split_record(record: Any) -> bool:
         return False
     # Every nullable key must be present: later reads index it directly.
     if "superseded" not in record or (record["superseded"] is not None and not _is_text(record["superseded"])):
+        return False
+    if not _is_text(record.get("base")) or type(record.get("budget_used")) is not int or record["budget_used"] < 1:
         return False
     paths, parts = record.get("paths"), record.get("partitions")
     if not isinstance(paths, list) or not all(_is_text(path) for path in paths) or not isinstance(parts, list):
@@ -1923,8 +1957,20 @@ def _same_repository(info: Any, repo: str) -> bool:
     return all(_is_text(name) and name.lower() == repo.lower() for name in names)
 
 
-def _live_pr_scope(repo: str, pr: int) -> tuple[str, list[str]]:
-    """The open PR's live head and complete changed-file list, read from GitHub."""
+def _changed_paths(info: Any, rows: list[Any]) -> list[str] | None:
+    """Every path a PR changes, a rename's old path included; None when GitHub's list is incomplete."""
+    names = [row.get("filename") if isinstance(row, dict) else None for row in rows]
+    # A rename's old path is part of the change: some partition must carry its deletion.
+    previous = [row.get("previous_filename") for row in rows
+                if isinstance(row, dict) and row.get("status") == "renamed" and row.get("previous_filename") is not None]
+    if (not isinstance(info, dict) or not all(_is_text(name) for name in names + previous)
+            or info.get("changed_files") != len(set(names))):
+        return None
+    return sorted(set(names) | set(previous))
+
+
+def _live_pr_scope(repo: str, pr: int) -> tuple[str, list[str], str]:
+    """The open PR's live head, complete changed-file list and base branch, read from GitHub."""
     info, rows = _github_read(lambda controller: (
         controller._json_output(["api", f"repos/{repo}/pulls/{pr}"]),
         controller._flatten_pages(
@@ -1933,30 +1979,33 @@ def _live_pr_scope(repo: str, pr: int) -> tuple[str, list[str]]:
         ),
     ), f"{repo}#{pr}")
     head = (info.get("head") or {}).get("sha") if isinstance(info, dict) else None
-    names = [row.get("filename") for row in rows]
-    # A rename's old path is part of the change: some partition must carry its deletion.
-    previous = [row.get("previous_filename") for row in rows
-                if row.get("status") == "renamed" and row.get("previous_filename") is not None]
-    if (not isinstance(info, dict) or info.get("state") != "open" or not _is_text(head)
-            or not all(_is_text(name) for name in names + previous)
-            or info.get("changed_files") != len(set(names))):
+    base = (info.get("base") or {}).get("ref") if isinstance(info, dict) else None
+    paths = _changed_paths(info, rows)
+    if (paths is None or info.get("state") != "open" or not _is_text(head) or not _is_text(base)):
         raise SplitError(f"{repo}#{pr}: GitHub returned an incomplete or closed PR")
     if not _same_repository(info, repo):
         # Partitions become same-repository branches with first-party CI and folder trust.
         raise SplitError(f"{repo}#{pr} has a head outside {repo}; a fork PR is never split automatically")
-    return head, sorted(set(names) | set(previous))
+    return head, paths, base
 
 
-def _split_lineage(repo: str, pr: int) -> int | None:
-    """The original PR whose split created `pr` as a replacement, if any."""
+def _split_origin(repo: str, pr: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The split record that created `pr` as a replacement, and its partition, if any."""
     directory = splits_dir(repo)
     if not directory.is_dir():
         return None
     for path in sorted(directory.glob("pr-*.json")):
         record = _read_split(path)
-        if record and any(part["replacement_pr"] == pr for part in record["partitions"]):
-            return int(record["pr"])
+        for part in record["partitions"] if record else []:
+            if part["replacement_pr"] == pr:
+                return record, part
     return None
+
+
+def _split_lineage(repo: str, pr: int) -> int | None:
+    """The original PR whose split created `pr` as a replacement, if any."""
+    found = _split_origin(repo, pr)
+    return int(found[0]["pr"]) if found else None
 
 
 def split_summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -1974,10 +2023,10 @@ def _head_changed(repo: str, pr: int, target: Path, recorded: str, observed: str
                       f" (record {target}, recorded head {recorded}, observed head {observed})", "head-changed")
 
 
-def _require_no_restart(repo: str, pr: int, head: str) -> None:
+def _require_no_restart(repo: str, pr: int, head: str) -> int:
     """Refuse a new split while a restart for this head is pending or its run is live.
 
-    The caller holds the head's restart lock.
+    Returns the original's automatic restart count. The caller holds the head's restart lock.
     """
     target = _approval_target(repo, pr, head)
     if target.exists() or target.is_symlink():
@@ -1990,12 +2039,25 @@ def _require_no_restart(repo: str, pr: int, head: str) -> None:
             raise SplitError(f"{repo}#{pr} has a pending restart record at {head[:12]}; follow the restart, not a split",
                              "restart-pending")
     try:
-        state = _restart_inventory(repo, pr, head)["state"]
+        inventory = _restart_inventory(repo, pr, head)
     except ApprovalError as exc:
         raise SplitError(f"cannot confirm {repo}#{pr}'s run ended: {exc}") from exc
-    if state != "ended":
-        raise SplitError(f"{repo}#{pr}'s review run is {state}, not ended; follow that run, not a split",
+    if inventory["state"] != "ended":
+        raise SplitError(f"{repo}#{pr}'s review run is {inventory['state']}, not ended; follow that run, not a split",
                          "restart-pending")
+    used = inventory.get("budget_used")
+    if type(used) is not int or used < 0:
+        raise SplitError(f"cannot read {repo}#{pr}'s automatic restart budget")
+    return used
+
+
+def _split_charge(repo: str, pr: int, used: int) -> int:
+    """The automatic restart ordinal a split consumes; refused when full auto's budget is spent."""
+    policy = _policy_report()
+    if policy.get("protected") and policy.get("mode") == "full" and used >= policy["restart_budget"]:
+        raise SplitError(f"automatic restart budget spent for {repo}#{pr}: {used}/{policy['restart_budget']} used;"
+                         " a split is charged as one more, so it needs the user", "budget-spent")
+    return used + 1
 
 
 def split_plan(repo: str, pr: int, head: str, plan: Any) -> dict[str, Any]:
@@ -2025,7 +2087,7 @@ def split_plan(repo: str, pr: int, head: str, plan: Any) -> dict[str, Any]:
             if not same:
                 raise SplitError(f"a different split of {repo}#{pr} is recorded at {head[:12]}; resume the recorded plan")
             return {"path": str(target), "resumed": True, **split_summary(existing)}
-        live_head, live_paths = _live_pr_scope(repo, pr)
+        live_head, live_paths, live_base = _live_pr_scope(repo, pr)
         if live_head != head:
             raise SplitError(f"{repo}#{pr} head is {live_head[:12]} on GitHub, not {head[:12]}", "scope-mismatch")
         if live_paths != paths:
@@ -2033,8 +2095,9 @@ def split_plan(repo: str, pr: int, head: str, plan: Any) -> dict[str, Any]:
             extra = sorted(set(paths) - set(live_paths))
             raise SplitError(f"plan.paths differ from {repo}#{pr}'s changed files: missing {missing}, extra {extra}",
                              "scope-mismatch")
-        _require_no_restart(repo, pr, head)
-        record = {"version": SPLIT_VERSION, "repo": repo, "pr": pr, "head": head, "created": _iso(_now()),
+        charged = _split_charge(repo, pr, _require_no_restart(repo, pr, head))
+        record = {"version": SPLIT_VERSION, "repo": repo, "pr": pr, "head": head, "base": live_base,
+                  "budget_used": charged, "created": _iso(_now()),
                   "paths": paths, "partitions": partitions, "superseded": None}
         _write_approval(target, record)
         return {"path": str(target), "resumed": False, **split_summary(record)}
@@ -2057,6 +2120,17 @@ def _load_split(repo: str, pr: int, head: str) -> tuple[Path, dict[str, Any]]:
 def split_status(repo: str, pr: int, head: str) -> dict[str, Any]:
     target, record = _load_split(repo, pr, head)
     return {"path": str(target), **split_summary(record)}
+
+
+def split_origin(repo: str, pr: int) -> dict[str, Any]:
+    """The original and partition a replacement PR carries; `no-record` when `pr` is no replacement."""
+    _split_target(repo, pr)
+    found = _split_origin(repo, pr)
+    if found is None:
+        raise SplitError(f"{repo}#{pr} is not a recorded replacement partition", "no-record")
+    record, part = found
+    return {"original_pr": record["pr"], "original_head": record["head"], "base": record["base"],
+            "partition": part["id"], "paths": part["paths"], "budget_used": record["budget_used"]}
 
 
 def split_record(repo: str, pr: int, head: str, partition: str, branch: str | None, replacement_pr: int | None) -> dict[str, Any]:
@@ -2088,7 +2162,7 @@ def split_record(repo: str, pr: int, head: str, partition: str, branch: str | No
             other = _recorded_elsewhere(repo, pr, replacement_pr)
             if other is not None:
                 raise SplitError(f"{repo}#{replacement_pr} is already recorded in the split of #{other}")
-            _verify_replacement_pr(repo, replacement_pr, branch or entry["branch"])
+            _verify_replacement_pr(repo, replacement_pr, branch or entry["branch"], record["base"])
         for key, value in (("branch", branch), ("replacement_pr", replacement_pr)):
             if value is not None:
                 entry[key] = value
@@ -2096,11 +2170,13 @@ def split_record(repo: str, pr: int, head: str, partition: str, branch: str | No
         return {"path": str(target), **split_summary(record)}
 
 
-def _verify_replacement_pr(repo: str, number: int, branch: str, *, recorded: bool = False) -> None:
+def _verify_replacement_pr(repo: str, number: int, branch: str, base: str, *,
+                           paths: list[str] | None = None, recorded: bool = False) -> None:
     """Refuse a replacement PR that GitHub does not show as this partition's own draft.
 
     A `recorded` replacement, rechecked before the original is superseded, may
-    since have been marked ready or merged, but never closed unmerged.
+    since have been marked ready or merged, but never closed unmerged. With
+    `paths`, its complete changed-file list must be exactly those paths.
     """
     info = _github_read(lambda controller: controller._json_output(["api", f"repos/{repo}/pulls/{number}"]),
                         f"{repo}#{number}")
@@ -2115,6 +2191,22 @@ def _verify_replacement_pr(repo: str, number: int, branch: str, *, recorded: boo
         raise SplitError(f"replacement {repo}#{number} has a head outside {repo}")
     if (info.get("head") or {}).get("ref") != branch:
         raise SplitError(f"replacement {repo}#{number} is not on the partition's branch {branch!r}")
+    if (info.get("base") or {}).get("ref") != base:
+        raise SplitError(f"replacement {repo}#{number} does not target the original's base branch {base!r}")
+    if paths is None:
+        return
+    rows = _github_read(lambda controller: controller._flatten_pages(
+        controller._json_output(["api", "--paginate", "--slurp", f"repos/{repo}/pulls/{number}/files?per_page=100"]),
+        "PR-file",
+    ), f"{repo}#{number} files")
+    changed = _changed_paths(info, rows)
+    if changed is None:
+        raise SplitError(f"replacement {repo}#{number}: GitHub returned an incomplete file list")
+    if changed != sorted(paths):
+        missing = sorted(set(paths) - set(changed))
+        extra = sorted(set(changed) - set(paths))
+        raise SplitError(f"replacement {repo}#{number} does not carry exactly its partition: missing {missing},"
+                         f" extra {extra}", "scope-mismatch")
 
 
 def _recorded_elsewhere(repo: str, pr: int, number: int) -> int | None:
@@ -2143,7 +2235,8 @@ def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
             if live_head != record["head"]:
                 raise _head_changed(repo, pr, target, record["head"], live_head)
             for part in record["partitions"]:
-                _verify_replacement_pr(repo, part["replacement_pr"], part["branch"], recorded=True)
+                _verify_replacement_pr(repo, part["replacement_pr"], part["branch"], record["base"],
+                                       paths=part["paths"], recorded=True)
             record["superseded"] = _iso(_now())
             _write_approval(target, record)
         return {"path": str(target), **split_summary(record)}
@@ -2279,6 +2372,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--repo", required=True)
         command.add_argument("--pr", required=True, type=int)
         command.add_argument("--head", required=True, help="freshly observed original PR head; must match the recorded split")
+    origin = commands.add_parser("split-origin", help="read-only: the split original and partition a replacement PR carries")
+    origin.add_argument("--repo", required=True)
+    origin.add_argument("--pr", required=True, type=int)
 
     args = parser.parse_args(argv)
     try:
@@ -2306,6 +2402,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit(split_status(args.repo, args.pr, args.head))
         elif args.command == "split-supersede":
             _emit(split_supersede(args.repo, args.pr, args.head))
+        elif args.command == "split-origin":
+            _emit(split_origin(args.repo, args.pr))
         elif args.command == "validate":
             path = Path(args.file)
             try:

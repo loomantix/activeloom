@@ -154,7 +154,7 @@ def test_skills_start_transaction_but_never_write_an_approval(root: str) -> None
         return (ROOT / root / "skills" / name / "SKILL.md").read_text()
 
     hreview = skill("hreview")
-    ended = hreview.split("**Ended**", 1)[1].split("10. Roster", 1)[0]
+    ended = hreview.split("**Ended**", 1)[1].split("10. Carried findings", 1)[0]
     assert "check-restart --repo $repo --pr <n> --head <head>" in ended
     assert ended.index("`--restart` typed by the user") < ended.index("check-restart")
     # The record is read, and a missing scope decision stops, before the approval is used.

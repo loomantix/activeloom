@@ -210,7 +210,7 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "A PR whose run has ended gets a herder only through Review chain's restart rules" in skill("hloop")
 
     hreview = skill("hreview")
-    ended = hreview.split("**Ended**", 1)[1].split("10. Roster", 1)[0]
+    ended = hreview.split("**Ended**", 1)[1].split("10. Carried findings", 1)[0]
     assert "`--restart` typed by the user" in ended
     assert "including a restart a peer asked for" in ended
     assert "RESTART NEEDS YOU" in ended
