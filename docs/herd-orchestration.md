@@ -493,7 +493,8 @@ without asking you:
   paths. The original stays draft and open until
   `split-status` shows every partition has a PR; then `split-supersede` marks
   it, refusing while any replacement is closed without merging, targets another
-  base, or changes other than exactly its partition's paths, and `horch`
+  base, leaves one of its partition's paths unchanged or changes another
+  partition's path (other paths, such as its own review's tests, are allowed), and `horch`
   links the replacements. An interrupted split resumes from the
   record without opening a second PR for any partition, and a replacement
   partition is never split again. A standalone `hreview` records the plan and

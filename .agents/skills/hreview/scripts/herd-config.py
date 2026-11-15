@@ -42,7 +42,7 @@ never opens a fresh one. A replacement PR is recorded only after GitHub shows it
 open, a draft, same-repository, on its partition's branch and against the
 original's base branch, and the original is superseded only at its live recorded
 head while every replacement is still open or merged on that branch and base,
-with exactly its partition's paths changed.
+changing every one of its partition's paths and none of another partition's.
 
 Commands print JSON on stdout. Exit codes: 0 ok, 1 invalid configuration,
 2 usage or git error, 3 lock already held, 4 no valid restart approval,
@@ -2203,12 +2203,15 @@ def split_record(repo: str, pr: int, head: str, partition: str, branch: str | No
 
 
 def _verify_replacement_pr(repo: str, number: int, branch: str, base: str, *,
-                           paths: list[str] | None = None, recorded: bool = False) -> None:
+                           paths: list[str] | None = None, foreign: list[str] | None = None,
+                           recorded: bool = False) -> None:
     """Refuse a replacement PR that GitHub does not show as this partition's own draft.
 
     A `recorded` replacement, rechecked before the original is superseded, may
     since have been marked ready or merged, but never closed unmerged. With
-    `paths`, its complete changed-file list must be exactly those paths.
+    `paths`, its complete changed-file list must include every one of those
+    paths and none of `foreign` (the other partitions' paths). Other paths, such
+    as a test its own review added, are reviewed there and do not block.
     """
     info = _github_read(lambda controller: controller._json_output(["api", f"repos/{repo}/pulls/{number}"]),
                         f"{repo}#{number}")
@@ -2234,11 +2237,11 @@ def _verify_replacement_pr(repo: str, number: int, branch: str, base: str, *,
     changed = _changed_paths(info, rows)
     if changed is None:
         raise SplitError(f"replacement {repo}#{number}: GitHub returned an incomplete file list")
-    if changed != sorted(paths):
-        missing = sorted(set(paths) - set(changed))
-        extra = sorted(set(changed) - set(paths))
-        raise SplitError(f"replacement {repo}#{number} does not carry exactly its partition: missing {missing},"
-                         f" extra {extra}", "scope-mismatch")
+    missing = sorted(set(paths) - set(changed))
+    taken = sorted(set(changed) & set(foreign or ()))
+    if missing or taken:
+        raise SplitError(f"replacement {repo}#{number} does not carry its partition alone: missing {missing},"
+                         f" other partitions' paths {taken}", "scope-mismatch")
 
 
 def _recorded_elsewhere(repo: str, pr: int, number: int) -> int | None:
@@ -2267,8 +2270,9 @@ def split_supersede(repo: str, pr: int, head: str) -> dict[str, Any]:
             if live_head != record["head"]:
                 raise _head_changed(repo, pr, target, record["head"], live_head)
             for part in record["partitions"]:
+                foreign = sorted(set(record["paths"]) - set(part["paths"]))
                 _verify_replacement_pr(repo, part["replacement_pr"], part["branch"], record["base"],
-                                       paths=part["paths"], recorded=True)
+                                       paths=part["paths"], foreign=foreign, recorded=True)
             record["superseded"] = _iso(_now())
             _write_approval(target, record)
         return {"path": str(target), **split_summary(record)}

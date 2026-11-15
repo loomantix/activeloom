@@ -1020,12 +1020,13 @@ def test_a_replacement_names_its_original_and_partition() -> None:
 
 
 @pytest.mark.parametrize("rows, missing", [
-    ([{"filename": "src/a.py"}], "tests/test_a.py"),
-    ([{"filename": "src/a.py"}, {"filename": "tests/test_a.py"}, {"filename": "src/b.py"}], "extra ['src/b.py']"),
-    ([{"filename": "src/a.py", "status": "renamed", "previous_filename": "src/old.py"},
-      {"filename": "tests/test_a.py"}], "extra ['src/old.py']"),
+    ([{"filename": "src/a.py"}], "missing ['tests/test_a.py']"),
+    ([{"filename": "src/a.py"}, {"filename": "tests/test_a.py"}, {"filename": "src/b.py"}],
+     "other partitions' paths ['src/b.py']"),
+    ([{"filename": "src/a.py", "status": "renamed", "previous_filename": "tests/test_b.py"},
+      {"filename": "tests/test_a.py"}], "other partitions' paths ['tests/test_b.py']"),
 ])
-def test_supersede_needs_each_replacement_to_carry_exactly_its_partition(
+def test_supersede_needs_each_replacement_to_carry_its_partition_alone(
         monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]], missing: str) -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
@@ -1038,6 +1039,30 @@ def test_supersede_needs_each_replacement_to_carry_exactly_its_partition(
         herd.split_supersede(REPO, PR, HEAD)
     assert short.value.reason == "scope-mismatch"
     assert herd.split_status(REPO, PR, HEAD)["superseded"] is None
+
+
+def test_supersede_allows_a_replacement_review_fix_outside_its_partition(monkeypatch: pytest.MonkeyPatch) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    herd.split_record(REPO, PR, HEAD, "beta", "feat/beta-42", 51)
+    assert REAL_VERIFY_REPLACEMENT is not None
+    monkeypatch.setattr(herd, "_verify_replacement_pr", REAL_VERIFY_REPLACEMENT)
+    monkeypatch.setattr(herd, "_live_pr_scope", lambda repo, pr: (HEAD, plan()["paths"], BASE))
+    files = {50: ["src/a.py", "tests/test_a.py", "tests/test_a_review.py"],
+             51: ["src/b.py", "tests/test_b.py", "src/helpers.py"]}
+    numbers: list[int] = []
+
+    def github(args: list[str]) -> Any:
+        number = int(next(arg for arg in args if "/pulls/" in arg).split("/pulls/")[1].split("/")[0].split("?")[0])
+        if "--paginate" in args:
+            return [[{"filename": name} for name in files[number]]]
+        numbers.append(number)
+        branch = "feat/alpha-42" if number == 50 else "feat/beta-42"
+        return replacement(number=number, changed_files=3, head={"ref": branch, "repo": {"full_name": REPO}})
+
+    fake_github(monkeypatch, github)
+    assert herd.split_supersede(REPO, PR, HEAD)["superseded"] is not None
+    assert numbers == [50, 51]
 
 
 @pytest.mark.parametrize("root", ROOTS)
