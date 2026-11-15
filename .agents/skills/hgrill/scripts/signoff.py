@@ -398,7 +398,7 @@ def load_snapshot(repo: str, issue: int, title: str, body: str) -> Snapshot:
     inner = extract_block(body)
     copies = JSON_COPY_RE.findall(inner)
     if len(copies) > 1:
-        raise SignoffError("the block holds more than one hgrill-assumptions:v1 copy")
+        raise SignoffError(f"the block in {repo}#{issue} holds more than one hgrill-assumptions:v1 copy")
     if copies:
         data = validate_snapshot(loads_strict(copies[0]))
         source, digest = SOURCE_JSON, json_hash(data)
