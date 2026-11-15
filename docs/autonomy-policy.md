@@ -125,6 +125,30 @@ The reader also requires a complete `sudo -n -l` permission listing with no
 hide behind a password-required `--check`. This deliberately rejects even
 unrelated passwordless rules; uncertain protection never enables authority.
 
+sudo-rs requires authentication for `-l`, so on sudo-rs both listings return
+exactly `sudo: interactive authentication is required` without a cached
+credential. Only that exact response defers to a root-captured proof. After a
+sudo-rs install or `set`, the setter (running as root) runs
+`sudo -n -l -U <invoking user> <setter> --check` and `sudo -n -l -U <invoking user>`,
+and records `/etc/activeloom/sudo-rs-proof.json` only when the setter is permitted
+and the inventory has no `NOPASSWD` or `!authenticate` entry. It refuses when any
+physical line other than the top-level sudoers.d `includedir` starts with
+`@include` or `#include` in any spelling, whether continued or following a
+comment that ends in a backslash, or when `/etc/sudoers-rs` exists. The
+proof is bound to the invoking uid, the policy and setter SHA-256, and the `lstat`
+identity of the sudo binary, `/etc/sudoers`, the sudoers.d directory and each
+entry in it, `/etc/passwd` and `/etc/group`. The reader accepts it only when all
+of those still match. These permission inputs must be regular files and the
+sudoers.d path must be a directory; symlinks are refused at capture and verification
+because changes to their targets would escape an `lstat` fingerprint.
+The reader also compares the live sudoers.d entry names with the recorded list,
+so new entries invalidate the proof even when directory metadata is unchanged.
+Any change, harmless or not, disables authority until the
+user re-runs `set` through sudo. Rules or group membership from non-file sources
+(for example LDAP) are outside the fingerprint. A failed capture keeps the install
+or `set`, removes any old proof, and prints a warning. Classic sudo never records
+or consults a proof.
+
 ```text
 python3 <harness>/skills/hreview/scripts/herd-config.py record-policy-restart --repo owner/repo --pr 123 --head <full-sha> --scope-decision keep
 ```
@@ -162,8 +186,9 @@ path protection and failed installation; they are not platform demonstrations.
 An unprivileged syntax-only check of the drop-in passed with local `visudo`
 (sudo-rs) and `visudo.ws`; it did not install the fragment or authenticate.
 The sudo-rs fixtures use strings and output shapes from sudo-rs 0.2.13 binaries
-and an unprivileged `visudo -c` run. Whether sudo-rs's `sudo -n -l <setter>
---check` can list without a cached credential is **unrun**. Where it cannot, the
-reader reports authority disabled.
+and an unprivileged `visudo -c` run. On sudo-rs 0.2.13, unprivileged `sudo -n -l`
+returns the interactive-authentication diagnostic without a cached credential.
+The root-side `sudo -l -U` output shape used for the proof is **unrun** on a live
+host; output that does not match leaves the proof unrecorded and authority disabled.
 Containment, scoped credentials and same-user tamper resistance are unimplemented
 and unavailable here.

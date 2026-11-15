@@ -233,6 +233,7 @@ describe('CLI command parser and execution', () => {
     ['preflight-anchor', /preflight-anchor requires/],
     ['post-finding', /post-finding requires/],
     ['reopen-occurrence', /reopen-occurrence missing required parameters/],
+    ['correct-severity', /correct-severity missing required parameters/],
     ['dispose', /dispose missing required parameters/],
     ['reply', /reply requires/],
     ['post-pr-comment', /post-pr-comment requires/],
