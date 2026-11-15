@@ -7,11 +7,16 @@ Policy authentication and the GitHub inventory are stubbed; sudo is never invoke
 from __future__ import annotations
 
 import importlib.util
+import fcntl
 import json
 import os
+import re
+import shutil
+import subprocess
+import threading
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -33,6 +38,7 @@ def load() -> ModuleType:
 
 herd = load()
 REAL_LIVE_PR_SCOPE = herd._live_pr_scope
+REAL_VERIFY_REPLACEMENT = getattr(herd, "_verify_replacement_pr", None)
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +63,18 @@ def live_pr(monkeypatch: pytest.MonkeyPatch) -> dict[int, tuple[str, list[str]]]
 
     monkeypatch.setattr(herd, "_live_pr_scope", scope)
     return LIVE
+
+
+VERIFIED: list[tuple[str, int, str]] = []
+
+
+@pytest.fixture(autouse=True)
+def github_split_checks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, str]]:
+    """An ended original run and replacement PRs GitHub would accept, unless a test says otherwise."""
+    VERIFIED.clear()
+    monkeypatch.setattr(herd, "_restart_inventory", lambda *a: {"state": "ended"})
+    monkeypatch.setattr(herd, "_verify_replacement_pr", lambda *a: VERIFIED.append(a), raising=False)
+    return VERIFIED
 
 
 def plan(**overrides: Any) -> dict[str, Any]:
@@ -231,9 +249,12 @@ def test_a_split_pr_never_gets_a_policy_restart(authority: Any) -> None:
     assert not herd._approval_target(REPO, PR, HEAD).exists()
 
 
-def test_a_split_after_minting_still_blocks_the_policy_restart(authority: Any) -> None:
+def test_a_split_after_minting_still_blocks_the_policy_restart(authority: Any,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
     authority[1]["budget_used"] = 0
     record = herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    # split-plan now refuses here itself; the gate stays the second line for a record written regardless.
+    monkeypatch.setattr(herd, "_require_no_restart", lambda *a: None)
     herd.split_plan(REPO, PR, HEAD, plan())
     with pytest.raises(herd.ApprovalError, match="scope split record"):
         herd.restart_transaction(REPO, PR, HEAD, record["id"], "f" * 64, lambda r, reserve: reserve("e" * 64))
@@ -495,7 +516,8 @@ def test_split_dispatch_and_resume_never_overlap(root: str) -> None:
     assert "give that exact name in the build prompt" in dispatch
     resume = split.split("3. **Resume**", 1)[1].split("4. **Review**", 1)[0]
     assert "never through Dispatch" in resume and "resume the build on that same branch" in resume
-    for reason in ("[no-record]", "[head-changed]", "[replacement]", "[recorded]", "[scope-mismatch]"):
+    for reason in ("[no-record]", "[head-changed]", "[replacement]", "[recorded]", "[scope-mismatch]",
+                   "[restart-pending]"):
         assert reason in split, reason
     assert "treat every other exit 5 as a block" in split
     assert "only the user removes or replaces that record" in split
@@ -524,7 +546,8 @@ def test_full_auto_and_relays_stay_inside_owner_authority(root: str) -> None:
 
 def test_live_pr_scope_reads_head_and_every_changed_file(monkeypatch: pytest.MonkeyPatch) -> None:
     controller = herd._review_controller()
-    pulls = {"state": "open", "head": {"sha": HEAD}, "changed_files": 3}
+    pulls = {"state": "open", "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+             "base": {"repo": {"full_name": REPO}}, "changed_files": 3}
     pages = [[{"filename": "b.py"}, {"filename": "a.py"}], [{"filename": "c.py"}]]
     calls: list[list[str]] = []
 
@@ -544,3 +567,179 @@ def test_live_pr_scope_reads_head_and_every_changed_file(monkeypatch: pytest.Mon
         pulls.update(broken)
         with pytest.raises(herd.SplitError, match="incomplete or closed"):
             REAL_LIVE_PR_SCOPE(REPO, PR)
+
+
+# --- split races and GitHub checks -------------------------------------------------
+
+
+def test_a_pending_policy_restart_blocks_a_new_split(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    with pytest.raises(herd.SplitError, match="pending restart") as pending:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert pending.value.reason == "restart-pending"
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_a_reserved_restart_blocks_a_new_split_even_after_expiry(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    target = herd._approval_target(REPO, PR, HEAD)
+    record = json.loads(target.read_text())
+    record["intent"] = {"fingerprint": "f" * 64, "run_id": "e" * 64}
+    record["created"] = herd._iso(herd._now() - herd.timedelta(hours=1))
+    record["expires"] = herd._iso(herd._now() - herd.timedelta(minutes=1))
+    herd._write_approval(target, record)
+    with pytest.raises(herd.SplitError) as pending:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert pending.value.reason == "restart-pending"
+
+
+def test_an_inert_restart_record_does_not_block_a_split(authority: Any) -> None:
+    authority[1]["budget_used"] = 0
+    herd.record_policy_restart(REPO, PR, HEAD, "keep")
+    target = herd._approval_target(REPO, PR, HEAD)
+    record = json.loads(target.read_text())
+    record["created"] = herd._iso(herd._now() - herd.timedelta(hours=5))
+    record["expires"] = herd._iso(herd._now() - herd.timedelta(hours=1))
+    herd._write_approval(target, record)
+    assert herd.split_plan(REPO, PR, HEAD, plan())["resumed"] is False
+
+
+@pytest.mark.parametrize("state", ["active", "none"])
+def test_a_split_needs_the_original_run_to_have_ended(state: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(herd, "_restart_inventory", lambda *a: {"state": state})
+    with pytest.raises(herd.SplitError, match="not ended") as live:
+        herd.split_plan(REPO, PR, HEAD, plan())
+    assert live.value.reason == "restart-pending"
+    assert not herd._split_target(REPO, PR).exists()
+
+
+def test_split_plan_waits_for_the_restart_lock(config_home: Path) -> None:
+    lock_path = herd._approval_target(REPO, PR, HEAD).with_suffix(".lock")
+    herd._private_dir(lock_path.parent)
+    done: list[Any] = []
+    with open(os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600), "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        worker = threading.Thread(target=lambda: done.append(herd.split_plan(REPO, PR, HEAD, plan())))
+        worker.start()
+        worker.join(0.5)
+        assert worker.is_alive() and not herd._split_target(REPO, PR).exists()
+        fcntl.flock(held, fcntl.LOCK_UN)
+    worker.join(5)
+    assert done and done[0]["resumed"] is False
+
+
+def test_split_record_verifies_a_new_replacement_pr_on_its_branch(github_split_checks: Any) -> None:
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", None)
+    herd.split_record(REPO, PR, HEAD, "alpha", None, 50)
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    assert github_split_checks == [(REPO, 50, "feat/alpha-42")]
+
+
+def test_a_replacement_pr_named_by_another_split_is_refused(live_pr: Any) -> None:
+    live_pr[43] = live_pr[PR]
+    herd.split_plan(REPO, PR, HEAD, plan())
+    herd.split_plan(REPO, 43, HEAD, plan())
+    herd.split_record(REPO, PR, HEAD, "alpha", "feat/alpha-42", 50)
+    for number in (50, PR):
+        with pytest.raises(herd.SplitError, match="already recorded in the split of #42") as taken:
+            herd.split_record(REPO, 43, HEAD, "alpha", "feat/alpha-43", number)
+        assert taken.value.reason == "refused"
+    assert herd.split_status(REPO, 43, HEAD)["partitions"][0]["replacement_pr"] is None
+
+
+def fake_github(monkeypatch: pytest.MonkeyPatch, answer: Callable[[list[str]], Any]) -> list[list[str]]:
+    controller = herd._review_controller()
+    calls: list[list[str]] = []
+
+    def json_output(args: list[str]) -> Any:
+        calls.append(args)
+        return answer(args)
+
+    monkeypatch.setattr(controller, "_json_output", json_output)
+    monkeypatch.setattr(herd, "_review_controller", lambda: controller)
+    monkeypatch.setattr(herd.time, "sleep", lambda seconds: None)
+    return calls
+
+
+def replacement(**overrides: Any) -> dict[str, Any]:
+    value = {"number": 50, "state": "open", "draft": True,
+             "head": {"ref": "feat/alpha-42", "repo": {"full_name": REPO}}, "base": {"repo": {"full_name": REPO}}}
+    value.update(overrides)
+    return value
+
+
+@pytest.mark.parametrize("pull, message", [
+    (replacement(state="closed"), "not an open draft"),
+    (replacement(draft=False), "not an open draft"),
+    (replacement(number=51), "no PR"),
+    (replacement(head={"ref": "feat/alpha-42", "repo": {"full_name": "someone/widgets"}}), "head outside"),
+    (replacement(head={"ref": "feat/alpha-42", "repo": None}), "head outside"),
+    (replacement(head={"ref": "feat/other", "repo": {"full_name": REPO}}), "partition's branch"),
+])
+def test_an_unverifiable_replacement_pr_is_refused(monkeypatch: pytest.MonkeyPatch, pull: dict[str, Any],
+                                                   message: str) -> None:
+    assert REAL_VERIFY_REPLACEMENT is not None
+    calls = fake_github(monkeypatch, lambda args: pull)
+    with pytest.raises(herd.SplitError, match=message) as refused:
+        REAL_VERIFY_REPLACEMENT(REPO, 50, "feat/alpha-42")
+    assert refused.value.reason == "refused"
+    assert calls == [["api", f"repos/{REPO}/pulls/50"]]
+
+
+def test_a_transient_github_failure_is_retried_before_refusing(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert REAL_VERIFY_REPLACEMENT is not None
+    failures = [2]
+
+    def flaky(args: list[str]) -> Any:
+        if failures[0]:
+            failures[0] -= 1
+            raise herd._review_controller().HandoffError("timeout")
+        return replacement()
+
+    calls = fake_github(monkeypatch, flaky)
+    REAL_VERIFY_REPLACEMENT(REPO, 50, "feat/alpha-42")
+    assert len(calls) == 3
+    failures[0] = 99
+    with pytest.raises(herd.SplitError, match="cannot read"):
+        REAL_VERIFY_REPLACEMENT(REPO, 50, "feat/alpha-42")
+
+
+def live_pull(head_repo: Any) -> dict[str, Any]:
+    return {"state": "open", "head": {"sha": HEAD, "repo": head_repo}, "base": {"repo": {"full_name": REPO}},
+            "changed_files": 1}
+
+
+@pytest.mark.parametrize("head_repo", [{"full_name": "someone/widgets"}, None])
+def test_a_fork_head_is_never_split(monkeypatch: pytest.MonkeyPatch, head_repo: Any) -> None:
+    fake_github(monkeypatch, lambda args: [[{"filename": "a.py"}]] if "--paginate" in args else live_pull(head_repo))
+    with pytest.raises(herd.SplitError, match="fork") as fork:
+        REAL_LIVE_PR_SCOPE(REPO, PR)
+    assert fork.value.reason == "refused"
+
+
+COPIED_ROWS = [
+    {"filename": "new.py", "status": "renamed", "previous_filename": "old.py"},
+    {"filename": "copy.py", "status": "copied", "previous_filename": "source.py"},
+    {"filename": "plain.py", "status": "modified"},
+]
+
+
+def test_a_copied_file_source_is_not_part_of_the_split_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    pull = {**live_pull({"full_name": REPO}), "changed_files": 3}
+    fake_github(monkeypatch, lambda args: [COPIED_ROWS] if "--paginate" in args else pull)
+    assert REAL_LIVE_PR_SCOPE(REPO, PR) == (HEAD, ["copy.py", "new.py", "old.py", "plain.py"])
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+@pytest.mark.parametrize("root", ROOTS)
+@pytest.mark.parametrize("name", ["horch", "hreview"])
+def test_the_skills_plan_paths_match_what_split_plan_checks(root: str, name: str) -> None:
+    filters = re.findall(r"pulls/<n>/files --jq '([^']+)'", skill(root, name))
+    assert filters
+    for expression in filters:
+        printed = subprocess.run(["jq", "-r", expression], input=json.dumps(COPIED_ROWS), text=True,
+                                 capture_output=True, check=True).stdout.split()
+        assert sorted(set(printed)) == ["copy.py", "new.py", "old.py", "plain.py"]
