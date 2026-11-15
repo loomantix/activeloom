@@ -498,7 +498,9 @@ without asking you:
   links the replacements. An interrupted split resumes from the
   record without opening a second PR for any partition, and a replacement
   partition is never split again. A standalone `hreview` records the plan and
-  stops with a `SPLIT PLANNED` block pointing at `horch`.
+  stops with a `SPLIT PLANNED` block pointing at `horch`. Typing
+  `/hreview 42 --restart --scope-decision split` yourself takes the same route
+  without full auto: it records the plan and stops, and `horch` builds it.
   Every split command takes `--head` with the freshly observed original PR
   head. A new plan must list exactly the open PR's changed files at its live
   head. Before dispatch, adoption, recording or superseding, a mismatch with

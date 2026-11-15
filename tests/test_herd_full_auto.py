@@ -935,6 +935,19 @@ def test_a_replacement_restart_keeps_its_own_ordinal_within_the_shared_budget(
     assert record["budget_used"] == 1
 
 
+def test_an_unreadable_split_lineage_never_gives_a_replacement_a_fresh_budget(
+        authority: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _split_with_replacements(authority, monkeypatch, {PR: 0, 50: 0, 51: 0})
+    original = herd._split_target(REPO, PR)
+    original.write_text(json.dumps({"version": 1}))
+    with pytest.raises(herd.ApprovalError, match=f"cannot read split lineage for {REPO}#50"):
+        herd.record_policy_restart(REPO, 50, HEAD)
+    assert not herd._approval_target(REPO, 50, HEAD).exists()
+    budget = herd.policy_report(REPO, [50])["budgets"][f"{REPO}#50"]
+    assert budget["used"] is None and budget["status"] == "unavailable"
+    assert "split lineage" in budget["reason"]
+
+
 def test_sibling_restart_transactions_cannot_spend_the_last_slot_together(
         authority: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     used = {PR: 0, 50: 0, 51: 0}

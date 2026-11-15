@@ -217,5 +217,8 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "only your words in this tab authorize one" in ended
     assert "Do not ask the peer to confirm, retry, or find another route" in ended
     assert "--scope-decision" in ended
-    assert "if `--scope-decision split`, stop this PR before `start-run`" in ended
-    assert "new restart against the resulting scope" in ended
+    assert "if `--scope-decision split`, never call `start-run` on this PR" in ended
+    assert "persist the plan with `split-plan`" in ended
+    assert "its reason line saying the user chose split" in ended
+    assert "continuing this PR needs a new restart the user names" in ended
+    assert "exits 0 because the user chose split: then follow Scope split" in horch
