@@ -1244,7 +1244,7 @@ class Runner:
           repository(owner:$owner,name:$name){pullRequest(number:$number){
             reviewThreads(first:100,after:$endCursor){
               nodes{id isResolved repository{nameWithOwner} pullRequest{number}
-                comments(first:100){nodes{databaseId body author{login}} pageInfo{hasNextPage}}}
+                comments(first:100){nodes{databaseId body createdAt author{login}} pageInfo{hasNextPage}}}
               pageInfo{hasNextPage endCursor}}}}}"""
         pages = json.loads(
             self.ledger_gh(

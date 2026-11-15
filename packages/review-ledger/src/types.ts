@@ -41,6 +41,8 @@ export interface FindingV3Match {
   severity: SupportedSeverity;
   lens: string;
   contentSha: string;
+  /** When GitHub reports it, the time the finding comment was posted. */
+  postedAt?: string | undefined;
 }
 
 /** Fields parsed from a v3 disposition marker. */

@@ -26,7 +26,7 @@ import { readFileSync as readFileSync6 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.16.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.16.1" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -494,12 +494,14 @@ function reviewRuns(rows) {
       fail("local-review run supersession chain is incomplete or forked");
     }
     seen.set(id, { body, commentId });
+    const createdAt = row["created_at"];
     runs.push({
       id,
       commentId,
       base,
       tier,
-      maxRounds
+      maxRounds,
+      ...typeof createdAt === "string" ? { startedAt: createdAt } : {}
     });
   }
   return runs;
@@ -1468,7 +1470,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
           repository { nameWithOwner }
           pullRequest { number }
           comments(first:100) {
-            nodes { databaseId body author { login } }
+            nodes { databaseId body createdAt author { login } }
             pageInfo { hasNextPage }
           }
         }
@@ -16980,6 +16982,9 @@ function threadProtocolRecords(thread, historicalCommentIds) {
       fail("actor-owned local-review marker is malformed or unsupported");
     }
     if (findingV3) {
+      if (typeof row["createdAt"] === "string") {
+        findingV3.postedAt = row["createdAt"];
+      }
       findingsV3.push([index, findingV3]);
     }
     if (dispositionV3) {
@@ -17222,10 +17227,27 @@ function verifyThreadDispositions(threads, historicalCommentIds, options) {
   verifyBlockingNotDeferred(options?.repo, matched);
   return matched;
 }
+function postedBeforeRun(finding, runStartedAt) {
+  if (finding.postedAt === void 0 || runStartedAt === void 0) {
+    return false;
+  }
+  const posted = Date.parse(finding.postedAt);
+  const started = Date.parse(runStartedAt);
+  return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
+}
+function currentRun(repo, pr) {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1);
+}
+function currentRunStartedAt(repo, pr) {
+  return currentRun(repo, pr)?.startedAt;
+}
 function sameRoundDispositions(args, matched, allowedHeads, slips) {
   const evidence = /* @__PURE__ */ new Map();
   for (const [finding, disposition] of matched) {
     if (finding.engine !== args.engine || finding.round !== args.round) {
+      continue;
+    }
+    if (postedBeforeRun(finding, args.runStartedAt)) {
       continue;
     }
     const findingHead = finding.head;
@@ -17326,7 +17348,7 @@ function transitionHeads(params) {
   return heads;
 }
 function convergenceStartRound(repo, pr) {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === "lean" ? 2 : 3;
+  return currentRun(repo, pr)?.tier === "lean" ? 2 : 3;
 }
 function verifyResultEvidence(args, threads, options) {
   const data = options?.data ?? validateResultData(args, readResultBytes(args.resultFile));
@@ -17341,7 +17363,11 @@ function verifyResultEvidence(args, threads, options) {
     { repo: args.repo, pr: args.pr }
   );
   const allowedHeads = options?.allowedHeads ?? transitionHeads(args);
-  const evidence = sameRoundDispositions(args, matched, allowedHeads);
+  const evidence = sameRoundDispositions(
+    { ...args, runStartedAt: currentRunStartedAt(args.repo, args.pr) },
+    matched,
+    allowedHeads
+  );
   const evidenceFingerprints = evidence.map(([fingerprint]) => fingerprint);
   const expected = [...data.findingFingerprints].sort();
   if (evidenceFingerprints.length !== expected.length || evidenceFingerprints.some((value, index) => value !== expected[index])) {
@@ -17388,7 +17414,11 @@ function writeResult(params) {
     head: params.head,
     allowedHeadsFile: params.allowedHeadsFile
   });
-  const dispositions = sameRoundDispositions(params, matched, allowedHeads);
+  const dispositions = sameRoundDispositions(
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
+    matched,
+    allowedHeads
+  );
   const changed = params.before !== params.head;
   if (!changed && dispositions.some(([, hasFix]) => hasFix)) {
     fail("clean review results cannot have same-round fixes");
@@ -17460,7 +17490,7 @@ function checkBlockedRound(params) {
   const allowedHeads = transitionHeads(params);
   const slips = [];
   const dispositions = sameRoundDispositions(
-    params,
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
     matched,
     allowedHeads,
     slips
@@ -20440,6 +20470,7 @@ function threadNodes(store, state, first) {
         nodes: comments.slice(0, first).map((c) => ({
           databaseId: c.id,
           body: c.body,
+          createdAt: c.created_at,
           author: { login: c.user.login }
         })),
         pageInfo: { hasNextPage: comments.length > first }
@@ -21479,9 +21510,9 @@ function postRoster(params) {
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
   const existing = resolveRoster(rows);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
   const needsFreshRoster = Boolean(
-    currentRun?.ownerTransition && (existing.commentId ?? 0) <= currentRun.commentId
+    currentRun2?.ownerTransition && (existing.commentId ?? 0) <= currentRun2.commentId
   );
   const replayCandidate = existing.present && existing.version === 2 && !needsFreshRoster ? buildRosterBody({
     author: params.author,
@@ -21636,8 +21667,8 @@ function coverage(params) {
   assertActor(params.actor);
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
-  const minimumCommentId = currentRun?.ownerTransition ? currentRun.commentId : 0;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
+  const minimumCommentId = currentRun2?.ownerTransition ? currentRun2.commentId : 0;
   const resolvedRoster = resolveRoster(rows);
   const roster = minimumCommentId && (resolvedRoster.commentId ?? 0) <= minimumCommentId ? resolveRoster([]) : resolvedRoster;
   const attested = attestationsAtHead(rows, params.head, minimumCommentId);
