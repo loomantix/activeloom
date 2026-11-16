@@ -273,7 +273,7 @@ def test_unsafe_split_lock_is_a_split_refusal(config_home: Path, capsys: pytest.
                                               tmp_path: Path) -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     lock = herd._split_target(REPO, PR).with_suffix(".lock")
-    lock.chmod(0o666)
+    lock.chmod(0o620)
     base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
     assert herd.main(["split-record", *base, "--partition", "alpha", "--branch", "feat/a"]) == 5
     assert "unsafe lock" in capsys.readouterr().err
@@ -368,7 +368,7 @@ def test_supersede_refuses_when_the_live_original_head_moved(live_pr: dict[int, 
 
 def test_unsafe_split_record_is_refused() -> None:
     result = herd.split_plan(REPO, PR, HEAD, plan())
-    os.chmod(result["path"], 0o666)
+    os.chmod(result["path"], 0o620)
     with pytest.raises(herd.SplitError, match="owned and writable only"):
         herd.split_status(REPO, PR, HEAD)
 
@@ -672,7 +672,7 @@ def test_an_unreadable_restart_record_blocks_a_split(damage: str, tmp_path: Path
         target.symlink_to(tmp_path / "missing.json")
     else:
         target.write_text("{}" if damage == "unsafe" else "not json")
-        target.chmod(0o666 if damage == "unsafe" else 0o600)
+        target.chmod(0o620 if damage == "unsafe" else 0o600)
     with pytest.raises(herd.SplitError, match="unreadable restart record") as refused:
         herd.split_plan(REPO, PR, HEAD, plan())
     assert refused.value.reason == "refused"
