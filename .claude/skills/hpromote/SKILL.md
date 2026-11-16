@@ -1,8 +1,8 @@
 ---
 name: hpromote
-description: Promotion on herdr — opens a dedicated tab that runs the repository's promotion recipe across at most six visible panes (preflight commands, deploy and CI watchers, a read-only risk review of the whole promotion diff) and fix sessions that ship confirmed blockers to the integration branch. Stops at the human approval and merge, then watches the production deploy.
+description: Promotion on herdr — opens a dedicated tab that runs the repository's promotion recipe across at most six visible panes (preflight commands, deploy and CI watchers, a read-only risk review of the whole promotion diff) and fix sessions that ship confirmed blockers to the integration branch. Stops at the human approval and merge, then verifies the production deploy, after the human reports it where the repository deploys by hand.
 disable-model-invocation: true
-argument-hint: '[--dry-run] | run [--dry-run] | merged'
+argument-hint: '[--dry-run] | run [--dry-run] | merged | deployed'
 ---
 
 # /hpromote — integration-to-production promotion on herdr
@@ -12,6 +12,7 @@ Usage:
 - `/hpromote [--dry-run]`: open the promotion tab and run it.
 - `/hpromote run [--dry-run]`: internal. The driver inside the tab; the dispatcher sends it.
 - `/hpromote merged`: internal. The user, or the dispatcher relaying the user, reports the promotion PR merged. The driver runs [Post-merge](#post-merge).
+- `/hpromote deployed`: internal, `manual` deploy trigger only. The user, or the dispatcher relaying the user, reports production deployed after the merge. The driver runs [Post-deploy](#post-deploy).
 
 Two roles:
 
@@ -24,9 +25,15 @@ Mechanics: [`herdr.md`](../../references/herdr.md). Design: loomantix/activeloom
 
 `C` = `.claude/skills/hreview/scripts/herd-config.py`; `R` = `.claude/skills/promote/scripts/promote-recipe.py`. `python3 -I $C repo > <state>/herd.json` must report `promotion.enabled: true`; otherwise say the repository has not configured promotion and stop. Then:
 
-- **Recipe:** `python3 -I $R show --herd <state>/herd.json > <state>/recipe.json`. It reads `.activeloom-promote.json` from the integration branch. Without one, it builds a recipe from `promotion.preflight`, `promotion.deploy_workflows` and `promotion.post_merge` (`source.kind` is `herd`). A recipe whose branches disagree with the herd config exits 1. Exit 1 or 2 is a block.
+- **Recipe:** `python3 -I $R show --herd <state>/herd.json > <state>/recipe.json`. It reads `.activeloom-promote.json` from the integration branch. Without one, it builds a recipe from `promotion.preflight`, `promotion.deploy_workflows` and `promotion.post_merge` (`source.kind` is `herd`). A recipe whose branches, `deploy_trigger` or `deploy_runbook` disagree with values the herd config sets exits 1. Exit 1 or 2 is a block.
 - **Step rules:** `promotion.skill`, default `promote`. Read `.claude/skills/<skill>/SKILL.md` before Phase 1. Its step kinds, outcomes, PR body and standing authorization apply here; where a repository's own skill differs from this skill on a promotion step, it wins.
 - **Branches:** the recipe's `integration_branch` and `production_branch` are the promotion PR's head and base.
+- **Deploy trigger:** the recipe's `deploy_trigger` (from the recipe file, else `promotion.deploy_trigger`), with no default. A missing one makes `show` exit 1 with a message naming the field: a block that asks the user which applies. Record it in `state.md` and take every deploy phrase below from it:
+  - `merge`: `<deploy effect>` = `merging it deploys PRODUCTION`; `<ready line>` = `approve and merge deploys production`.
+  - `manual`: `<deploy effect>` = `merging it lands the code on <production>; production deploys only in a later manual step`; `<ready line>` = `approve and merge; then deploy production by hand (<runbook>)`, where `<runbook>` is `deploy_runbook`, else `the repository's manual deploy`.
+
+  Never tell the user, a peer or a reviewer that merging deploys production unless the trigger is `merge`.
+
 - **Risk reviewer:** the recipe `risk_review` step's `engine`, else `promotion.risk_engine`, else the first engine in the user's deep review order that is not this session's engine (`claude`).
 
 ## Hard stops
@@ -53,7 +60,7 @@ Nothing else: no closing issues, editing other PRs, filing issues beyond deferre
 1. `test "${HERDR_ENV:-}" = 1`, or stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for this session's engine and every engine a fix or review may start on.
 2. Lock: `python3 -I $C lock --repo <repo> --skill hpromote --key <yyyy-mm-dd>`. Exit 3 means a promotion is already running or blocked: report its tab and stop.
 3. Open a new tab, `P<mmdd>`, with the primary checkout as `--cwd` (never reuse the dispatcher's), start the driver as `p<mmdd>-driver` on this session's engine, and prompt it `run` (plus `--dry-run` if given) through this skill, addressed the way herdr.md's Engines table gives for that engine.
-4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ⏸ manual-tests` (the [manual test hold](#manual-test-hold)), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `⏸ manual-tests`, relay the question or the plan URL; the user's answer goes back to the driver as `continue`, `retry`, yes or no. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
+4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ⏸ deploy` (merged; waiting for the manual production deploy), `P<mmdd> ⏸ manual-tests` (the [manual test hold](#manual-test-hold)), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `⏸ manual-tests`, relay the question or the plan URL; the user's answer goes back to the driver as `continue`, `retry`, yes or no. On `⏸ deploy`, tell the user to deploy production by the runbook and to report `deployed`, which goes back to the driver. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
 
 ## Driver
 
@@ -102,7 +109,7 @@ Then:
 
 With `--dry-run`, skip PR creation: pin the remote integration head and production base SHAs, then go to Phase 3. A PR number is optional context. Throughout the dry run, use only the promotion skill's read-only checks; publish no PR, comment or other GitHub mutation and start no fixes.
 
-Otherwise follow the promotion skill. Title it with `python3 -I $R title --recipe <state>/recipe.json` unless a repository's own skill sets a title. The body is the promotion skill's, with the deploy surface from Phase 1, preflight lane results at the head SHA, and an **After merge** checklist naming each `post_merge` step, each recipe `after_merge` item, and any post-merge check that an open issue waits on.
+Otherwise follow the promotion skill. Title it with `python3 -I $R title --recipe <state>/recipe.json` unless a repository's own skill sets a title. The body is the promotion skill's, with the deploy surface from Phase 1, preflight lane results at the head SHA, the deploy trigger line from the promotion skill, and an **After merge** checklist naming each `post_merge` step, then with `manual` a "Deploy production" item naming `<runbook>` followed by each `post_deploy` step, then each recipe `after_merge` item and any post-merge check that an open issue waits on.
 
 ### Phase 3: risk review (read-only)
 
@@ -115,7 +122,7 @@ Phase 3 runs the recipe's `risk_review` step; start the other `pre_merge` lanes 
 3. Prompt it with the following, filled in. In a dry run without a PR, replace `PR #<n>` with `dry run` and use the pinned integration head and production base:
 
    ```text
-   Read-only promotion risk review for <repo> PR #<n> (<integration> -> <production>; merging it deploys PRODUCTION). This directory is detached at <head> = <integration> head. Base is origin/<production> (<base>). Do NOT edit files, commit, push, comment on GitHub, or approve/merge anything; report only.
+   Read-only promotion risk review for <repo> PR #<n> (<integration> -> <production>; <deploy effect>). This directory is detached at <head> = <integration> head. Base is origin/<production> (<base>). Do NOT edit files, commit, push, comment on GitHub, or approve/merge anything; report only.
    Each PR in it was already reviewed on its own. Find the risk that appears when this whole set reaches production at once. Read the repository's agent guide first.
    Focus on `git diff <base>..<head>`:
    1. Migrations: safety while old instances still run, lock and statement timeouts, ordering, declared bounds.
@@ -167,18 +174,27 @@ For each blocker, up to 3 at a time, each in a slot ([Layout](#layout)):
 ### Phase 5: CI and hand-off
 
 1. Every `pre_merge` lane runs at the current head; the `watch_checks` lane is the CI watch. Rerun a flaky job up to the step's `rerun_flakes`, then rerun the lane in its slot. Whenever the head moves, return to Phase 1 and rerun preflight and all pre-merge lanes at the new head.
-2. Ready means: no confirmed blocker or major left in the risk verdict, every fix PR shipped, every `preflight` and `pre_merge` lane passed at the same current head, and `mergeable=MERGEABLE`. When ready, rename the tab `P<mmdd> ⏸ approve`, notify with `--sound request` (`PR #<n> ready: approve and merge deploys production`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and print the PR URL, the verdict and the After merge checklist.
+2. Ready means: no confirmed blocker or major left in the risk verdict, every fix PR shipped, every `preflight` and `pre_merge` lane passed at the same current head, and `mergeable=MERGEABLE`. When ready, rename the tab `P<mmdd> ⏸ approve`, notify with `--sound request` (`PR #<n> ready: <ready line>`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and print the PR URL, the verdict and the After merge checklist.
 3. Stop. Merging is the human's. Do not wait for the merge in a loop that outlives the turn; the user or the dispatcher sends `merged`.
 
 ### Post-merge
 
-1. Confirm `gh pr view <n> --json state,mergeCommit` reads `MERGED`, and record the merge SHA.
-2. Create a worktree detached at the merge SHA and run the recipe's `post_merge` phase on the slots against it: deploy watchers and verification commands, side by side as the layout gives. A green job is not proof.
-3. Verify against deployed state: work through each After merge item, using the read-only access the repository's agent guide documents.
-4. Record the promotion where the repository keeps promotion notes, if it does: SHA, PR count, migrations, anything that went wrong.
-5. Remove the review worktrees, release the lock, rename the tab `P<mmdd> ✓`, notify, and close the tab once the user has seen the result.
+1. Confirm `gh pr view <n> --json state,mergeCommit` reads `MERGED`, record the merge SHA in `state.md`, and confirm `origin/<production>` contains it.
+2. Create a worktree detached at the merge SHA and run the recipe's `post_merge` phase on the slots against it, side by side as the layout gives. With `merge`, these are the deploy watchers and verification commands; with `manual`, checks of the merge only.
+3. With `merge`: if any `post_merge` lane did not pass (exit 3, whatever its outcome), follow the ⚠ rule below; otherwise go to [Finish](#finish).
+4. With `manual`: if any `post_merge` lane did not pass (exit 3, whatever its outcome), nothing has deployed: rename the tab `P<mmdd> ⚠`, report the evidence, tell the user not to deploy production, and stop; there is nothing to roll back. Otherwise record `post_merge passed: <merge sha>` in `state.md`, report the `post_merge` lane outcomes, keep the worktree at the merge SHA, rename the tab `P<mmdd> ⏸ deploy`, notify with `--sound request` (`PR #<n> merged: deploy production (<runbook>), then send deployed`), Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on. and stop. No production deploy has started: do not watch for, wait on or verify a rollout until `deployed` arrives.
 
-A failed production deploy or a broken check is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
+### Post-deploy
+
+`manual` only, on `deployed`. Require `post_merge passed: <merge sha>` in `state.md`; without it, follow [Blocks](#blocks). Confirm `gh pr view <n> --json state,mergeCommit` still reads `MERGED` at that SHA and that `origin/<production>` contains it, recreate the worktree detached at it if it is gone, then rename the tab `P<mmdd>`. Run the recipe's `post_deploy` phase on the slots against that worktree: deploy watchers and verification commands, side by side as the layout gives. If any `post_deploy` lane did not pass, follow the ⚠ rule below; otherwise go to [Finish](#finish).
+
+### Finish
+
+1. Verify against deployed state: work through each After merge item, using the read-only access the repository's agent guide documents. A green job is not proof.
+2. Record the promotion where the repository keeps promotion notes, if it does: SHA, PR count, migrations, anything that went wrong.
+3. Remove the review worktrees, release the lock, rename the tab `P<mmdd> ✓`, notify, and close the tab once the user has seen the result.
+
+A failed production deploy, or a lane after the deploy that did not pass (any `post_deploy` lane, or with `merge` a `post_merge` lane), is a ⚠: report it with the evidence and the recipe's `rollback` runbook. Never roll back on your own.
 
 ## Blocks
 

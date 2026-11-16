@@ -9,6 +9,7 @@
     "schema_version",
     "integration_branch",
     "production_branch",
+    "deploy_trigger",
     "steps"
   ],
   "$defs": {
@@ -26,7 +27,10 @@
       "items": { "$ref": "#/$defs/text" }
     },
     "engine": { "enum": ["claude", "codex", "gemini"] },
-    "phase": { "enum": ["preflight", "pre_merge", "post_merge"] },
+    "phase": {
+      "enum": ["preflight", "pre_merge", "post_merge", "post_deploy"],
+      "description": "post_deploy needs deploy_trigger manual; its steps wait until a person reports the production deploy."
+    },
     "command": {
       "type": "object",
       "additionalProperties": false,
@@ -109,7 +113,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "phase", "workflow"],
-      "description": "Wait for the newest run of a workflow on the phase's commit: the integration head, the promotion PR head, or the merge commit.",
+      "description": "Wait for the newest run of a workflow on the phase's commit: the integration head, the promotion PR head, or the merge commit (post_merge and post_deploy).",
       "properties": {
         "id": { "$ref": "#/$defs/slug" },
         "kind": { "const": "watch_workflow" },
@@ -130,6 +134,14 @@
     "schema_version": { "const": 1 },
     "integration_branch": { "$ref": "#/$defs/branch" },
     "production_branch": { "$ref": "#/$defs/branch" },
+    "deploy_trigger": {
+      "enum": ["merge", "manual"],
+      "description": "What deploys production; no default. merge: merging the promotion PR deploys it. manual: a separate human step deploys it after the merge; post_merge steps check the merge and post_deploy steps wait for the deploy."
+    },
+    "deploy_runbook": {
+      "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }],
+      "description": "Only with manual: how a person deploys production after the merge (a runbook path or a one-line instruction). Named in the ready message and the After merge checklist."
+    },
     "guide": {
       "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }],
       "description": "Repository promotion notes read before every run: known failures and their fixes."

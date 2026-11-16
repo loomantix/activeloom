@@ -774,6 +774,130 @@ describe('writeResult rejects results its evidence does not support', () => {
   });
 });
 
+describe('same-round evidence is scoped to the current run', () => {
+  /** Declare a Deep run started at `startHead`, posted at `createdAt`. */
+  function declareRun(
+    startHead: string,
+    createdAt: string,
+    supersedes: number | null,
+  ): { id: number; runId: string } {
+    const content = `Run the bounded review from ${createdAt}.\n`;
+    const runId = sha(
+      JSON.stringify({
+        base: BASE,
+        content,
+        max_rounds: 4,
+        start_head: startHead,
+        supersedes,
+        tier: 'deep',
+      }),
+    );
+    const id = runner.commentIdSeq++;
+    runner.issueComments.push({
+      id,
+      user: { login: ACTOR },
+      created_at: createdAt,
+      body: `<!-- local-review-run:v1 id=${runId} tier=deep max-rounds=4 base=${BASE} start-head=${startHead} supersedes=${supersedes ?? 'none'} content-sha256=${runId} -->\n${content}`,
+    });
+    return { id, runId };
+  }
+
+  /** The aborted run's slip: a cleanup finding posted at the head that fixed it. */
+  function slippedThread(postedAt: string): GitHubReviewThreadNode {
+    const thread = fixedThread('cleanup', 'nit');
+    const fc = 'the finding\n';
+    thread.comments.nodes[0]!.body = `${findingMarker({
+      fingerprint: 'cleanup',
+      severity: 'nit',
+      head: HEAD,
+      content: fc,
+    })}\n${fc}`;
+    thread.comments.nodes[0]!['createdAt'] = postedAt;
+    thread.comments.nodes[1]!['createdAt'] = postedAt;
+    return thread;
+  }
+
+  const restartedPass = () => ({
+    repo: REPO,
+    pr: PR,
+    head: HEAD,
+    engine: 'claude' as const,
+    round: 1,
+    base: BASE,
+    before: HEAD,
+    resultFile: resultPath(),
+  });
+
+  it('ignores an aborted run slip when a restarted run reviews the same head', () => {
+    const aborted = declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [slippedThread('2026-01-01T00:10:00Z')];
+    runner.issueComments.push({
+      id: runner.commentIdSeq++,
+      user: { login: ACTOR },
+      created_at: '2026-01-01T00:30:00Z',
+      body: `<!-- local-review-run-end:v1 id=${aborted.runId} outcome=aborted head=${HEAD} -->`,
+    });
+    declareRun(HEAD, '2026-01-01T01:00:00Z', aborted.id);
+
+    const out = writeResult(restartedPass());
+    expect(out.status).toBe('clean');
+    expect(out.findingFingerprints).toEqual([]);
+  });
+
+  it('still refuses the slip inside the run that posted it', () => {
+    declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [slippedThread('2026-01-01T00:10:00Z')];
+
+    expect(() => writeResult(restartedPass())).toThrow(
+      'fixed finding was not posted before its disposition head',
+    );
+  });
+
+  it('does not let checkBlockedRound recover an earlier run slip', () => {
+    const aborted = declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.issueComments.push({
+      id: runner.commentIdSeq++,
+      user: { login: ACTOR },
+      created_at: '2026-01-01T00:30:00Z',
+      body: `<!-- local-review-run-end:v1 id=${aborted.runId} outcome=aborted head=${HEAD} -->`,
+    });
+    declareRun(BEFORE, '2026-01-01T01:00:00Z', aborted.id);
+    runner.threadNodes = [
+      fixedThread('fp1'),
+      slippedThread('2026-01-01T00:10:00Z'),
+    ];
+
+    expect(() =>
+      checkBlockedRound({ ...restartedPass(), before: BEFORE }),
+    ).toThrow('no label or ordering slip to recover');
+  });
+
+  it('reads review-comment creation times from GitHub', () => {
+    const original = runner.runGh.bind(runner);
+    const threadQueries: string[] = [];
+    runner.runGh = (args: string[], payload?: unknown): string => {
+      for (const arg of args) {
+        if (arg.startsWith('query=') && arg.includes('reviewThreads(')) {
+          threadQueries.push(arg);
+        }
+      }
+      return original(args, payload);
+    };
+    declareRun(BEFORE, '2026-01-01T00:00:00Z', null);
+    runner.threadNodes = [fixedThread('fp1')];
+    writeResult({
+      ...restartedPass(),
+      before: BEFORE,
+      classification: 'minor',
+    });
+
+    expect(threadQueries.length).toBeGreaterThan(0);
+    for (const query of threadQueries) {
+      expect(query).toMatch(/comments\([^)]*\)\s*\{[^}]*\bcreatedAt\b/);
+    }
+  });
+});
+
 describe('checkBlockedRound recovers only bookkeeping slips', () => {
   const params = (overrides: Record<string, unknown> = {}) =>
     ({
@@ -1632,5 +1756,232 @@ describe('thread read-back is bound to its pull request and root comment', () =>
   it('accepts the thread root in the requested pull request', () => {
     runner.threadNodes = [scoped()];
     expect(getThreadState('PRRT_x', 11, { repo: REPO, pr: PR })).toBe(false);
+  });
+});
+
+describe('severity correction verification in threads and results', () => {
+  function severityMarker(o: {
+    fingerprint: string;
+    occurrence?: number;
+    from?: string;
+    to?: string;
+    content: string;
+    head?: string;
+    round?: number;
+    engine?: string;
+  }): string {
+    return (
+      `<!-- local-review-severity:v3 engine=${o.engine ?? 'claude'} round=${o.round ?? 3} ` +
+      `head=${o.head ?? BEFORE} fingerprint=${o.fingerprint} ` +
+      `occurrence=${o.occurrence ?? 1} from=${o.from ?? 'major'} to=${o.to ?? 'blocking'} ` +
+      `content-sha256=${sha(o.content)} -->`
+    );
+  }
+
+  it('accepts a convergence fix backed by a valid major-to-blocking severity correction in writeResult and verifyLedger', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'verified blocking impact before disposition\n';
+    const dc = 'fixed in head\n';
+    runner.threadNodes = [
+      {
+        id: 'PRRT_escalated',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp-esc', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp-esc', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp-esc', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    const resultFile = join(dir, 'convergence-corrected-result.json');
+    const result = writeResult({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      engine: 'claude',
+      round: 3,
+      base: BASE,
+      before: BEFORE,
+      resultFile,
+      classification: 'material',
+    });
+    expect(result.status).toBe('changed');
+    expect(result.findingFingerprints).toEqual(['fp-esc']);
+    expect(
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 3,
+        base: BASE,
+        before: BEFORE,
+        resultFile,
+      }).verified,
+    ).toBe(true);
+  });
+
+  it('rejects deferring a finding whose effective severity was corrected to blocking', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'verified blocking impact\n';
+    const dc = 'deferred\n';
+    runner.threadNodes = [
+      {
+        id: 'PRRT_escalated_deferred',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp-esc', severity: 'major', round: 3, head: HEAD, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp-esc', round: 3, head: HEAD, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp-esc', round: 3, head: HEAD, outcome: 'deferred', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'blocking local-review findings must be fixed',
+    );
+  });
+
+  it('rejects post-disposition, wrong-head, orphan, and conflicting severity corrections in verifyLedger', () => {
+    const fc = 'initial major finding\n';
+    const sc = 'severity correction\n';
+    const dc = 'fixed\n';
+
+    // Post-disposition correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_post_disp',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction was posted after its finding was disposed',
+    );
+
+    // Wrong head on correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_wrong_head',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, head: BEFORE, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, head: OTHER, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction does not match an earlier finding in the same thread',
+    );
+
+    // Conflicting duplicate correction
+    runner.threadNodes = [
+      {
+        id: 'PRRT_conflict',
+        isResolved: true,
+        repository: { nameWithOwner: REPO },
+        pullRequest: { number: PR },
+        comments: {
+          nodes: [
+            {
+              databaseId: 1,
+              body: `${findingMarker({ fingerprint: 'fp1', severity: 'major', round: 3, content: fc })}\n${fc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 2,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 3,
+              body: `${severityMarker({ fingerprint: 'fp1', round: 3, from: 'major', to: 'blocking', content: sc })}\n${sc}`,
+              author: { login: ACTOR },
+            },
+            {
+              databaseId: 4,
+              body: `${dispositionMarker({ fingerprint: 'fp1', round: 3, outcome: 'fixed', content: dc })}\n${dc}`,
+              author: { login: ACTOR },
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    ];
+    expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
+      'local-review severity correction conflicts with current finding severity',
+    );
   });
 });

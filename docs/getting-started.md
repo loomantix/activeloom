@@ -335,7 +335,7 @@ cd activeloom
 ./scripts/install-skills.sh
 ```
 
-With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`, and falls back to Claude Code. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. It also links the support files skills read beside their skills directory (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …), one file at a time, never replacing a file you already have.
+With no `--harness`, the script selects every harness whose home directory exists or whose CLI is on `PATH`. With no evidence it asks which harness to use on a terminal, and otherwise exits non-zero asking for `--harness`. It installs only missing skills, keeps existing entries unless you pass `--force` (which backs up a real file or directory first), and prunes only dangling links that point into this clone. It also links the support files skills read beside their skills directory (`references/`, `agents/`, `REVIEW_WORKFLOW.md`, …), one file at a time, never replacing a file you already have.
 
 A `git pull` updates every linked skill at once, but a skill added upstream is not linked until the script runs again, while the linked skills that call it already expect it. After each pull, check:
 

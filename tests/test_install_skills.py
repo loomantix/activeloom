@@ -136,12 +136,21 @@ def test_default_selects_harnesses_by_cli_on_path(upstream: Path, home: Path, tm
     assert "Harnesses: gemini (detected on this machine)" in result.stdout
 
 
-def test_falls_back_to_claude_without_evidence(upstream: Path, home: Path) -> None:
+def test_errors_naming_harness_flag_without_evidence(upstream: Path, home: Path) -> None:
     result = run(upstream, home)
-    assert result.returncode == 0, result.stderr
-    assert "defaulting to Claude Code" in result.stdout
-    assert set(linked(home / DESTS["claude"])) == {"critique", "issues"}
+    assert result.returncode != 0
+    assert "no harness detected" in result.stderr
+    assert "--harness" in result.stderr
+    assert "claude" in result.stderr and "codex" in result.stderr and "gemini" in result.stderr
+    assert not (home / ".claude").exists()
     assert not (home / ".agents").exists()
+
+
+def test_explicit_harness_without_evidence_is_unchanged(upstream: Path, home: Path) -> None:
+    result = run(upstream, home, "--harness", "claude")
+    assert result.returncode == 0, result.stderr
+    assert "requested with --harness" in result.stdout
+    assert set(linked(home / DESTS["claude"])) == {"critique", "issues"}
 
 
 def test_dry_run_writes_nothing(upstream: Path, home: Path) -> None:

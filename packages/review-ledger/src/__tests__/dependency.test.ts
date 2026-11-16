@@ -190,6 +190,45 @@ describe('classifyFiles dependency-update gate', () => {
     expect(report.dependencyPaths).toEqual([]);
   });
 
+  it('treats a test-runner Dockerfile pin as a dependency but keeps fixtures and test files out', () => {
+    const dockerfile = (path: string, digest: string): ChangedFile => ({
+      path,
+      added: 1,
+      deleted: 1,
+      blank: 0,
+      changedLines: [
+        `FROM node:22@sha256:${'a'.repeat(64)}`,
+        `FROM node:22@${digest}`,
+      ],
+      beforeContent: `FROM node:22@sha256:${'a'.repeat(64)}\nRUN npm ci\n`,
+      afterContent: `FROM node:22@${digest}\nRUN npm ci\n`,
+    });
+    const runner = classifyFiles([dockerfile('tests/e2e/Dockerfile', DIGEST)]);
+    expect(runner.dependencyUpdate).toBe(true);
+    expect(runner.dependencyPaths).toEqual(['tests/e2e/Dockerfile']);
+    for (const path of [
+      'tests/fixtures/app/Dockerfile',
+      'src/fixtures/Dockerfile',
+    ]) {
+      const report = classifyFiles([dockerfile(path, DIGEST)]);
+      expect(report.dependencyUpdate).toBe(false);
+      expect(report.dependencyPaths).toEqual([]);
+    }
+    const compose = classifyFiles([
+      {
+        path: 'tests/e2e/docker-compose.yml',
+        added: 1,
+        deleted: 1,
+        blank: 0,
+        changedLines: ['    image: postgres:16', '    image: postgres:17'],
+        beforeContent: 'services:\n  db:\n    image: postgres:16\n',
+        afterContent: 'services:\n  db:\n    image: postgres:17\n',
+      },
+    ]);
+    expect(compose.dependencyUpdate).toBe(false);
+    expect(compose.dependencyPaths).toEqual([]);
+  });
+
   it('keeps generated or vendored code beside a lockfile off the dependency route', () => {
     const lockfile = { path: 'pnpm-lock.yaml', added: 30, deleted: 30 };
     for (const path of ['dist/index.js', 'vendor/x/y.go']) {

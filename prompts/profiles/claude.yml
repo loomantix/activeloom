@@ -200,7 +200,7 @@ skills:
   hpromote:
     FM_EXTRAS: |-
       disable-model-invocation: true
-      argument-hint: '[--dry-run] | run [--dry-run] | merged'
+      argument-hint: '[--dry-run] | run [--dry-run] | merged | deployed'
     DESC_TRIGGER: ''
   hred-team:
     FM_EXTRAS: |-
@@ -210,7 +210,7 @@ skills:
   promote:
     FM_EXTRAS: |-
       disable-model-invocation: true
-      argument-hint: '[--dry-run] [--integration-branch <branch>] | merged | validate [<file>]'
+      argument-hint: '[--dry-run] [--integration-branch <branch>] | merged | deployed | validate [<file>]'
     DESC_TRIGGER: ''
 
 # --- prompt stack ------------------------------------------------------------

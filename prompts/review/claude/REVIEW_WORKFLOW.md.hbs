@@ -205,7 +205,9 @@ Convergence requires every participant's latest attestation on the current
 head. Any material fix requires a later clean or minor pass by a different
 engine; the fixing engine's post-fix attestation stays valid. Coverage alone
 cannot complete a sequenced chain. `finish-run --outcome
-converged` also runs `verify-ledger` and `verify-coverage`.
+converged` also runs `verify-ledger` and `verify-coverage`. On a silent PR,
+every `finish-run` is followed by the protocol's
+[end-of-loop summary](references/local-review-ledger.md#silent-mode).
 
 In handoff mode, `post-handoff --to-engine` must name the engine `next-pass`
 returned, not necessarily the originating engine, and the handoff's from-engine,

@@ -21,6 +21,8 @@ Any other exit 3 means settings are missing: follow
 `review-setup` "Inline setup" in this conversation, then continue this request
 from where it paused. Report any other exit verbatim and stop.
 
+{{> review/silent-mode}}
+
 ## Context Window Check
 
 Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.

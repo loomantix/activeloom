@@ -39,13 +39,51 @@ protected parent. Sudo's [secure-path check](https://github.com/sudo-project/sud
 rejects unsafe ownership and write permissions, rather than public readability.
 Sites requiring a different drop-in mode remain unsupported by this reader.
 
+Public readability is not enough when the sudoers directory itself cannot be
+searched by the reader, as with the `root:root 0750` `/etc/sudoers.d` shipped by
+Debian and Ubuntu. There the reader cannot verify the drop-in at all, and it does
+not guess:
+
+- With no `/etc/activeloom/`, the report is never-installed: manual behavior,
+  network unenforced, not launch-blocked. The reason notes the unsearchable
+  directory. The installer creates `/etc/activeloom/` before the drop-in and a
+  failed install removes the drop-in before the directory, so on such hosts a
+  drop-in without `/etc/activeloom/` is reported as never installed. Where the
+  drop-in is visible, it alone still counts as a partial installation.
+- With `/etc/activeloom/` present, the report is installed, unprotected and
+  launch-blocked, with reason `sudoers drop-in unverifiable`. Automatic
+  authority stays disabled on such hosts until the drop-in can be verified.
+
 Each file is replaced atomically and synced. The installer checks the staged
-sudoers fragment and the complete sudoers configuration with `visudo`, including
+sudoers fragment and the complete sudoers configuration with `visudo -c`, including
 evidence that the fragment was included, before activating the initial policy.
+Inclusion evidence depends on the `visudo` in use, identified by `visudo -V`:
+
+- Classic sudo lists every file it parsed; the output must contain the line
+  `<drop-in path>: parsed OK`.
+- sudo-rs (`visudo-rs`) parses included files but prints only
+  `<sudoers path>: parsed OK`. The output must be exactly that line, and the
+  sudoers file must carry a top-level `@includedir` or `#includedir` directive
+  naming the drop-in's directory. A drop-in reached only through a nested or
+  single-file `@include` is refused.
+- sudo-rs reads `/etc/sudoers-rs` instead of `/etc/sudoers` when it exists.
+  Inclusion is proven only in `/etc/sudoers`, so installation is refused while
+  `/etc/sudoers-rs` exists. If it appears later, the reader reports the
+  installation launch-blocked with automatic authority disabled. Other later
+  changes to the sudoers configuration are not re-verified by the reader.
+
 Initial values are `full`, no stops, restart budget 2, and `restricted` with an
 empty additional allowlist. Installation refuses to overwrite an existing or
-partial installation. A crash can leave protected partial artifacts; inspect and
-repair these explicitly before retrying. It never treats them as never installed.
+partial installation. A failed installation removes the drop-in first, then
+everything else it created. A crash can leave protected partial artifacts.
+If drop-in removal fails, rollback stops and retains the policy directory so an
+unprivileged reader still detects the partial installation. Both the
+incomplete-rollback error and the existing-installation refusal name the exact
+cleanup (`sudo rm -f /etc/sudoers.d/activeloom-policy && sudo rm -rf
+/etc/activeloom`; `/private/etc` on macOS). A complete installation is changed
+with `set`, not removed; run the cleanup only after confirming the artifacts are
+a failed install. Partial artifacts are never treated as never installed, except
+for a lone drop-in in an unsearchable sudoers directory (above).
 
 For a complete replacement on Linux (use `/private/etc` on macOS):
 
@@ -76,7 +114,9 @@ noninteractive probes: `sudo -n -l <setter> --check` and
 and disables automatic authority. A password-required diagnostic is accepted
 only with positive exact-command permission evidence from the former. Denials,
 missing executables, configuration errors, unfamiliar/localized diagnostics and
-inconclusive listing disable authority. Some sudo configurations cannot supply
+inconclusive listing disable authority. The accepted password-required
+diagnostics are exactly `sudo: a password is required` (classic sudo) and
+`sudo: interactive authentication is required` (sudo-rs). Some sudo configurations cannot supply
 that evidence noninteractively; those remain disabled. No cached-ticket claim is
 inferred from unit tests.
 
@@ -84,6 +124,30 @@ The reader also requires a complete `sudo -n -l` permission listing with no
 `NOPASSWD` or `!authenticate` entries. Otherwise a passwordless `set` rule could
 hide behind a password-required `--check`. This deliberately rejects even
 unrelated passwordless rules; uncertain protection never enables authority.
+
+sudo-rs requires authentication for `-l`, so on sudo-rs both listings return
+exactly `sudo: interactive authentication is required` without a cached
+credential. Only that exact response defers to a root-captured proof. After a
+sudo-rs install or `set`, the setter (running as root) runs
+`sudo -n -l -U <invoking user> <setter> --check` and `sudo -n -l -U <invoking user>`,
+and records `/etc/activeloom/sudo-rs-proof.json` only when the setter is permitted
+and the inventory has no `NOPASSWD` or `!authenticate` entry. It refuses when any
+physical line other than the top-level sudoers.d `includedir` starts with
+`@include` or `#include` in any spelling, whether continued or following a
+comment that ends in a backslash, or when `/etc/sudoers-rs` exists. The
+proof is bound to the invoking uid, the policy and setter SHA-256, and the `lstat`
+identity of the sudo binary, `/etc/sudoers`, the sudoers.d directory and each
+entry in it, `/etc/passwd` and `/etc/group`. The reader accepts it only when all
+of those still match. These permission inputs must be regular files and the
+sudoers.d path must be a directory; symlinks are refused at capture and verification
+because changes to their targets would escape an `lstat` fingerprint.
+The reader also compares the live sudoers.d entry names with the recorded list,
+so new entries invalidate the proof even when directory metadata is unchanged.
+Any change, harmless or not, disables authority until the
+user re-runs `set` through sudo. Rules or group membership from non-file sources
+(for example LDAP) are outside the fingerprint. A failed capture keeps the install
+or `set`, removes any old proof, and prints a warning. Classic sudo never records
+or consults a proof.
 
 ```text
 python3 <harness>/skills/hreview/scripts/herd-config.py record-policy-restart --repo owner/repo --pr 123 --head <full-sha> --scope-decision keep
@@ -121,5 +185,10 @@ sudo, sudo-rs and macOS sudo: **unrun**. Offline fixtures exercise classificatio
 path protection and failed installation; they are not platform demonstrations.
 An unprivileged syntax-only check of the drop-in passed with local `visudo`
 (sudo-rs) and `visudo.ws`; it did not install the fragment or authenticate.
+The sudo-rs fixtures use strings and output shapes from sudo-rs 0.2.13 binaries
+and an unprivileged `visudo -c` run. On sudo-rs 0.2.13, unprivileged `sudo -n -l`
+returns the interactive-authentication diagnostic without a cached credential.
+The root-side `sudo -l -U` output shape used for the proof is **unrun** on a live
+host; output that does not match leaves the proof unrecorded and authority disabled.
 Containment, scoped credentials and same-user tamper resistance are unimplemented
 and unavailable here.

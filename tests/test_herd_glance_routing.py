@@ -9,6 +9,73 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
+def test_hreview_returns_on_zero_files_before_any_glance_or_chain(root: str) -> None:
+    body = " ".join((ROOT / root / "skills/hreview/SKILL.md").read_text().split())
+    gate = body.split("6. Tier extensions first:", 1)[1].split("7. Settings", 1)[0]
+    zero, nonempty = gate.split("Otherwise, for a nonempty diff or an empty one whose lifecycle is not `none`:", 1)
+    for requirement in (
+        "**Verified zero-file comparison**",
+        "common PR-wide `run-state` inventory",
+        "Only `none` permits this route",
+        "active, foreign, ended and transitioned runs retain step 9's lifecycle restrictions",
+        "Failed or incomplete classification, Git or remote reads block",
+        "`skip` alone is insufficient",
+        "An empty merge-base diff with lifecycle `none` that does not verify",
+        "blocks this PR's path: notify the block and start no chain or auto-glance",
+        "return for this PR without a chain or auto-glance",
+        "bootstrap, roster, review artifacts or ready flip",
+        "Continue independent/companion ordering",
+    ):
+        assert requirement in zero, requirement
+    assert "On `skip` or `smallChange`" in nonempty
+    assert "stop that PR for a human glance" in nonempty
+    assert "For a verified zero-file comparison, report no AI content review needed" in body
+
+
+@pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
+def test_horch_checks_before_recommending_and_ships_without_ai_attestation(root: str) -> None:
+    body = " ".join((ROOT / root / "skills/horch/SKILL.md").read_text().split())
+    route, fallback = body.split("**Review chain**", 1)[1].split(
+        "For a nonempty diff, or an empty one whose lifecycle is not `none`, start the herder", 1
+    )
+    assert "prompt it the `hreview` skill" in fallback.split("Before starting one", 1)[0]
+    settled = "act on a PR only when it is open, its author session has finished, and its head is not about to move"
+    assert route.index(settled) < route.index("**Verified zero-file comparison**")
+    for requirement in (
+        "before recommending or launching a herder",
+        "**Verified zero-file comparison**",
+        "fresh local and remote head/base evidence",
+        "only `none` permits this route",
+        "every existing run retains the lifecycle restrictions",
+        "go to [Shipping](#shipping) within existing authority",
+        "launch neither a chain nor auto-glance",
+        "Nonempty docs/config changes keep their current routing",
+        "An empty diff with lifecycle `none` that does not verify blocks this PR",
+        "launch, recommend or ship nothing",
+    ):
+        assert requirement in route, requirement
+    shipping = body.split("## Shipping", 1)[1].split("## ", 1)[0]
+    zero = shipping.split("**zero-file alternative:**", 1)[1].split("**otherwise either**", 1)[0]
+    for requirement in (
+        "fresh common PR-wide lifecycle is `none`",
+        "requires no AI attestation, coverage, glance result or dependency analysis",
+        "Retain every CI, mergeability, tests, authority and instruction-file gate",
+        "fresh head/base checks before and after",
+        "drift restores draft status and blocks shipment",
+        "complete zero-file verification immediately before merge, after any wait",
+        "requiring the same head and base",
+        "tree preservation evidence before and after merge, for an ancestry-only repair its intended ancestry evidence",
+        "the workflow's introduced-commit check",
+        "No existing run may be ended, restarted, replaced or rewritten",
+    ):
+        assert requirement in zero, requirement
+    issues = shipping.split("3. **Linked issues**", 1)[1].split("4. **After the ship:**", 1)[0]
+    assert issues.index("after a zero-file ship, leave linked issues unchanged") < issues.index("`close` →")
+    assert "never for `ship-staging` guardrails or repository merge authority" in shipping
+    assert "With no herder for a zero-file comparison" in shipping
+
+
+@pytest.mark.parametrize("root", [".claude", ".codex", ".agents"])
 def test_hreview_dispatches_only_at_the_eligible_opted_in_gate(root: str) -> None:
     body = (ROOT / root / "skills/hreview/SKILL.md").read_text()
     gate = body.split("6. Tier extensions first:", 1)[1].split("7. Settings", 1)[0]

@@ -274,13 +274,14 @@ function detect(options = {}) {
  * @param {readonly string[]} requested  ids passed with `--harness`
  * @param {object} options
  * @param {boolean} [options.preferRepo]  repo evidence outranks machine evidence
- * @param {string} options.noEvidenceReason  phrasing for the Claude Code default
+ * @param {boolean} [options.allowEmpty]  return no ids instead of throwing when
+ *   there is no evidence, so an interactive caller can ask
  * @returns {{ids: string[], reason: string}}
  */
 function chooseHarnesses(
   facts,
   requested,
-  { preferRepo = false, noEvidenceReason },
+  { preferRepo = false, allowEmpty = false } = {},
 ) {
   if (requested.length > 0) {
     const known = new Set(HARNESSES.map((h) => h.id));
@@ -305,7 +306,16 @@ function chooseHarnesses(
   if (onMachine.length > 0)
     return { ids: onMachine, reason: 'detected on this machine' };
 
-  return { ids: ['claude'], reason: noEvidenceReason };
+  if (allowEmpty) return { ids: [], reason: 'no harness detected' };
+
+  const known = HARNESSES.map((h) => h.id);
+  const checked = preferRepo
+    ? 'checked the repository and this machine (home directories and CLIs on PATH)'
+    : 'checked this machine (home directories and CLIs on PATH)';
+  throw new Error(
+    `no harness detected: ${checked} and found none. ` +
+      `Pass --harness <${known.join('|')}> to choose one.`,
+  );
 }
 
 module.exports = {

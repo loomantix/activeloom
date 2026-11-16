@@ -58,6 +58,7 @@ ENGINES = ("claude", "codex", "gemini")
 ON_SHIP = ("label", "close", "none")
 CHECKS = ("required", "all-runs")
 TELEMETRY_STORES = ("pr", "issue")
+DEPLOY_TRIGGERS = ("merge", "manual")
 # The review ledger reads its metrics destination from this variable. Herd sets
 # it on every pane it opens, so the repository decides, not the engine harness.
 TELEMETRY_STORE_ENV = "LOOM_REVIEW_TELEMETRY_STORE"
@@ -321,12 +322,23 @@ def validate_repo(config: Any) -> dict[str, Any]:
             "skill": None,
             "production_branch": None,
             "risk_engine": None,
+            "deploy_trigger": None,
+            "deploy_runbook": None,
             "preflight": [],
             "deploy_workflows": [],
             "post_merge": [],
         }
     else:
-        allowed = ("skill", "production_branch", "risk_engine", "preflight", "deploy_workflows", "post_merge")
+        allowed = (
+            "skill",
+            "production_branch",
+            "risk_engine",
+            "deploy_trigger",
+            "deploy_runbook",
+            "preflight",
+            "deploy_workflows",
+            "post_merge",
+        )
         _check_keys(promotion, allowed, "promotion", errors)
         skill = promotion.get("skill", DEFAULT_PROMOTION_SKILL)
         if not isinstance(skill, str) or not SKILL_RE.match(skill):
@@ -339,11 +351,21 @@ def validate_repo(config: Any) -> dict[str, Any]:
         risk = promotion.get("risk_engine")
         if risk is not None and risk not in ENGINES:
             errors.append(f"promotion.risk_engine: unknown engine {risk!r}")
+        # No default: the promotion helper blocks on a missing trigger when it
+        # has no recipe file to read one from.
+        trigger = promotion.get("deploy_trigger")
+        if trigger is not None and trigger not in DEPLOY_TRIGGERS:
+            errors.append(f"promotion.deploy_trigger: must be one of {', '.join(DEPLOY_TRIGGERS)}")
+        runbook = _optional_text(promotion, "deploy_runbook", "promotion", errors)
+        if runbook is not None and trigger == "merge":
+            errors.append("promotion.deploy_runbook: only a manual deploy_trigger has a manual deploy step")
         effective["promotion"] = {
             "enabled": True,
             "skill": skill,
             "production_branch": production,
             "risk_engine": risk,
+            "deploy_trigger": trigger,
+            "deploy_runbook": runbook,
             "preflight": _argv_list(promotion.get("preflight", []), "promotion.preflight", errors),
             "deploy_workflows": _string_list(
                 promotion.get("deploy_workflows", []), "promotion.deploy_workflows", errors, unique=True

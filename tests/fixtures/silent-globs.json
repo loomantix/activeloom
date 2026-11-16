@@ -1,0 +1,9 @@
+[
+  { "pattern": "client/app", "repo": "client/app", "match": true },
+  { "pattern": "Client/App", "repo": "client/app", "match": true },
+  { "pattern": "client/app", "repo": "client/app2", "match": false },
+  { "pattern": "client/*", "repo": "client/anything", "match": true },
+  { "pattern": "client/*", "repo": "clientx/app", "match": false },
+  { "pattern": "client/*", "repo": "other/app", "match": false },
+  { "pattern": "*", "repo": "any/repo", "match": true }
+]
