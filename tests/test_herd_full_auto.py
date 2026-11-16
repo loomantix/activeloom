@@ -12,10 +12,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -40,6 +41,28 @@ def load() -> ModuleType:
 herd = load()
 REAL_LIVE_PR_SCOPE = herd._live_pr_scope
 REAL_VERIFY_REPLACEMENT = getattr(herd, "_verify_replacement_pr", None)
+
+
+def report_unsafe_mode(monkeypatch: pytest.MonkeyPatch, path: Path | str) -> None:
+    """Make the helper's lstat/fstat of one private file report a group-writable mode.
+
+    The file on disk stays 0o600, so no test creates a permissive file; every other
+    path or descriptor is answered by the real call.
+    """
+    target = Path(path)
+    real = target.lstat()
+    unsafe = SimpleNamespace(st_mode=stat.S_IFREG | real.st_mode & 0o700 | stat.S_IWGRP, st_uid=os.getuid())
+    real_lstat, real_fstat = Path.lstat, os.fstat
+
+    def lstat(self: Path) -> Any:
+        return unsafe if self == target else real_lstat(self)
+
+    def fstat(descriptor: int) -> Any:
+        info = real_fstat(descriptor)
+        return unsafe if (info.st_dev, info.st_ino) == (real.st_dev, real.st_ino) else info
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(herd.os, "fstat", fstat)
 
 
 @pytest.fixture(autouse=True)
@@ -270,10 +293,10 @@ def test_a_sibling_record_missing_a_key_is_a_refusal_not_a_traceback(
 
 
 def test_unsafe_split_lock_is_a_split_refusal(config_home: Path, capsys: pytest.CaptureFixture[str],
-                                              tmp_path: Path) -> None:
+                                              tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     herd.split_plan(REPO, PR, HEAD, plan())
     lock = herd._split_target(REPO, PR).with_suffix(".lock")
-    lock.chmod(0o620)
+    report_unsafe_mode(monkeypatch, lock)
     base = ["--repo", REPO, "--pr", str(PR), "--head", HEAD]
     assert herd.main(["split-record", *base, "--partition", "alpha", "--branch", "feat/a"]) == 5
     assert "unsafe lock" in capsys.readouterr().err
@@ -366,9 +389,9 @@ def test_supersede_refuses_when_the_live_original_head_moved(live_pr: dict[int, 
     assert VERIFIED == [], "no replacement is rechecked once the original's head has moved"
 
 
-def test_unsafe_split_record_is_refused() -> None:
+def test_unsafe_split_record_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     result = herd.split_plan(REPO, PR, HEAD, plan())
-    os.chmod(result["path"], 0o620)
+    report_unsafe_mode(monkeypatch, result["path"])
     with pytest.raises(herd.SplitError, match="owned and writable only"):
         herd.split_status(REPO, PR, HEAD)
 
@@ -665,14 +688,24 @@ def test_an_inert_restart_record_does_not_block_a_split(authority: Any) -> None:
 
 
 @pytest.mark.parametrize("damage", ["unsafe", "garbage", "dangling-link"])
-def test_an_unreadable_restart_record_blocks_a_split(damage: str, tmp_path: Path) -> None:
+def test_an_unreadable_restart_record_blocks_a_split(damage: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                     request: pytest.FixtureRequest) -> None:
     target = herd._approval_target(REPO, PR, HEAD)
     herd._private_dir(target.parent)
     if damage == "dangling-link":
         target.symlink_to(tmp_path / "missing.json")
+    elif damage == "unsafe":
+        # An otherwise inert record, so only the reported mode makes it unreadable.
+        request.getfixturevalue("authority")[1]["budget_used"] = 0
+        herd.record_policy_restart(REPO, PR, HEAD, "keep")
+        record = json.loads(target.read_text())
+        record["created"] = herd._iso(herd._now() - herd.timedelta(hours=5))
+        record["expires"] = herd._iso(herd._now() - herd.timedelta(hours=1))
+        herd._write_approval(target, record)
+        report_unsafe_mode(monkeypatch, target)
     else:
-        target.write_text("{}" if damage == "unsafe" else "not json")
-        target.chmod(0o620 if damage == "unsafe" else 0o600)
+        target.write_text("not json")
+        target.chmod(0o600)
     with pytest.raises(herd.SplitError, match="unreadable restart record") as refused:
         herd.split_plan(REPO, PR, HEAD, plan())
     assert refused.value.reason == "refused"
