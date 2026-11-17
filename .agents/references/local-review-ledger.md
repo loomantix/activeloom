@@ -640,7 +640,8 @@ regardless of what the surrounding repository's root manifest says.
 every argument error prints them too. Take flags from that synopsis or from the
 invocations written out in this document. When the helper refuses an argument,
 read the synopsis it prints and correct the command to match; the helper has no
-other spelling of a flag, and no flag that takes a content hash.
+other spelling of a flag, and no flag that takes the hash of a
+`--content-file`: the helper hashes the file itself.
 
 The file is a build artifact of ActiveLoom's `packages/review-ledger` package,
 vendored verbatim at the package version recorded in `review-ledger.version`,
@@ -1139,8 +1140,10 @@ Result ownership depends on the caller:
 
   Omit `--classification` when `<head>` equals `<before>`. `validate-result`
   prints `resultSha256`; `export-threads` writes a fresh owner-only snapshot and
-  prints its `sha256`. `<dir>/heads.json` is a JSON array of full SHAs, from
-  `<before>` through each head the pass pushed to `<head>`, in push order.
+  prints its `sha256`; it refuses an existing file, so export to a new path
+  before every `attest` attempt. `<dir>/heads.json` is a JSON array of full
+  SHAs, from `<before>` through each head the pass pushed to `<head>`, in push
+  order, each SHA once: a pass that pushed nothing writes `["<before>"]`.
 
 ## Record what the pass cost
 

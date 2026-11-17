@@ -3,7 +3,9 @@
 Record every ledger item with these commands, run as written with the
 bracketed values filled in. `node .agents/skills/critique/scripts/review-ledger.js <subcommand> --help`
 prints a subcommand's complete flags. A refused argument prints the same
-synopsis: correct the command to match it and run it again. `<dir>` is an owner-only directory outside the worktree; write each
+synopsis: correct the command to match it and run it again. When the launcher
+names a relay surface root, resolve each `.agents/...` path below under that
+root. `<dir>` is an owner-only directory outside the worktree; write each
 prose file there with the file-editing tool.
 
 Confirm the pass, once, before any lane. Skip this when
@@ -96,8 +98,11 @@ node .agents/skills/critique/scripts/review-ledger.js \
 ```
 
 `validate-result` prints `resultSha256` and `export-threads` prints `sha256`.
-`<dir>/heads.json` is a JSON array of full SHAs from `<before>` through each
-head this pass pushed to `<head>`, in push order. The pass is complete when
+`export-threads` refuses an existing file: before every `attest` attempt,
+export to a new path, such as `<dir>/threads-2.json`, and pass that path and
+its `sha256`. `<dir>/heads.json` is a JSON array of full SHAs from `<before>`
+through each head this pass pushed to `<head>`, in push order, each SHA once:
+a pass that pushed nothing writes `["<before>"]`. The pass is complete when
 `attest` prints `verified: true`. For unfinished review work, write one short
 blocker to `<dir>/blocker.txt` and run `write-blocked-result` with the same
 `--head`, `--engine`, `--round`, `--base`, `--before` and `--result-file`, plus

@@ -74,5 +74,10 @@ def test_written_command_uses_only_flags_its_help_lists(
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    listed = set(re.findall(r"--[a-z0-9-]+", result.stdout))
+    # Only the synopsis lists the flags a command takes; help notes name other
+    # commands' flags. The helper's synopsis is its first line; argparse wraps
+    # the controller's usage block until the first blank line.
+    synopsis = result.stdout.split("\n\n", 1)[0]
+    assert synopsis.startswith("usage:"), result.stdout
+    listed = set(re.findall(r"--[a-z0-9-]+", synopsis))
     assert set(flags) <= listed, sorted(set(flags) - listed)
