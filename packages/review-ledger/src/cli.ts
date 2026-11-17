@@ -1681,7 +1681,7 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
     '--force-review',
     '--confirmed',
   ]);
-  for (let i = 0; i < argv.length;) {
+  for (let i = 0; i < argv.length; ) {
     const arg = argv[i]!;
     if (!arg.startsWith('-')) {
       return arg;
