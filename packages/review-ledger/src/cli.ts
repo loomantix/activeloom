@@ -91,7 +91,7 @@ import {
   resetGitHubRunner,
   setGitHubRunner,
 } from './github.js';
-import { SilentRunner } from './silent-runner.js';
+import { SilentRunner, isReadOnlyGhCall } from './silent-runner.js';
 import { postSummary, renderSummary } from './silent-summary.js';
 import type {
   Changeset,
@@ -1637,6 +1637,11 @@ function scopeFromArgv(
  * `local-gh --repo R --pr P -- <gh args>`: run one gh call through the silent
  * runner, for callers outside this package (the run controller). A JSON body,
  * when the args carry `--input -`, is read from stdin.
+ *
+ * It is internal plumbing, not a posting route. On a PR whose ledger is hosted
+ * it only reads: a write there would skip every check the helper's own writers
+ * make, and a hand-built ledger marker posted that way poisons the run. Writes
+ * pass only for a silent PR, whose store keeps them local.
  */
 function localGh(argv: string[]): number {
   const split = argv.indexOf('--');
@@ -1651,7 +1656,17 @@ function localGh(argv: string[]): number {
     );
     ghArgs = [...ghArgs.slice(0, input), ...ghArgs.slice(input + 2)];
   }
-  process.stdout.write(getGitHubRunner().runGh(ghArgs, payload));
+  const runner = getGitHubRunner();
+  const scope = scopeFromArgv(argv.slice(0, split));
+  const silent =
+    scope !== undefined &&
+    runner instanceof SilentRunner &&
+    runner.storeFor(scope.repo, scope.pr) !== null;
+  if (!silent && !isReadOnlyGhCall(ghArgs, payload))
+    fail(
+      'local-gh only reads on a PR whose ledger is hosted; record findings, replies, results and markers with the command the skill step names (post-finding, dispose, write-result, attest), never through local-gh',
+    );
+  process.stdout.write(runner.runGh(ghArgs, payload));
   return 0;
 }
 
@@ -1666,7 +1681,7 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
     '--force-review',
     '--confirmed',
   ]);
-  for (let i = 0; i < argv.length; ) {
+  for (let i = 0; i < argv.length;) {
     const arg = argv[i]!;
     if (!arg.startsWith('-')) {
       return arg;

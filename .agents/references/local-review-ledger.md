@@ -1227,7 +1227,11 @@ resolutions, rosters, tier markers and attestations exactly as the steps above
 say, and the helper keeps them local. The helper refuses any other PR write
 that passes through it. A raw `gh` command does not pass through it and is not
 refused, so on a silent PR never post with `gh pr comment`, `gh pr review` or a
-`gh api` write; put that text in the scratchpad instead.
+`gh api` write; put that text in the scratchpad instead. The helper's
+`local-gh` subcommand is internal to the run controller and the handoff script,
+not a posting route: never call it yourself. On a PR that is not silent it only
+reads and refuses every write, so a ledger marker can only come from the
+command that records it.
 
 **Hosted reviewers.** They keep posting their own reviews, and their threads
 are not in the local ledger. Read and resolve them with `gh` directly; a

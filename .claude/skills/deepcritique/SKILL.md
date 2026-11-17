@@ -81,7 +81,9 @@ uses the ledger helper still runs exactly as written, and the helper keeps the
 post local. A step that posts with raw `gh` is not intercepted: write that text
 into the scratchpad that `silent-status` names instead. Where a step below
 replies to a hosted reviewer, write that reply into the scratchpad, then
-resolve the thread with `gh`.
+resolve the thread with `gh`. The helper's `local-gh` subcommand is internal
+to the run controller; never call it yourself, and on a PR that is not silent it
+refuses every write.
 
 ## Phase 0: Pre-flight
 
