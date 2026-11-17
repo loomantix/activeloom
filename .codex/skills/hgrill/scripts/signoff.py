@@ -935,7 +935,7 @@ class SignoffHandler(BaseHTTPRequestHandler):
         if not self._token_ok(self.headers.get("X-Signoff-Token")):
             return self._json(403, {"ok": False, "error": "bad token"})
         origin = self.headers.get("Origin")
-        if origin is not None and origin not in (f"http://127.0.0.1:{self.server.port}", f"http://localhost:{self.server.port}"):
+        if origin is not None and origin not in {f"http://{name}:{self.server.port}" for name in ("127.0.0.1", "localhost")}:
             return self._json(403, {"ok": False, "error": "bad origin"})
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             return self._json(415, {"ok": False, "error": "content type must be application/json"})
