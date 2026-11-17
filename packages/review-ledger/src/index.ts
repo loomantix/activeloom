@@ -49,6 +49,11 @@ export {
 } from './constants.js';
 
 export { LedgerError, fail } from './errors.js';
+export { revalidateOccurrence, matchRevalidation } from './revalidation.js';
+export type {
+  RevalidateOccurrenceParams,
+  Revalidation,
+} from './revalidation.js';
 
 export { sha256Text, sha256Bytes, requireToken, requireSha } from './hash.js';
 
