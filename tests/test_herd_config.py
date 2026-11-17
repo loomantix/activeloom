@@ -47,6 +47,60 @@ def load() -> ModuleType:
 herd = load()
 
 
+@pytest.mark.parametrize("settings", [{"toolPermission": "proceed-in-sandbox"}, {"sandbox": True}])
+def test_agy_user_sandbox_blocks_review_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, settings: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".gemini/antigravity-cli/settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({**settings, "privateSetting": "do-not-report"}))
+    report = permissions(tmp_path, capsys, {}, "gemini")["gemini"]
+    assert report["sandbox_without_approval"] is True
+    assert report["sandbox_in_read_only"] is True
+    sandbox = report["agy_sandbox"]
+    assert sandbox["sources"] == [str(path)]
+    assert "linked-worktree git metadata" in sandbox["blocks"]
+    assert "gh authentication" in sandbox["blocks"][1]
+    assert "activeloom profiles" in sandbox["blocks"][1]
+    assert "--dangerously-skip-permissions" in sandbox["clearing_tier"]
+    assert "--settings" in sandbox["clearing_tier"]
+    assert "do-not-report" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("override", ["bypass", "inline", "file", "equals"])
+def test_agy_sandbox_clearing_tiers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".gemini/antigravity-cli/settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"toolPermission": "proceed-in-sandbox", "sandbox": True}))
+    value = json.dumps({"toolPermission": "ask", "sandbox": False})
+    if override == "file":
+        settings_file = tmp_path / "override.json"
+        settings_file.write_text(value)
+        value = str(settings_file)
+    args = (["--dangerously-skip-permissions"] if override == "bypass" else
+            [f"--settings={value}"] if override == "equals" else ["--settings", value])
+    report = permissions(tmp_path, capsys, {"gemini": {"permission_off_args": args}}, "gemini")["gemini"]
+    assert report["sandbox_without_approval"] is False
+    assert report["sandbox_in_read_only"] is True
+
+
+def test_agy_missing_settings_and_explicit_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert herd._agy_sandbox([])["enabled"] is False
+    assert herd._agy_sandbox(["--sandbox"])["enabled"] is True
+    assert herd._agy_sandbox(["--settings", '{"sandbox":true}'])["enabled"] is True
+    with pytest.raises(herd.UsageError, match="missing"):
+        herd._agy_sandbox(["--settings"])
+    with pytest.raises(herd.UsageError, match="missing"):
+        herd._agy_sandbox(["--settings", str(tmp_path / "absent")])
+    with pytest.raises(herd.UsageError, match="sandbox must"):
+        herd._agy_sandbox(["--settings", '{"sandbox":"yes"}'])
+
+
 def test_getting_started_auto_glance_example_validates(tmp_path: Path) -> None:
     guide = (ROOT / "docs/getting-started.md").read_text()
     section = guide.split("### Choose auto-glance\n", 1)[1]
@@ -588,7 +642,9 @@ def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[st
     path.write_text(json.dumps({"schema_version": 1}))
     assert herd.main(["permissions", "--engine", "codex", "--path", str(path), "--no-alias-check"]) == 0
     scope = json.loads(capsys.readouterr().out)["scope"]
-    assert scope.startswith("herd.json, plus `type <cli>`")
+    assert scope.startswith("herd.json, agy's user settings")
+    assert "toolPermission/sandbox" in scope
+    assert "plus `type <cli>`" in scope
     assert "Claude settings are not read" in scope
 
 

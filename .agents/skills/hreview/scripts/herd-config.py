@@ -754,7 +754,8 @@ CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
 CLAUDE_PERMISSION_MODE_FLAGS = (CLAUDE_AUTO_MODE[0], "--dangerously-skip-permissions")
 # claude-cli-invocations:end
 PERMISSION_SCOPE = (
-    "herd.json, plus `type <cli>` in the user's shell for aliases; engine config files such as "
+    "herd.json, agy's user settings and --settings overrides (toolPermission/sandbox only), "
+    "plus `type <cli>` in the user's shell for aliases; other engine config files such as "
     "~/.codex/config.toml and Claude settings are not read (claude-settings checks Claude settings for auto mode)"
 )
 
@@ -828,6 +829,42 @@ def _sandbox_without_approval(engine: str, turned_off: list[dict[str, str]]) -> 
     return CODEX_APPROVAL["never"][0] in off and not off & SANDBOX_OFF
 
 
+# claude-cli-invocations:start
+def _agy_sandbox(args: list[str]) -> dict[str, Any]:
+    path = Path.home() / ".gemini/antigravity-cli/settings.json"
+    settings = _read_settings(path) or {}
+    sources = [str(path)] if settings else []
+    for index, arg in enumerate(args):
+        if arg == "--settings" or arg.startswith("--settings="):
+            value = arg.partition("=")[2] if "=" in arg else (args[index + 1] if index + 1 < len(args) else "")
+            if not value:
+                raise UsageError("agy --settings: missing JSON object or file path")
+            if value.lstrip().startswith("{"):
+                override = parse_json(value, "agy --settings")
+                if not isinstance(override, dict):
+                    raise UsageError("agy --settings: must be a JSON object")
+            else:
+                override = _read_settings(Path(value).expanduser())
+                if override is None:
+                    raise UsageError("agy --settings: settings file is missing")
+            settings.update(override)
+            sources.append("--settings")
+    sandbox = settings.get("sandbox", False)
+    if not isinstance(sandbox, bool):
+        raise UsageError("agy settings: sandbox must be true or false")
+    requested = sandbox or settings.get("toolPermission") == "proceed-in-sandbox"
+    enabled = "--sandbox" in args or "--sandbox=true" in args or (
+        requested and "--dangerously-skip-permissions" not in args
+    )
+    return {
+        "sources": sources,
+        "enabled": enabled,
+        "blocks": ["linked-worktree git metadata", "~/.config (gh authentication and activeloom profiles)"] if enabled else [],
+        "clearing_tier": "--dangerously-skip-permissions or --settings with toolPermission set to an unsandboxed mode and sandbox false",
+    }
+# claude-cli-invocations:end
+
+
 def permission_report(
     loaded: dict[str, Any],
     engines: list[str],
@@ -854,6 +891,13 @@ def permission_report(
             "turned_off_in_read_only": in_launch,
             "alias": alias,
         }
+        if engine == "gemini":
+            alias_words = parse_type_output("agy", (type_texts or {}).get(engine) or "")["words"]
+            read_only_args = [*alias_words, *entry["launch_args"]]
+            sandbox = _agy_sandbox([*read_only_args, *entry["permission_off_args"]])
+            report[engine]["agy_sandbox"] = sandbox
+            report[engine]["sandbox_without_approval"] = sandbox["enabled"]
+            report[engine]["sandbox_in_read_only"] = _agy_sandbox(read_only_args)["enabled"]
     return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
 
 

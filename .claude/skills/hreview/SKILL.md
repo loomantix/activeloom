@@ -47,6 +47,14 @@ If `H`, `L`, `P` or `C` is missing, stop: classify it per herdr.md's [Missing or
 
 Every engine, Gemini included, runs as an interactive session in its pane. These are the ordinary interactive reviews, not the headless launchers.
 
+For a human handoff, follow herdr.md's Human handoff section: print the full
+`cd <review-worktree> && agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions`
+line with actual pinned values and resolved user arguments (or the exact
+owner-approved `--settings` override), the skill invocation and the in-session
+Git/helper preflight. Say that a bare `agy` will not work. A reviewer reporting
+a preflight failure or controller refusal is blocked; do not ask it to retry
+the same transition or improvise ledger writes, worktrees or launchers.
+
 ## Preflight (per PR)
 
 1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine in the review order.
