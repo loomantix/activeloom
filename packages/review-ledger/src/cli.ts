@@ -3,7 +3,7 @@
  * Create, reconcile, and disposition deterministic local-review ledger entries.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import {
   PACKAGE_VERSION,
   PROTOCOL_VERSION,
@@ -22,10 +22,18 @@ import {
   TOKEN_RE,
 } from './constants.js';
 import { fail } from './errors.js';
+import {
+  UsageError,
+  commandHelp,
+  commandSynopsis,
+  failUsage,
+  overviewHelp,
+  usageHint,
+} from './usage.js';
 import { classifyRangeEffect } from './effect.js';
 import { assertRegularFile, parseJsonOrFail } from './io.js';
 import { readContent } from './protocol.js';
-import { requireSha } from './hash.js';
+import { requireSha, sha256Bytes } from './hash.js';
 import {
   attest,
   correctSeverity,
@@ -83,10 +91,12 @@ import type { ExportLine } from './export.js';
 import { formatFindings } from './format.js';
 import {
   DefaultGitHubRunner,
+  fetchReviewThreadPages,
   fetchReviewThreads,
   getAllIssueComments,
   getGitHubRunner,
   getReviewComments,
+  loadReviewThreads,
   readLifecycle,
   resetGitHubRunner,
   setGitHubRunner,
@@ -270,7 +280,9 @@ function resolveChangesetReport(args: CliArgs): ChangesetReport {
     );
   }
   if (!args.base || !args.head) {
-    fail('changeset classification requires --diff-file or --base and --head');
+    failUsage(
+      'changeset classification requires --diff-file or --base and --head',
+    );
   }
   return classifyRange({ base: args.base, head: args.head, options });
 }
@@ -317,11 +329,11 @@ function nowUtcSecond(): string {
 
 function parsePositiveInteger(value: string, name: string): number {
   if (!/^[1-9]\d*$/.test(value)) {
-    fail(`${name} must be a positive integer`);
+    failUsage(`${name} must be a positive integer`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
-    fail(`${name} must be a positive safe integer`);
+    failUsage(`${name} must be a positive safe integer`);
   }
   return parsed;
 }
@@ -332,12 +344,12 @@ function parseEnum<T extends string>(
   allowed: readonly T[],
 ): T {
   if (!allowed.includes(value as T)) {
-    fail(`${arg} must be one of: ${allowed.join(', ')}`);
+    failUsage(`${arg} must be one of: ${allowed.join(', ')}`);
   }
   return value as T;
 }
 
-function parseCliArgs(argv: string[]): CliArgs {
+export function parseCliArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
   let i = 0;
 
@@ -395,7 +407,7 @@ function parseCliArgs(argv: string[]): CliArgs {
     const next = argv[i + 1];
     const parseVal = (name: string): string => {
       if (next === undefined || next.startsWith('--')) {
-        fail(`missing argument for ${name}`);
+        failUsage(`missing argument for ${name}`);
       }
       i += 2;
       return next;
@@ -593,7 +605,7 @@ function parseCliArgs(argv: string[]): CliArgs {
         args.expectedSummarySha256 = parseVal(arg);
         break;
       default:
-        fail(`unknown argument: ${arg}`);
+        failUsage(`unknown argument: ${arg}`);
     }
   }
 
@@ -605,7 +617,7 @@ function validateArgs(args: CliArgs): void {
     return;
   }
   if (!args.command) {
-    fail('subcommand required');
+    failUsage('subcommand required');
   }
 
   // Telemetry records an open engine token; every other command is bound to the
@@ -657,7 +669,7 @@ function validateArgs(args: CliArgs): void {
             .replace(/([A-Z])/g, '-$1')
             .toLowerCase()}`,
       );
-      fail(`v3 content mode requires ${names.join(', ')}`);
+      failUsage(`v3 content mode requires ${names.join(', ')}`);
     }
   }
 
@@ -671,7 +683,7 @@ function validateArgs(args: CliArgs): void {
     ];
     const present = resultFields.map((f) => args[f] !== undefined);
     if (present.some(Boolean) && !present.every(Boolean)) {
-      fail(
+      failUsage(
         'verify-ledger result evidence requires --engine, --round, --base, --before, and --result-file',
       );
     }
@@ -709,7 +721,7 @@ function runCliCommand(argv: string[]): number {
   switch (args.command) {
     case 'lifecycle-state': {
       if (!args.repo || args.pr === undefined)
-        fail('lifecycle-state requires --repo and --pr');
+        failUsage('lifecycle-state requires --repo and --pr');
       writeSortedJson(readLifecycle(args.repo, args.pr));
       break;
     }
@@ -723,7 +735,7 @@ function runCliCommand(argv: string[]): number {
         !args.fingerprint ||
         args.occurrence === undefined
       ) {
-        fail(
+        failUsage(
           'preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence',
         );
       }
@@ -751,7 +763,7 @@ function runCliCommand(argv: string[]): number {
         args.round === undefined ||
         !args.findingsFile
       ) {
-        fail(
+        failUsage(
           'preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file',
         );
       }
@@ -771,10 +783,10 @@ function runCliCommand(argv: string[]): number {
     }
     case 'preflight-anchor': {
       if (!args.repo || args.pr === undefined || !args.head || !args.path) {
-        fail('preflight-anchor requires --repo, --pr, --head, and --path');
+        failUsage('preflight-anchor requires --repo, --pr, --head, and --path');
       }
       if (args.line === undefined && !args.fileLevel) {
-        fail('preflight-anchor requires --line or --file-level');
+        failUsage('preflight-anchor requires --line or --file-level');
       }
       const out = preflightAnchor({
         repo: args.repo,
@@ -790,13 +802,13 @@ function runCliCommand(argv: string[]): number {
     }
     case 'post-finding': {
       if (!args.repo || args.pr === undefined || !args.head || !args.path) {
-        fail('post-finding requires --repo, --pr, --head, and --path');
+        failUsage('post-finding requires --repo, --pr, --head, and --path');
       }
       if (args.line === undefined && !args.fileLevel) {
-        fail('post-finding requires --line or --file-level');
+        failUsage('post-finding requires --line or --file-level');
       }
       if (!args.contentFile && !args.bodyFile) {
-        fail('post-finding requires --content-file or --body-file');
+        failUsage('post-finding requires --content-file or --body-file');
       }
       const out = postFinding({
         repo: args.repo,
@@ -833,7 +845,7 @@ function runCliCommand(argv: string[]): number {
         !args.threadId ||
         !args.contentFile
       ) {
-        fail('reopen-occurrence missing required parameters');
+        failUsage('reopen-occurrence missing required parameters');
       }
       const out = reopenOccurrence({
         repo: args.repo,
@@ -866,7 +878,7 @@ function runCliCommand(argv: string[]): number {
         !args.threadId ||
         !args.contentFile
       ) {
-        fail('correct-severity missing required parameters');
+        failUsage('correct-severity missing required parameters');
       }
       const out = correctSeverity({
         repo: args.repo,
@@ -898,7 +910,7 @@ function runCliCommand(argv: string[]): number {
         !args.threadId ||
         !args.contentFile
       ) {
-        fail('dispose missing required parameters');
+        failUsage('dispose missing required parameters');
       }
       const out = dispose({
         repo: args.repo,
@@ -924,7 +936,7 @@ function runCliCommand(argv: string[]): number {
         args.commentId === undefined ||
         (!args.bodyFile && !args.contentFile)
       ) {
-        fail(
+        failUsage(
           'reply requires --repo, --pr, --head, --comment-id, and --body-file or --content-file',
         );
       }
@@ -945,7 +957,9 @@ function runCliCommand(argv: string[]): number {
     }
     case 'post-pr-comment': {
       if (!args.repo || args.pr === undefined || !args.head || !args.bodyFile) {
-        fail('post-pr-comment requires --repo, --pr, --head, and --body-file');
+        failUsage(
+          'post-pr-comment requires --repo, --pr, --head, and --body-file',
+        );
       }
       const out = postPrComment({
         repo: args.repo,
@@ -958,7 +972,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'classify-effect': {
       if (!args.base || !args.head) {
-        fail('classify-effect requires --base and --head');
+        failUsage('classify-effect requires --base and --head');
       }
       writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
@@ -972,7 +986,7 @@ function runCliCommand(argv: string[]): number {
         !args.before ||
         !args.resultFile
       ) {
-        fail('validate-result missing required arguments');
+        failUsage('validate-result missing required arguments');
       }
       const out = validateResult({
         head: args.head,
@@ -998,7 +1012,7 @@ function runCliCommand(argv: string[]): number {
         !args.repo ||
         args.pr === undefined
       ) {
-        fail('write-result missing required arguments');
+        failUsage('write-result missing required arguments');
       }
       const params = {
         head: args.head,
@@ -1018,7 +1032,7 @@ function runCliCommand(argv: string[]): number {
         args.command === 'recover-result' &&
         (!args.expectedRecoverySha256 || args.classification !== undefined)
       ) {
-        fail(
+        failUsage(
           'recover-result requires --expected-recovery-sha256 and reads classification from the saved candidate',
         );
       }
@@ -1042,7 +1056,7 @@ function runCliCommand(argv: string[]): number {
         !args.base ||
         !args.before
       ) {
-        fail(
+        failUsage(
           'check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before',
         );
       }
@@ -1071,7 +1085,7 @@ function runCliCommand(argv: string[]): number {
         !args.resultFile ||
         !args.blockerFile
       ) {
-        fail('write-blocked-result missing required arguments');
+        failUsage('write-blocked-result missing required arguments');
       }
       const out = writeBlockedResult({
         head: args.head,
@@ -1087,7 +1101,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'finalize': {
       if (!args.repo || args.pr === undefined || !args.resultFile) {
-        fail(
+        failUsage(
           'finalize requires --repo, --pr, and --result-file; reuse the original pre-pass historical-comment-ids file when present',
         );
       }
@@ -1099,7 +1113,7 @@ function runCliCommand(argv: string[]): number {
         args.round !== undefined ||
         args.expectedResultSha256
       ) {
-        fail(
+        failUsage(
           'finalize reads identity and digest from the saved result; use attest for explicit identity checks',
         );
       }
@@ -1129,7 +1143,7 @@ function runCliCommand(argv: string[]): number {
         !args.resultFile ||
         !args.expectedResultSha256
       ) {
-        fail(
+        failUsage(
           'attest requires --repo, --pr, --head, --engine, --round, --base, --before, --result-file, and --expected-result-sha256',
         );
       }
@@ -1155,7 +1169,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'resolve': {
       if (!args.repo || args.pr === undefined || !args.head || !args.threadId) {
-        fail('resolve requires --repo, --pr, --head, and --thread-id');
+        failUsage('resolve requires --repo, --pr, --head, and --thread-id');
       }
       const out = resolve({
         repo: args.repo,
@@ -1173,7 +1187,7 @@ function runCliCommand(argv: string[]): number {
         !args.head ||
         !args.fingerprint
       ) {
-        fail('reconcile requires --repo, --pr, --head, and --fingerprint');
+        failUsage('reconcile requires --repo, --pr, --head, and --fingerprint');
       }
       const out = reconcile({
         repo: args.repo,
@@ -1186,7 +1200,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'verify-ledger': {
       if (!args.repo || args.pr === undefined || !args.head) {
-        fail('verify-ledger requires --repo, --pr, and --head');
+        failUsage('verify-ledger requires --repo, --pr, and --head');
       }
       const out = verifyLedger({
         repo: args.repo,
@@ -1216,7 +1230,7 @@ function runCliCommand(argv: string[]): number {
         args.reviewers === undefined ||
         !args.contentFile
       ) {
-        fail(
+        failUsage(
           'post-roster requires --repo, --pr, --head, --author, --reviewers, and --content-file',
         );
       }
@@ -1234,7 +1248,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'read-roster': {
       if (!args.repo || args.pr === undefined) {
-        fail('read-roster requires --repo and --pr');
+        failUsage('read-roster requires --repo and --pr');
       }
       const out = readRoster({
         repo: args.repo,
@@ -1247,7 +1261,7 @@ function runCliCommand(argv: string[]): number {
     case 'coverage':
     case 'verify-coverage': {
       if (!args.repo || args.pr === undefined || !args.head) {
-        fail(`${args.command} requires --repo, --pr, and --head`);
+        failUsage(`${args.command} requires --repo, --pr, and --head`);
       }
       const run = args.command === 'coverage' ? coverage : verifyCoverage;
       const out = run({
@@ -1277,7 +1291,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'enrich-telemetry-duration': {
       if (args.dryRun)
-        fail('enrich-telemetry-duration does not support --dry-run');
+        failUsage('enrich-telemetry-duration does not support --dry-run');
       const durationSeconds = parseDurationSeconds(args.durationSeconds);
       if (
         !args.repo ||
@@ -1289,7 +1303,7 @@ function runCliCommand(argv: string[]): number {
         !args.head ||
         durationSeconds === null
       ) {
-        fail(
+        failUsage(
           'enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds',
         );
       }
@@ -1310,7 +1324,7 @@ function runCliCommand(argv: string[]): number {
     }
     case 'replay-telemetry': {
       if (!args.repo || !args.file)
-        fail('replay-telemetry requires --repo and --file');
+        failUsage('replay-telemetry requires --repo and --file');
       const record = validateTelemetryRecord(
         readJsonFile(args.file, 'metrics recovery record'),
       );
@@ -1335,7 +1349,7 @@ function runCliCommand(argv: string[]): number {
     case 'metrics-setup':
     case 'metrics-rotate': {
       if (!args.repo || args.dryRun)
-        fail(
+        failUsage(
           'metrics setup/rotation requires --repo and does not support --dry-run',
         );
       process.stderr.write(
@@ -1348,7 +1362,9 @@ function runCliCommand(argv: string[]): number {
     }
     case 'telemetry-recorded': {
       if (!args.repo || args.pr === undefined || !args.idempotencyKey)
-        fail('telemetry-recorded requires --repo, --pr, and --idempotency-key');
+        failUsage(
+          'telemetry-recorded requires --repo, --pr, and --idempotency-key',
+        );
       writeSortedJson({
         recorded: telemetryRecorded({
           repo: args.repo,
@@ -1454,7 +1470,7 @@ function runCliCommand(argv: string[]): number {
     case 'report':
     case 'export': {
       if (!args.repo) {
-        fail('export requires --repo');
+        failUsage('export requires --repo');
       }
       const byNumber = args.pr !== undefined || args.prs !== undefined;
       const byDate = args.since !== undefined || args.until !== undefined;
@@ -1462,7 +1478,7 @@ function runCliCommand(argv: string[]): number {
         byNumber === byDate ||
         (args.pr !== undefined && args.prs !== undefined)
       ) {
-        fail(
+        failUsage(
           'export requires exactly one selection: --pr, --prs, or --since and/or --until',
         );
       }
@@ -1475,7 +1491,7 @@ function runCliCommand(argv: string[]): number {
           ? undefined
           : parseExportBound(args.until, '--until');
       if (since !== undefined && until !== undefined && since > until) {
-        fail('export --since must not be later than --until');
+        failUsage('export --since must not be later than --until');
       }
       const selection = byNumber
         ? {
@@ -1524,7 +1540,7 @@ function runCliCommand(argv: string[]): number {
     case 'read-result': {
       const targetFile = args.file ?? args.resultFile;
       if (!targetFile) {
-        fail('read-result requires --file or --result-file');
+        failUsage('read-result requires --file or --result-file');
       }
       const out = readResult(targetFile);
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
@@ -1533,7 +1549,7 @@ function runCliCommand(argv: string[]): number {
     case 'format-findings': {
       const jsonPath = args.jsonFile ?? args.file;
       if (!jsonPath) {
-        fail('format-findings requires --json-file or --file');
+        failUsage('format-findings requires --json-file or --file');
       }
       assertRegularFile(
         jsonPath,
@@ -1561,13 +1577,33 @@ function runCliCommand(argv: string[]): number {
     case 'summary':
     case 'post-summary': {
       if (!args.repo || args.pr === undefined)
-        fail(`${args.command} requires --repo and --pr`);
+        failUsage(`${args.command} requires --repo and --pr`);
       writeSortedJson(silentCommand(args.command, args.repo, args.pr, args));
+      break;
+    }
+    case 'export-threads': {
+      if (!args.repo || args.pr === undefined || !args.threadsFile)
+        failUsage('export-threads requires --repo, --pr, and --threads-file');
+      const bytes = Buffer.from(
+        JSON.stringify(fetchReviewThreadPages(args.repo, args.pr)) + '\n',
+        'utf8',
+      );
+      const sha256 = sha256Bytes(bytes);
+      // `wx` refuses an existing path, symlinks included, so the snapshot is
+      // always a fresh owner-only file this command wrote. Reading it back
+      // through the attest loader proves it is a snapshot attest accepts.
+      writeFileSync(args.threadsFile, bytes, { flag: 'wx', mode: 0o600 });
+      const threads = loadReviewThreads(args.threadsFile, sha256);
+      writeSortedJson({
+        path: args.threadsFile,
+        sha256,
+        threads: threads.length,
+      });
       break;
     }
     case 'read-ledger': {
       if (!args.repo || args.pr === undefined)
-        fail('read-ledger requires --repo and --pr');
+        failUsage('read-ledger requires --repo and --pr');
       writeSortedJson({
         mode: silentRunner().storeFor(args.repo, args.pr) ? 'silent' : 'loud',
         review_comments: getReviewComments(args.repo, args.pr),
@@ -1577,7 +1613,7 @@ function runCliCommand(argv: string[]): number {
       break;
     }
     default:
-      fail(`unknown command: ${args.command}`);
+      failUsage(`unknown command: ${args.command}`);
   }
 
   return 0;
@@ -1680,6 +1716,8 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
     '--dry-run',
     '--force-review',
     '--confirmed',
+    '--help',
+    '-h',
   ]);
   for (let i = 0; i < argv.length; ) {
     const arg = argv[i]!;
@@ -1693,6 +1731,44 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
 
 /** Parse argv, dispatch the requested subcommand, and return an exit code. */
 export function runCli(argv: string[] = process.argv.slice(2)): number {
+  const help = helpRequest(argv);
+  if (help !== undefined) {
+    process.stdout.write(help);
+    return 0;
+  }
+  try {
+    return dispatchCli(argv);
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw new UsageError(
+        `${error.message}\n${usageHint(commandFromArgv(argv))}`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * The help text `argv` asks for: `--help` or `-h` anywhere before `--`, or
+ * `help [subcommand]`. Undefined when it asks for none.
+ */
+function helpRequest(argv: readonly string[]): string | undefined {
+  const own = argv.includes('--') ? argv.slice(0, argv.indexOf('--')) : argv;
+  const first = commandFromArgv(own);
+  const asked =
+    own.includes('--help') || own.includes('-h') || first === 'help';
+  if (!asked) return undefined;
+  const command =
+    first === 'help'
+      ? commandFromArgv(own.slice(own.indexOf('help') + 1))
+      : first;
+  if (command === undefined) return overviewHelp();
+  if (commandSynopsis(command) === undefined)
+    return `unknown subcommand: ${command}\n${overviewHelp()}`;
+  return commandHelp(command);
+}
+
+function dispatchCli(argv: string[]): number {
   resetGitHubRunner();
   setGitHubRunner(
     new SilentRunner(

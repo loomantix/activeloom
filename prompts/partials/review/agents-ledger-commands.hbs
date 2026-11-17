@@ -1,0 +1,90 @@
+## Ledger commands
+
+Record every ledger item with these commands, run as written with the
+bracketed values filled in. `node .agents/skills/critique/scripts/review-ledger.js <subcommand> --help`
+prints a subcommand's complete flags. A refused argument prints the same
+synopsis: correct the command to match it and run it again. `<dir>` is an owner-only directory outside the worktree; write each
+prose file there with the file-editing tool.
+
+Confirm the pass, once, before any lane. Skip this when
+`$AGENT_LOOP_REVIEW_ROUND` is set:
+
+```bash
+python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
+  authorize-pass --repo <owner/repo> --pr <number> --head <pr-head> \
+  --base <review-base-sha> --engine gemini --round <n>
+```
+
+It prints the `run_id` the run-scoped commands below take.
+
+Post each verified finding before editing anything for it. The content file
+holds the finding prose only; the helper writes the marker and its hash:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  post-finding --repo <owner/repo> --pr <number> --head <pr-head> \
+  --path <repository-relative-path> --line <right-side-line> \
+  --engine gemini --round <n> --fingerprint <stable-id> \
+  --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
+  --content-file <dir>/finding-<stable-id>.md
+```
+
+Authorize the fix, then edit:
+
+```bash
+python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
+  authorize-fix --run-id <run_id> --repo <owner/repo> --pr <number> \
+  --head <pr-head> --base <review-base-sha> --engine gemini --round <n> \
+  --fingerprint <stable-id> --occurrence 1
+```
+
+After the fix is pushed, read the thread with
+`node .agents/skills/critique/scripts/review-ledger.js reconcile --repo <owner/repo> --pr <number> --head <pushed-head> --fingerprint <stable-id>`,
+then dispose the finding exactly once. On an uncertain response, retry the
+identical command; the helper replays it instead of adding a second reply:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  dispose --repo <owner/repo> --pr <number> --head <pushed-head> \
+  --engine gemini --round <n> --fingerprint <stable-id> --occurrence 1 \
+  --outcome <fixed|dismissed|deferred> \
+  --comment-id <root-comment-id> --thread-id <thread-id> \
+  --content-file <dir>/disposition-<stable-id>.md
+```
+
+Record the result. `<before>` is the PR head this pass started from and
+`<head>` the PR head it ends on. Add `--classification <minor|material>` to
+`write-result` only when `<head>` differs from `<before>`. With
+`$AGENT_LOOP_REVIEW_RESULT_FILE` set, write the result to that file and stop
+there: the wrapper attests. Otherwise write it to `<dir>/result.json` and publish it with the three
+commands that follow `write-result`:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  write-result --repo <owner/repo> --pr <number> --head <head> \
+  --engine gemini --round <n> --base <review-base-sha> --before <before> \
+  --result-file <dir>/result.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  validate-result --head <head> --engine gemini --round <n> \
+  --base <review-base-sha> --before <before> --result-file <dir>/result.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  export-threads --repo <owner/repo> --pr <number> \
+  --threads-file <dir>/threads.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  attest --repo <owner/repo> --pr <number> --head <head> \
+  --engine gemini --round <n> --base <review-base-sha> --before <before> \
+  --result-file <dir>/result.json --expected-result-sha256 <resultSha256> \
+  --threads-file <dir>/threads.json --expected-threads-sha256 <sha256> \
+  --allowed-heads-file <dir>/heads.json
+```
+
+`validate-result` prints `resultSha256` and `export-threads` prints `sha256`.
+`<dir>/heads.json` is a JSON array of full SHAs from `<before>` through each
+head this pass pushed to `<head>`, in push order. The pass is complete when
+`attest` prints `verified: true`. For unfinished review work, write one short
+blocker to `<dir>/blocker.txt` and run `write-blocked-result` with the same
+`--head`, `--engine`, `--round`, `--base`, `--before` and `--result-file`, plus
+`--blocker-file <dir>/blocker.txt`.
