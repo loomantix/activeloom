@@ -111,6 +111,22 @@ function parseApi(args: string[], payload?: unknown): ApiRequest | null {
   return { method, endpoint: endpoint.split('?')[0]!, slurp, fields };
 }
 
+/**
+ * Whether one gh call only reads: a read-only `gh` command, a REST GET, or a
+ * GraphQL query whose text is visible here and is not a mutation. A body read
+ * from a file the caller names cannot be inspected, so it counts as a write.
+ */
+export function isReadOnlyGhCall(args: string[], payload?: unknown): boolean {
+  const request = parseApi(args, payload);
+  if (request === null) return READ_ONLY_GH.has(args.slice(0, 2).join(' '));
+  if (request.endpoint !== 'graphql') return request.method === 'GET';
+  if (args.some((arg) => arg === '--input' || arg.startsWith('--input=')))
+    return false;
+  const body = (payload ?? {}) as { query?: unknown };
+  const query = body.query ?? request.fields['query'];
+  return typeof query === 'string' && !/^\s*mutation\b/.test(query);
+}
+
 function json(value: unknown): string {
   return JSON.stringify(value);
 }

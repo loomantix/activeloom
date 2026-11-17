@@ -26,7 +26,7 @@ import { readFileSync as readFileSync6 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.16.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.16.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -20008,6 +20008,16 @@ function parseApi(args, payload) {
   method ??= hasFields || input ? "POST" : "GET";
   return { method, endpoint: endpoint.split("?")[0], slurp, fields };
 }
+function isReadOnlyGhCall(args, payload) {
+  const request = parseApi(args, payload);
+  if (request === null) return READ_ONLY_GH.has(args.slice(0, 2).join(" "));
+  if (request.endpoint !== "graphql") return request.method === "GET";
+  if (args.some((arg) => arg === "--input" || arg.startsWith("--input=")))
+    return false;
+  const body = payload ?? {};
+  const query = body.query ?? request.fields["query"];
+  return typeof query === "string" && !/^\s*mutation\b/.test(query);
+}
 function json(value) {
   return JSON.stringify(value);
 }
@@ -23388,7 +23398,14 @@ function localGh(argv) {
     );
     ghArgs = [...ghArgs.slice(0, input), ...ghArgs.slice(input + 2)];
   }
-  process.stdout.write(getGitHubRunner().runGh(ghArgs, payload));
+  const runner = getGitHubRunner();
+  const scope = scopeFromArgv(argv.slice(0, split));
+  const silent = scope !== void 0 && runner instanceof SilentRunner && runner.storeFor(scope.repo, scope.pr) !== null;
+  if (!silent && !isReadOnlyGhCall(ghArgs, payload))
+    fail(
+      "local-gh only reads on a PR whose ledger is hosted; record findings, replies, results and markers with the command the skill step names (post-finding, dispose, write-result, attest), never through local-gh"
+    );
+  process.stdout.write(runner.runGh(ghArgs, payload));
   return 0;
 }
 function commandFromArgv(argv) {
