@@ -236,6 +236,56 @@ describe('ledger operations and workflow verification', () => {
 
   afterEach(() => resetGitHubRunner());
 
+  it('reproduces the undisposed earlier-head blocker deadlock in both existing commands', () => {
+    const oldHead = '3333333333333333333333333333333333333333';
+    const finding = buildFindingBody({
+      engine: 'codex',
+      round: 1,
+      head: oldHead,
+      fingerprint: 'inherited',
+      occurrence: 1,
+      severity: 'blocking',
+      lens: 'correctness',
+      content: 'The defect still reproduces at the next head.\n',
+    });
+    mock.reviewComments.push({
+      id: 101,
+      user: { login: mock.actor },
+      body: finding.body,
+    });
+    expect(() =>
+      reopenOccurrence({
+        repo: 'example/project',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 1,
+        fingerprint: 'inherited',
+        occurrence: 2,
+        severity: 'blocking',
+        lens: 'correctness',
+        commentId: 101,
+        threadId: 'thread',
+        content: 'Still reachable.\n',
+      }),
+    ).toThrow(
+      'every prior finding occurrence must have exactly one disposition',
+    );
+    expect(() =>
+      preflightFix({
+        repo: 'example/project',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 1,
+        fingerprint: 'inherited',
+        occurrence: 1,
+      }),
+    ).toThrow('requires exactly one authenticated finding at this head');
+    expect(mock.reviewComments).toHaveLength(1);
+    expect(mock.reviewComments[0]!.body).toBe(finding.body);
+  });
+
   it('verifies anchor with preflightAnchor', () => {
     const res = preflightAnchor({
       repo: 'loomantix/platform-oss',
