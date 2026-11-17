@@ -47,7 +47,7 @@ def load() -> ModuleType:
 herd = load()
 
 
-@pytest.mark.parametrize("settings", [{"toolPermission": "proceed-in-sandbox"}, {"sandbox": True}])
+@pytest.mark.parametrize("settings", [{"toolPermission": "proceed-in-sandbox"}, {"enableTerminalSandbox": True}])
 def test_agy_user_sandbox_blocks_review_paths(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, settings: dict[str, Any]
 ) -> None:
@@ -75,8 +75,8 @@ def test_agy_sandbox_clearing_tiers(
     monkeypatch.setenv("HOME", str(tmp_path))
     path = tmp_path / ".gemini/antigravity-cli/settings.json"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"toolPermission": "proceed-in-sandbox", "sandbox": True}))
-    value = json.dumps({"toolPermission": "ask", "sandbox": False})
+    path.write_text(json.dumps({"toolPermission": "proceed-in-sandbox", "enableTerminalSandbox": True}))
+    value = json.dumps({"toolPermission": "request-review", "enableTerminalSandbox": False})
     if override == "file":
         settings_file = tmp_path / "override.json"
         settings_file.write_text(value)
@@ -92,13 +92,14 @@ def test_agy_missing_settings_and_explicit_sandbox(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("HOME", str(tmp_path))
     assert herd._agy_sandbox([])["enabled"] is False
     assert herd._agy_sandbox(["--sandbox"])["enabled"] is True
-    assert herd._agy_sandbox(["--settings", '{"sandbox":true}'])["enabled"] is True
+    assert herd._agy_sandbox(["--settings", '{"enableTerminalSandbox":true}'])["enabled"] is True
+    assert herd._agy_sandbox(["--settings", '{"sandbox":true}'])["enabled"] is False
     with pytest.raises(herd.UsageError, match="missing"):
         herd._agy_sandbox(["--settings"])
     with pytest.raises(herd.UsageError, match="missing"):
         herd._agy_sandbox(["--settings", str(tmp_path / "absent")])
-    with pytest.raises(herd.UsageError, match="sandbox must"):
-        herd._agy_sandbox(["--settings", '{"sandbox":"yes"}'])
+    with pytest.raises(herd.UsageError, match="enableTerminalSandbox must"):
+        herd._agy_sandbox(["--settings", '{"enableTerminalSandbox":"yes"}'])
 
 
 def test_getting_started_auto_glance_example_validates(tmp_path: Path) -> None:
@@ -643,7 +644,7 @@ def test_report_names_its_scope(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert herd.main(["permissions", "--engine", "codex", "--path", str(path), "--no-alias-check"]) == 0
     scope = json.loads(capsys.readouterr().out)["scope"]
     assert scope.startswith("herd.json, agy's user settings")
-    assert "toolPermission/sandbox" in scope
+    assert "toolPermission/enableTerminalSandbox" in scope
     assert "plus `type <cli>`" in scope
     assert "Claude settings are not read" in scope
 

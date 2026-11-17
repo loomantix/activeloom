@@ -754,7 +754,7 @@ CLAUDE_AUTO_MODE = ("--permission-mode", "auto")
 CLAUDE_PERMISSION_MODE_FLAGS = (CLAUDE_AUTO_MODE[0], "--dangerously-skip-permissions")
 # claude-cli-invocations:end
 PERMISSION_SCOPE = (
-    "herd.json, agy's user settings and --settings overrides (toolPermission/sandbox only), "
+    "herd.json, agy's user settings and --settings overrides (toolPermission/enableTerminalSandbox only), "
     "plus `type <cli>` in the user's shell for aliases; other engine config files such as "
     "~/.codex/config.toml and Claude settings are not read (claude-settings checks Claude settings for auto mode)"
 )
@@ -849,9 +849,9 @@ def _agy_sandbox(args: list[str]) -> dict[str, Any]:
                     raise UsageError("agy --settings: settings file is missing")
             settings.update(override)
             sources.append("--settings")
-    sandbox = settings.get("sandbox", False)
+    sandbox = settings.get("enableTerminalSandbox", False)
     if not isinstance(sandbox, bool):
-        raise UsageError("agy settings: sandbox must be true or false")
+        raise UsageError("agy settings: enableTerminalSandbox must be true or false")
     requested = sandbox or settings.get("toolPermission") == "proceed-in-sandbox"
     enabled = "--sandbox" in args or "--sandbox=true" in args or (
         requested and "--dangerously-skip-permissions" not in args
@@ -860,7 +860,7 @@ def _agy_sandbox(args: list[str]) -> dict[str, Any]:
         "sources": sources,
         "enabled": enabled,
         "blocks": ["linked-worktree git metadata", "~/.config (gh authentication and activeloom profiles)"] if enabled else [],
-        "clearing_tier": "--dangerously-skip-permissions or --settings with toolPermission set to an unsandboxed mode and sandbox false",
+        "clearing_tier": "--dangerously-skip-permissions or --settings with toolPermission set to an unsandboxed mode and enableTerminalSandbox false",
     }
 # claude-cli-invocations:end
 
