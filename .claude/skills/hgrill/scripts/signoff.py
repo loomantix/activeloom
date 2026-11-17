@@ -278,8 +278,8 @@ def parse_legacy(inner: str) -> dict[str, Any]:
                 raise SignoffError(f"unrecognised line in the {section} section: {stripped[:80]}")
         elif stripped.startswith(">"):
             section = None
-        elif NUMBERED_RE.match(stripped) or HEADING_RE.match(stripped):
-            # An item or unknown heading outside the item sections would vanish.
+        elif NUMBERED_RE.match(stripped) or HEADING_RE.match(stripped) or (section is None and BULLET_RE.match(stripped)):
+            # An item, bullet or unknown heading outside the item sections would vanish.
             raise SignoffError(f"unrecognised line outside the item sections: {stripped[:80]}")
         elif section == "checked":
             m = BULLET_RE.match(stripped)
@@ -872,7 +872,8 @@ class SignoffServer(ThreadingHTTPServer):
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/?token={self.token}"
 
-    def store(self, normalized: dict[str, Any]) -> None:
+    def store(self, normalized: dict[str, Any]) -> bool:
+        """Write one issue's answers; return True once every issue has answers."""
         key = (normalized["repo"], normalized["issue"])
         record = {
             "schema": ANSWERS_SCHEMA,
@@ -882,8 +883,7 @@ class SignoffServer(ThreadingHTTPServer):
         with self.lock:
             _write_private(self.resolve_path(*key), json.dumps(record, indent=2, ensure_ascii=False) + "\n")
             self.received.add(key)
-            if self.received >= set(self.entries):
-                self.all_done.set()
+            return self.received >= set(self.entries)
 
 
 class SignoffHandler(BaseHTTPRequestHandler):
@@ -958,10 +958,13 @@ class SignoffHandler(BaseHTTPRequestHandler):
             status = 409 if "snapshot_hash" in str(exc) else 400
             return self._json(status, {"ok": False, "error": str(exc)})
         try:
-            self.server.store(normalized)
+            done = self.server.store(normalized)
         except (OSError, UsageError) as exc:
             return self._json(500, {"ok": False, "error": f"could not store answers: {exc.__class__.__name__}"})
         self._json(200, {"ok": True, "repo": normalized["repo"], "issue": normalized["issue"]})
+        if done:
+            # Only after the 200 is written: `serve` exits on this event.
+            self.server.all_done.set()
 
 
 def cmd_serve(args: argparse.Namespace) -> dict[str, Any]:

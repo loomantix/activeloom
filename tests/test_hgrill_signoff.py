@@ -169,6 +169,8 @@ def test_legacy_refuted_entry() -> None:
         "**Product call — yours:**\n1. **X** — alpha.\n\n**Assumptions:**\n1. **A** — alpha.",
         # An unknown heading after Checked must not hide its items.
         "**Assumptions:**\n1. **A** — alpha.\n**Checked, no longer assumptions:**\n- ✅ f.\n**Deferred calls:**\n1. **X** — alpha.",
+        # A bullet under a heading the parser does not know (here a plain-text one) is not dropped.
+        "Refuted and not resolved:\n- ❌ **Cache is per user** is false: shared.\n\n**Assumptions:**\n1. **A** — alpha.",
         # Numbered items in Owed are not silently skipped.
         "**Assumptions:**\n1. **A** — alpha.\n**Owed to other issues — not yet done there:**\n1. **X** — alpha.",
     ],
@@ -533,7 +535,22 @@ def test_post_accepts_valid_answers_and_writes_state(server: Any) -> None:
     record = json.loads(path.read_text())
     assert record["schema"] == "hgrill-signoff-answers:v1"
     assert record["submission"]["snapshot_hash"] == server.snap.snapshot_hash
-    assert server.all_done.is_set()
+    assert server.all_done.wait(5)
+
+
+def test_completion_is_signalled_only_after_the_last_response(server: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `serve` exits on all_done; setting it before the 200 is written lets the page report "Not sent".
+    done_at_send: list[bool] = []
+    original = so.SignoffHandler._json
+
+    def spy(self: Any, status: int, value: dict[str, Any]) -> None:
+        done_at_send.append(self.server.all_done.is_set())
+        original(self, status, value)
+
+    monkeypatch.setattr(so.SignoffHandler, "_json", spy)
+    assert request(server, "POST", "/answers", all_confirm(server.snap))[0] == 200
+    assert server.all_done.wait(5)
+    assert done_at_send == [False]
 
 
 @pytest.mark.parametrize(
@@ -581,7 +598,7 @@ def test_server_waits_for_every_issue_before_finishing(tmp_path: Path) -> None:
         assert request(srv, "POST", "/answers", all_confirm(first))[0] == 200
         assert not srv.all_done.is_set()
         assert request(srv, "POST", "/answers", all_confirm(second))[0] == 200
-        assert srv.all_done.is_set()
+        assert srv.all_done.wait(5)
         assert resolve(first.repo, 7).is_file() and resolve(second.repo, 7).is_file()
     finally:
         srv.shutdown()
