@@ -46,6 +46,7 @@ def test_skill_writes_out_the_pass_commands() -> None:
         "authorize-pass",
         "post-finding",
         "authorize-fix",
+        "preflight-fix",
         "reconcile",
         "dispose",
         "write-result",

@@ -422,7 +422,9 @@ node .agents/skills/critique/scripts/review-ledger.js \
   --content-file <dir>/finding-<stable-id>.md
 ```
 
-Authorize the fix, then edit:
+For a pass in an authenticated local-review run, authorize the fix with that
+run's pinned ID, then edit. Use the ID returned by `authorize-pass`, or the
+controller-supplied `ACTIVELOOM_RUN_ID` when the controller authorized the round:
 
 ```bash
 python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
@@ -430,6 +432,18 @@ python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
   --head <pr-head> --base <review-base-sha> --engine gemini --round <n> \
   --fingerprint <stable-id> --occurrence 1
 ```
+
+For an agent-loop pass that supplies `AGENT_LOOP_REVIEW_ROUND` without an
+authenticated local-review run, check the posted finding directly instead:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  preflight-fix --repo <owner/repo> --pr <number> --head <pr-head> \
+  --engine gemini --round <n> --fingerprint <stable-id> --occurrence 1
+```
+
+Keep the controller's round and publication flow. A refused run authorization
+is a blocker; it does not authorize falling back to the agent-loop command.
 
 After the fix is pushed, read the thread with
 `node .agents/skills/critique/scripts/review-ledger.js reconcile --repo <owner/repo> --pr <number> --head <pushed-head> --fingerprint <stable-id>`,
