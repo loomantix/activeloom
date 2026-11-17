@@ -70,7 +70,9 @@ uses the ledger helper still runs exactly as written, and the helper keeps the
 post local. A step that posts with raw `gh` is not intercepted: write that text
 into the scratchpad that `silent-status` names instead. Where a step below
 replies to a hosted reviewer, write that reply into the scratchpad, then
-resolve the thread with `gh`.
+resolve the thread with `gh`. The helper's `local-gh` subcommand is internal
+to the run controller; never call it yourself, and on a PR that is not silent it
+refuses every write.
 
 ## Automatic chain dispatch
 
@@ -353,7 +355,8 @@ Next:
   A fix invalidates only the attestations naming the superseded head; an engine
   that already attested this head does not re-run.
   Mark ready only after verify-coverage passes at the exact head, that round
-  produced no material fix, and every local-review thread is resolved.
+  has no material fix awaiting an independent non-material pass, and every
+  local-review thread is resolved.
 ```
 
 A clean convergence pass returns to the controller for remaining exact-head

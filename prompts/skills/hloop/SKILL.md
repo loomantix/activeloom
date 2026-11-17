@@ -51,7 +51,7 @@ Start each build as `horch`'s **Build** describes: tab label `<n> build`, agent 
 
 Keep at most `--concurrency` builds running. Start the next queued issue when a build reports. Start a serialized issue only once its predecessor has **shipped**.
 
-A `BUILD-QUESTION` moves the issue to the skipped list with that question. End the session and close its tab.
+A `BUILD-QUESTION` moves the issue to the skipped list with that question. End the session and close its tab. A product or scope question goes to an `hgrill` chain only when grill chains are already authorized for that issue, otherwise to the user (`horch`, Watching); it never widens the batch.
 
 When the profile sends Claude builds to the cloud, `horch`'s **Cloud build** replaces the tab: no tab, agent or worktree, the additions above go into its prompt, and the issue counts toward `--concurrency` until its PR appears or its 120-minute alert fires. Record the session URL against the issue in `state.md`. A launch that prints no URL frees its slot: move the issue to the skipped list with the helper's `output_tail`. A question or failure reaches the batch only through that alert; move the issue to the skipped list with the session URL.
 
@@ -61,7 +61,7 @@ On `BUILD-PR: <pr> <sha>`, or a cloud build's PR found by `horch`'s Cloud build 
 
 1. One read: `gh pr view <pr> --json isDraft,baseRefName,headRefOid,body`. The PR is a draft, the base is the integration branch, the head is the reported SHA, and the body names the issue. A mismatch is a block. Keep the PR in draft so `hreview` or `auto-glance` owns the ready flip on convergence.
 2. Wait for the build session to finish its turn (read the pane), end it, and close the build tab. Closing a tab mid-turn loses the session's last push. A cloud build has no tab; go on.
-3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher; for a cloud build, with `--author claude`. A PR whose run has ended gets no herder; `horch` alerts the user with the restart words. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
+3. Start `hreview` as `horch`'s **Review chain** describes, in a new tab labelled `<pr>`, and its watcher; for a cloud build, with `--author claude`. A PR whose run has ended gets a herder only through Review chain's restart rules: under `horch`'s Full auto, a budgeted policy restart (`keep`) or `horch`'s **Scope split** whose replacement PRs join this batch as their own units; otherwise `horch` alerts the user with the restart words. `hreview` dispatches auto-glance itself when the repository opts in and the glance gate applies; the batch does not start a second glancer.
 
 ## 4. When a watcher stops
 
@@ -72,7 +72,7 @@ Read the herder's pane, then:
 - **auto-glance in progress** → keep watching the same herder; `hreview` owns it;
 - **stopped at the glance gate** → `horch`'s human-glance alert or block handling; do not launch another auto-glance or override the gate;
 - **glance with findings** → send the findings to a fix session (the build's session if it is still open, otherwise a new one in the PR's tab), then glance again at the new head;
-- **exhausted, non-converged or blocked** → `horch`'s Problems. Leave the PR and its tab as they are.
+- **exhausted, non-converged or blocked** → `horch`'s Problems. Leave the PR and its tab as they are. A run that ended follows `horch`'s Review chain restart rules, so full auto may restart or split it within budget.
 
 ## 5. Ship
 
