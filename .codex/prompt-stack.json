@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "promptStackVersion": "4.29.0",
+  "promptStackVersion": "4.29.1",
   "engine": "codex",
   "root": ".codex",
   "files": [

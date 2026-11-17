@@ -493,6 +493,73 @@ describe('ledger operations and workflow verification', () => {
       ).toMatchObject({ head: headSha, fromHead: oldHead });
     });
 
+    it('can recover an undisposed carried finding after restart at the same head', () => {
+      revalidateOccurrence(params);
+      const oldRunId = /id=([a-f0-9]+)/.exec(
+        String(mock.issueComments[0]!['body']),
+      )![1];
+      mock.issueComments.push({
+        id: 51,
+        user: { login: mock.actor },
+        body: `<!-- local-review-run-end:v1 id=${oldRunId} outcome=aborted head=${headSha} -->`,
+      });
+      const content = 'Authorized restart after interruption.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 4,
+          start_head: headSha,
+          supersedes: 50,
+          tier: 'deep',
+        }),
+      );
+      mock.issueComments.push({
+        id: 52,
+        user: { login: mock.actor },
+        body: `<!-- local-review-run:v1 id=${digest} tier=deep max-rounds=4 base=${mock.prBase} start-head=${headSha} supersedes=50 content-sha256=${digest} -->\n${content}`,
+      });
+      expect(() => preflightFix(params)).toThrow(
+        /different active run or pass/,
+      );
+      expect(() => revalidateOccurrence(params)).not.toThrow();
+      expect(preflightFix(params)).toMatchObject({ verified: true });
+      expect(revalidateOccurrence(params)).toMatchObject({ replayed: true });
+      expect(() => revalidateOccurrence({ ...params, round: 2 })).toThrow(
+        /forward head transition/,
+      );
+      const after = '4444444444444444444444444444444444444444';
+      mock.prHead = after;
+      dispose({
+        ...params,
+        head: after,
+        outcome: 'fixed',
+        content: 'Fixed after the authorized restart.\n',
+      });
+      syncThread();
+      expect(verifyLedger({ ...params, head: after })).toMatchObject({
+        verified: true,
+      });
+      const resultFile = join(tmpdir(), `restart-result-${process.pid}.json`);
+      try {
+        expect(
+          writeResult({
+            ...params,
+            head: after,
+            before: headSha,
+            base: mock.prBase,
+            classification: 'material',
+            resultFile,
+          }),
+        ).toMatchObject({
+          status: 'changed',
+          findingFingerprints: ['inherited'],
+        });
+      } finally {
+        if (existsSync(resultFile)) unlinkSync(resultFile);
+      }
+    });
+
     it('can revalidate again at a later head without inventing a new occurrence', () => {
       const original = structuredClone(mock.reviewComments[0]);
       revalidateOccurrence(params);

@@ -776,8 +776,10 @@ to the existing unresolved root thread. Its first line seals canonical JSON
 with `engine`, `round`, `head`, `fingerprint`, `occurrence`, `fromEngine`,
 `fromRound`, `fromHead`, `runId`, `runCommentId`, `maxRounds`, and `contentSha`.
 The content hash covers the nonempty reproduction explanation after that line.
-The source identity must identify the latest undisposed occurrence, the head
-must advance, and the run binding must match an authenticated run and its
+The source identity must identify the latest undisposed occurrence. The head
+must advance, except that an already-carried occurrence may be rebound at the
+unchanged head to a later authenticated run after an authorized restart.
+The run binding must match an authenticated run and its
 unchanged cap. A cross-actor takeover, an ended or absent run, a duplicate root,
 a prior disposition (including one with a fabricated identity), a changed cap,
 or conflicting evidence is refused. Retry the identical command after an

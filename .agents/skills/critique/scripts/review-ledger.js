@@ -44,7 +44,7 @@ import { createHash } from "crypto";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.17.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.17.1" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -1721,17 +1721,22 @@ function revalidatedComments(input, repo, pr, sameThread = false) {
   const rows = input.map((row) => ({ ...row }));
   const originalRows = input;
   const runs = reviewRuns(getIssueComments(repo, pr));
+  const carriedRuns = /* @__PURE__ */ new Map();
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index];
     if (!owned(row)) continue;
     const record = matchRevalidation(String(row.body ?? ""));
     if (!record) continue;
-    const run = runs.find(
+    const runIndex = runs.findIndex(
       (run2) => run2.id === record.runId && run2.commentId === record.runCommentId
     );
+    const run = runs[runIndex];
     if (!run || run.maxRounds !== record.maxRounds || record.round > run.maxRounds)
       fail("revalidation run identity or round cap differs");
-    if (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head))
+    const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
+    const previousRunIndex = carriedRuns.get(occurrenceKey);
+    const restartedAtSameHead = record.fromHead === record.head && previousRunIndex !== void 0 && previousRunIndex < runIndex;
+    if (!restartedAtSameHead && (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head)))
       fail("revalidation requires a forward head transition");
     const findings = rows.map((r, i) => ({
       row: r,
@@ -1791,6 +1796,7 @@ function revalidatedComments(input, repo, pr, sameThread = false) {
       }).body;
     }
     row.body = "Verified revalidation evidence.\n";
+    carriedRuns.set(occurrenceKey, runIndex);
   }
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index];

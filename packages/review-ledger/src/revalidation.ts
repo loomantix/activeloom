@@ -135,23 +135,32 @@ export function revalidatedComments(
   const rows = input.map((row) => ({ ...row }));
   const originalRows = input;
   const runs = reviewRuns(getIssueComments(repo, pr));
+  const carriedRuns = new Map<string, number>();
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index]!;
     if (!owned(row)) continue;
     const record = matchRevalidation(String(row.body ?? ''));
     if (!record) continue;
-    const run = runs.find(
+    const runIndex = runs.findIndex(
       (run) => run.id === record.runId && run.commentId === record.runCommentId,
     );
+    const run = runs[runIndex];
     if (
       !run ||
       run.maxRounds !== record.maxRounds ||
       record.round > run.maxRounds
     )
       fail('revalidation run identity or round cap differs');
+    const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
+    const previousRunIndex = carriedRuns.get(occurrenceKey);
+    const restartedAtSameHead =
+      record.fromHead === record.head &&
+      previousRunIndex !== undefined &&
+      previousRunIndex < runIndex;
     if (
-      record.fromHead === record.head ||
-      !compareIsForward(repo, record.fromHead, record.head)
+      !restartedAtSameHead &&
+      (record.fromHead === record.head ||
+        !compareIsForward(repo, record.fromHead, record.head))
     )
       fail('revalidation requires a forward head transition');
     const findings = rows
@@ -243,6 +252,7 @@ export function revalidatedComments(
     }
     // The marker remains available in the raw ledger, rather than posing as a finding.
     row.body = 'Verified revalidation evidence.\n';
+    carriedRuns.set(occurrenceKey, runIndex);
   }
   // Reject dispositions that were invented in a different identity namespace.
   for (let index = 0; index < rows.length; index++) {
