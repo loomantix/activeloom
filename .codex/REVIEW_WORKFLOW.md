@@ -220,8 +220,11 @@ engine in a fresh terminal.
 
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
    on the same PR requires the current run to be ended (or explicitly abandoned
-   through the protocol's governed cross-actor transition) and a new, explicit user
-   authorization passed with `--restart`; a new session alone is not a restart.
+   through the protocol's governed cross-actor transition) and a new, explicit
+   restart authorization passed with `--restart`: the user's own words, a
+   restart approval the user recorded, or in a herd chain, a policy-sourced
+   restart record from a protected full-auto autonomy policy, claimed through
+   `start-run --restart-approval-id`. A new session alone is not a restart.
    For an alternating chain, select each pass with `next-pass` as described
    below. With the bundled ledger 1.4, attestation identities
    are scoped to the authenticated run: a newly authorized run starts at round
