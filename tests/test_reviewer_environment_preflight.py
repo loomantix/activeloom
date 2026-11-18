@@ -31,6 +31,29 @@ def test_reviewer_preflight_precedes_other_gates(root: str, skill: str) -> None:
 
 
 @pytest.mark.parametrize("root", [".agents", ".claude", ".codex"])
+@pytest.mark.parametrize("skill", ["critique", "deepcritique", "refactorpass"])
+def test_missing_ledger_arguments_allow_one_same_pass_correction(root: str, skill: str) -> None:
+    text = (ROOT / root / "skills" / skill / "SKILL.md").read_text()
+    preflight = text[text.index("## Reviewer environment preflight"):text.index("## Step 0:")]
+    for required in (
+        "missing-required-argument diagnostic",
+        "subcommand's `usage:` synopsis",
+        "Read that subcommand's `--help`",
+        "local and live PR heads still equal the pass head",
+        "previously captured ledger evidence is unchanged",
+        "one corrected invocation",
+        "same run, round and budget",
+        "stale-head, authorization, lifecycle or integrity refusal",
+        "partial or uncertain write",
+        "A second failure stops the pass",
+    ):
+        assert required in preflight
+    assert preflight.index("missing-required-argument diagnostic") < preflight.index(
+        "At any other later ledger or controller refusal"
+    )
+
+
+@pytest.mark.parametrize("root", [".agents", ".claude", ".codex"])
 def test_human_handoff_has_full_agy_launch_and_preflight(root: str) -> None:
     reference = (ROOT / root / "references/herdr.md").read_text()
     skill = (ROOT / root / "skills/hreview/SKILL.md").read_text()
