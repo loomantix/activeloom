@@ -63,6 +63,7 @@ def test_disposition_head_typo_correction_requires_unchanged_published_evidence(
         "Pass full SHAs directly from Git output; never retype or expand an abbreviated SHA",
         "only to `dispose`",
         "full SHA captured after this pass's successful push",
+        "a pass that publishes nothing records its Git-derived reviewed head instead",
         "local HEAD, the pushed remote branch and the live PR head all equal that recorded SHA",
         "complete pre-call ledger snapshot",
         "unchanged after the refusal",

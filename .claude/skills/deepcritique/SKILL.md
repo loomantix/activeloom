@@ -30,7 +30,8 @@ do not prove the host worktree or configuration is broken. Report this possible
 cause to the controller or user, who owns relaunching with the approved settings.
 
 Pass full SHAs directly from Git output; never retype or expand an abbreviated SHA.
-After publishing, record the full SHA captured after this pass's successful push.
+After publishing, record the full SHA captured after this pass's successful push;
+a pass that publishes nothing records its Git-derived reviewed head instead.
 Before each `dispose`, capture a complete pre-call ledger snapshot and verify the
 local HEAD, the pushed remote branch and the live PR head all equal that recorded SHA.
 
@@ -49,8 +50,8 @@ refusal, stale-head, authorization, lifecycle or integrity refusal, a
 partial or uncertain write, or an error whose pre-write status is unproven.
 
 A separate head-transcription exception applies only to `dispose` rejected with
-`PR head mismatch`. The supplied `--head` must differ from the full SHA already
-recorded after the successful push, and must not be a previously valid pass head.
+`PR head mismatch`. The supplied `--head` must differ from that recorded SHA,
+and must not be a previously valid pass head.
 Require the local HEAD, pushed remote branch and live PR head to still match that
 recorded SHA, and require the complete pre-call ledger snapshot to be
 unchanged after the refusal. Also verify from the pinned implementation that the
