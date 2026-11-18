@@ -29,7 +29,21 @@ Agy's sandbox can hide the primary checkout's Git metadata and user configuratio
 do not prove the host worktree or configuration is broken. Report this possible
 cause to the controller or user, who owns relaunching with the approved settings.
 
-At any later ledger or controller refusal, including `transition-run`, stop and
+One exception applies after this preflight: when the pinned ledger CLI returns a
+missing-required-argument diagnostic followed by that subcommand's `usage:` synopsis,
+and its required-argument guard rejected the invocation before any write, the
+reviewer may make one corrected invocation. Read that subcommand's `--help`;
+use only its documented flags and fill missing values from the pinned review
+context, preserving all supplied identity arguments. Confirm that the
+local and live PR heads are unchanged since the failed invocation, that the
+live PR head still equals any `--head` it named, and that
+previously captured ledger evidence is unchanged. Continue in the
+same run, round and budget; do not relaunch a worker or rewrite a result.
+A second failure stops the pass. This exception never covers a controller
+refusal, stale-head, authorization, lifecycle or integrity refusal, a
+partial or uncertain write, or an error whose pre-write status is unproven.
+
+At any other later ledger or controller refusal, including `transition-run`, stop and
 report the exact command and error to the controller or user. Never retry the
 same transition, invent flags or scripts, simulate its write, or use another
 tool, worktree or launcher to obtain the refused effect. This overrides generic
