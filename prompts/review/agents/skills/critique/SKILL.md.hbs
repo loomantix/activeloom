@@ -306,10 +306,9 @@ Run these lanes as independently as the active runtime permits:
    - `.agents/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.agents/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
 8. Verify and deduplicate lane findings against the source and complete PR
-   ledger. For each confirmed root cause, use the deterministic ledger helper
-   required by `.agents/references/local-review-ledger.md` to post one inline
-   comment on an exact GitHub diff anchor before editing. Do not hand-compose
-   review-comment API requests.
+   ledger. For each confirmed root cause, post one inline comment on an exact
+   GitHub diff anchor before editing, with `post-finding` as written in
+   [Ledger commands](#ledger-commands).
 9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
    justifies the churn. Defer the rest, and create an issue only for an urgent
    follow-up that should be scheduled within roughly two weeks.
@@ -319,8 +318,8 @@ Run these lanes as independently as the active runtime permits:
     "Fix, reply, and resolve" describes, and invoke the helper exactly once
     after the final fix; a second publication fails closed. Otherwise push normally with no
     force.
-11. Use the ledger helper's resumable `dispose` transaction for every posted
-    finding. Reconcile failures through the workflow's bounded recovery. On an
+11. Use the ledger helper's resumable `dispose` transaction, as written in
+    [Ledger commands](#ledger-commands), for every posted finding. Reconcile failures through the workflow's bounded recovery. On an
     uncertain helper response, retry only the identical command; correct a
     preflight rejection only when it is known to have performed no mutation.
 12. Always use the ledger helper's `write-result` command to create the v3
@@ -331,13 +330,12 @@ Run these lanes as independently as the active runtime permits:
     it and the helper-written blocked result for the outer controller; report
     the failure without overwriting either file. For unfinished review work,
     call `write-blocked-result` with an
-    owner-only blocker file. Outside agent-loop, create the complete
-    review-thread export and ordered
-    forward-only before-to-after head list as private temporary files, use
-    `write-result`, then use `attest --threads-file <path>
---allowed-heads-file <path>`. `attest` verifies the ledger and requires
-    `--expected-result-sha256` from `validate-result` before publishing, so
+    owner-only blocker file. Outside agent-loop, publish the result with
+    `write-result`, `validate-result`, `export-threads` and `attest`, in that
+    order, exactly as [Ledger commands](#ledger-commands) writes them, so
     manual and automated passes share one protocol.
+
+{{> review/agents-ledger-commands}}
 
 ## Output
 

@@ -262,6 +262,12 @@ recovery instead of overwriting the blocker.
 The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
+When `$AGENT_LOOP_REVIEW_RESULT_FILE` is unset, this pass is standalone: after
+the final lane, publish the result with `write-result`, `validate-result`,
+`export-threads` and `attest`, exactly as `critique`'s Ledger commands section
+writes them, and report the pass complete only once `attest` prints
+`verified: true`.
+
 ```text
 Deep critique pass complete.
 PR: #<pr-number>
