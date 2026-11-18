@@ -75,7 +75,10 @@ def test_agy_sandbox_clearing_tiers(
     monkeypatch.setenv("HOME", str(tmp_path))
     path = tmp_path / ".gemini/antigravity-cli/settings.json"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"toolPermission": "proceed-in-sandbox", "enableTerminalSandbox": True}))
+    # The bypass is observed to lift only the proceed-in-sandbox preset.
+    user: dict[str, Any] = {"toolPermission": "proceed-in-sandbox"} if override == "bypass" else {
+        "toolPermission": "proceed-in-sandbox", "enableTerminalSandbox": True}
+    path.write_text(json.dumps(user))
     value = json.dumps({"toolPermission": "request-review", "enableTerminalSandbox": False})
     if override == "file":
         settings_file = tmp_path / "override.json"
@@ -86,6 +89,38 @@ def test_agy_sandbox_clearing_tiers(
     report = permissions(tmp_path, capsys, {"gemini": {"permission_off_args": args}}, "gemini")["gemini"]
     assert report["sandbox_without_approval"] is False
     assert report["sandbox_in_read_only"] is True
+    assert report["unrecognized"] == []
+
+
+def test_agy_bypass_does_not_clear_terminal_sandbox(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".gemini/antigravity-cli/settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"enableTerminalSandbox": True}))
+    engines = {"gemini": {"permission_off_args": ["--dangerously-skip-permissions"]}}
+    report = permissions(tmp_path, capsys, engines, "gemini")["gemini"]
+    assert report["sandbox_without_approval"] is True
+    assert "does not clear" in report["agy_sandbox"]["clearing_tier"]
+    assert herd._agy_sandbox(["--sandbox", "--dangerously-skip-permissions"])["enabled"] is True
+    partial = ["--settings", '{"toolPermission":"request-review"}', "--dangerously-skip-permissions"]
+    assert herd._agy_sandbox(partial)["enabled"] is True
+
+
+def test_agy_read_only_settings_override_clears_and_is_recognized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".gemini/antigravity-cli/settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"toolPermission": "proceed-in-sandbox"}))
+    override = json.dumps({"toolPermission": "request-review"})
+    engines = {"gemini": {"launch_args": ["--settings", override], "permission_off_args": []}}
+    report = permissions(tmp_path, capsys, engines, "gemini")["gemini"]
+    assert report["sandbox_in_read_only"] is False
+    assert report["sandbox_without_approval"] is False
+    assert report["unrecognized"] == []
 
 
 def test_agy_missing_settings_and_explicit_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,6 +557,13 @@ def test_unknown_user_engine_is_rejected() -> None:
 
 
 def permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], *names: str) -> Any:
+    # Never read the developer's real agy settings; tests that need some write them under tmp_path.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("HOME", str(tmp_path))
+        return _permissions(tmp_path, capsys, engines, *names)
+
+
+def _permissions(tmp_path: Path, capsys: pytest.CaptureFixture[str], engines: dict[str, Any], *names: str) -> Any:
     path = tmp_path / "herd.json"
     path.write_text(json.dumps({"schema_version": 1, "engines": engines}))
     argv = ["permissions", "--path", str(path), "--no-alias-check"]

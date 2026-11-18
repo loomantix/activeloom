@@ -852,17 +852,40 @@ def _agy_sandbox(args: list[str]) -> dict[str, Any]:
     sandbox = settings.get("enableTerminalSandbox", False)
     if not isinstance(sandbox, bool):
         raise UsageError("agy settings: enableTerminalSandbox must be true or false")
-    requested = sandbox or settings.get("toolPermission") == "proceed-in-sandbox"
-    enabled = "--sandbox" in args or "--sandbox=true" in args or (
-        requested and "--dangerously-skip-permissions" not in args
-    )
+    # The bypass is observed to lift only the proceed-in-sandbox preset; containment that
+    # enableTerminalSandbox or --sandbox requests is cleared only by turning it off.
+    contained = sandbox or "--sandbox" in args or "--sandbox=true" in args
+    preset = settings.get("toolPermission") == "proceed-in-sandbox"
+    enabled = contained or (preset and "--dangerously-skip-permissions" not in args)
     return {
         "sources": sources,
         "enabled": enabled,
         "blocks": ["linked-worktree git metadata", "~/.config (gh authentication and activeloom profiles)"] if enabled else [],
-        "clearing_tier": "--dangerously-skip-permissions or --settings with toolPermission set to an unsandboxed mode and enableTerminalSandbox false",
+        "clearing_tier": (
+            "--settings with enableTerminalSandbox false (and no --sandbox flag); --dangerously-skip-permissions does not clear it"
+            if contained
+            else "--dangerously-skip-permissions or --settings with toolPermission set to an unsandboxed mode"
+        ),
     }
 # claude-cli-invocations:end
+
+
+def _without_settings(unrecognized: list[str]) -> list[str]:
+    """Drop agy `--settings` overrides, with a separately listed value, from `unrecognized`."""
+    kept: list[str] = []
+    skip_value = False
+    for item in unrecognized:
+        if skip_value:
+            skip_value = False
+            if not item.startswith("-"):
+                continue
+        if item == "--settings":
+            skip_value = True
+            continue
+        if item.startswith("--settings="):
+            continue
+        kept.append(item)
+    return kept
 
 
 def permission_report(
@@ -898,6 +921,8 @@ def permission_report(
             report[engine]["agy_sandbox"] = sandbox
             report[engine]["sandbox_without_approval"] = sandbox["enabled"]
             report[engine]["sandbox_in_read_only"] = _agy_sandbox(read_only_args)["enabled"]
+            # _agy_sandbox has parsed every --settings override; it is not an unknown flag.
+            report[engine]["unrecognized"] = _without_settings(report[engine]["unrecognized"])
     return {"source": loaded["source"], "scope": PERMISSION_SCOPE, "engines": report}
 
 

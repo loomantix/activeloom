@@ -32,7 +32,10 @@ At any later ledger or controller refusal, including `transition-run`, stop and
 report the exact command and error to the controller or user. Never retry the
 same transition, invent flags or scripts, simulate its write, or use another
 tool, worktree or launcher to obtain the refused effect. This overrides generic
-retry or recovery instructions for this reviewer pass.
+retry or recovery instructions for this reviewer pass. It does not cancel the
+protocol's own steps after a refusal: still finalize a `blocked` result through
+the helper, preserve any recovery sidecar, and re-run an identical idempotent
+helper command (such as `dispose`) where the ledger prescribes it.
 
 ## Step 0: Human-glance gate
 
