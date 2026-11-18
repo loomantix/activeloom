@@ -35,7 +35,8 @@ and its required-argument guard rejected the invocation before any write, the
 reviewer may make one corrected invocation. Read that subcommand's `--help`;
 use only its documented flags and fill missing values from the pinned review
 context, preserving all supplied identity arguments. Confirm that the
-local and live PR heads still equal the pass head and that
+local and live PR heads are unchanged since the failed invocation, that the
+live PR head still equals any `--head` it named, and that
 previously captured ledger evidence is unchanged. Continue in the
 same run, round and budget; do not relaunch a worker or rewrite a result.
 A second failure stops the pass. This exception never covers a controller
