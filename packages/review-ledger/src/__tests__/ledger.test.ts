@@ -34,6 +34,7 @@ class MockGitHubRunner implements GitHubRunner {
   public prHead = '1111111111111111111111111111111111111111';
   public prBase = '2222222222222222222222222222222222222222';
   public driftAfterInventory = false;
+  public moveAfterResolution = false;
   public calls: string[] = [];
 
   runGh(args: string[], payload?: unknown): string {
@@ -187,6 +188,7 @@ class MockGitHubRunner implements GitHubRunner {
       ) {
         const t = this.threads.find((th) => th.id === p.variables?.threadId);
         if (t) t.isResolved = true;
+        if (this.moveAfterResolution) this.prHead = 'b'.repeat(40);
         return JSON.stringify({
           data: {
             resolveReviewThread: {
@@ -1101,50 +1103,89 @@ describe('ledger operations and workflow verification', () => {
     expect(mock.reviewComments).toHaveLength(0);
   });
 
-  it('disposes a finding and marks thread resolved', () => {
-    const threadId = 'PRRT_kwDO123';
-    const commentId = 100;
-    mock.threads = [
-      {
-        id: threadId,
-        isResolved: false,
-        repository: { nameWithOwner: 'loomantix/platform-oss' },
-        pullRequest: { number: 10 },
-        comments: {
-          nodes: [
-            {
-              id: commentId,
-              databaseId: commentId,
-              author: { login: mock.actor },
-              body: '<!-- local-review:v3 engine=gemini round=1 head=1111111111111111111111111111111111111111 fingerprint=fp-1 occurrence=1 severity=minor lens=code-reviewer content-sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae -->\nfoo',
-            },
-          ],
-          pageInfo: { hasNextPage: false },
+  it.each(['unchanged', 'head-typo', 'post-write-move'])(
+    'handles disposition head checks: %s',
+    (scenario) => {
+      const threadId = 'PRRT_kwDO123';
+      const commentId = 100;
+      mock.threads = [
+        {
+          id: threadId,
+          isResolved: false,
+          repository: { nameWithOwner: 'loomantix/platform-oss' },
+          pullRequest: { number: 10 },
+          comments: {
+            nodes: [
+              {
+                id: commentId,
+                databaseId: commentId,
+                author: { login: mock.actor },
+                body: '<!-- local-review:v3 engine=gemini round=1 head=1111111111111111111111111111111111111111 fingerprint=fp-1 occurrence=1 severity=minor lens=code-reviewer content-sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae -->\nfoo',
+              },
+            ],
+            pageInfo: { hasNextPage: false },
+          },
         },
-      },
-    ];
-    mock.reviewComments = [...mock.threads[0]!.comments.nodes] as Array<
-      Record<string, unknown>
-    >;
+      ];
+      mock.reviewComments = [...mock.threads[0]!.comments.nodes] as Array<
+        Record<string, unknown>
+      >;
 
-    const res = dispose({
-      repo: 'loomantix/platform-oss',
-      pr: 10,
-      head: headSha,
-      engine: 'gemini',
-      round: 1,
-      fingerprint: 'fp-1',
-      occurrence: 1,
-      outcome: 'fixed',
-      commentId,
-      threadId,
-      content: 'Fixed by adding null check.',
-    });
+      const params: Parameters<typeof dispose>[0] = {
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'gemini',
+        round: 1,
+        fingerprint: 'fp-1',
+        occurrence: 1,
+        outcome: 'fixed',
+        commentId,
+        threadId,
+        content: 'Fixed by adding null check.',
+      };
+      if (scenario === 'head-typo') {
+        const before = JSON.stringify([
+          mock.reviewComments,
+          mock.issueComments,
+          mock.threads,
+        ]);
+        expect(() => dispose({ ...params, head: 'a'.repeat(40) })).toThrow(
+          /PR head mismatch/,
+        );
+        expect(
+          JSON.stringify([
+            mock.reviewComments,
+            mock.issueComments,
+            mock.threads,
+          ]),
+        ).toBe(before);
 
-    expect(res.verified).toBe(true);
-    expect(res.resolved).toBe(true);
-    expect(mock.threads[0]!.isResolved).toBe(true);
-  });
+        mock.prHead = 'b'.repeat(40);
+        expect(() => dispose(params)).toThrow(/PR head mismatch/);
+        expect(
+          JSON.stringify([
+            mock.reviewComments,
+            mock.issueComments,
+            mock.threads,
+          ]),
+        ).toBe(before);
+        mock.prHead = headSha;
+      }
+      if (scenario === 'post-write-move') {
+        mock.moveAfterResolution = true;
+        expect(() => dispose(params)).toThrow(/PR head mismatch/);
+        expect(mock.reviewComments).toHaveLength(2);
+        expect(mock.threads[0]!.isResolved).toBe(true);
+        return;
+      }
+      const res = dispose(params);
+
+      expect(res.verified).toBe(true);
+      expect(res.resolved).toBe(true);
+      expect(mock.threads[0]!.isResolved).toBe(true);
+    },
+  );
 
   const reconcileFindingComment = (
     commentId: number,
