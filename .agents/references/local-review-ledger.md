@@ -636,6 +636,13 @@ so `./review-ledger.js` will not run. The bundle is ESM; the sibling
 `package.json` beside it declares `"type": "module"` so it resolves the same way
 regardless of what the surrounding repository's root manifest says.
 
+`node <ledger-helper> <subcommand> --help` prints that subcommand's flags, and
+every argument error prints them too. Take flags from that synopsis or from the
+invocations written out in this document. When the helper refuses an argument,
+read the synopsis it prints and correct the command to match; the helper has no
+other spelling of a flag, and no flag that takes the hash of a
+`--content-file`: the helper hashes the file itself.
+
 The file is a build artifact of ActiveLoom's `packages/review-ledger` package,
 vendored verbatim at the package version recorded in `review-ledger.version`,
 with the bundle's own sha512 in `review-ledger.integrity`. `node <ledger-helper> --version` reports the version
@@ -1152,6 +1159,37 @@ Result ownership depends on the caller:
   `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. Pass the digest
   returned by `validate-result` as `--expected-result-sha256`. Do not report the
   pass complete unless the helper returns `verified: true`.
+
+  The standalone sequence, with `<dir>` that private directory, `<before>` the
+  PR head the pass started from, and `<head>` the PR head it ends on:
+
+  ```bash
+  node <ledger-helper> write-result \
+    --repo <owner/repo> --pr <number> --head <head> \
+    --engine <engine> --round <n> --base <review-base-sha> --before <before> \
+    --classification <minor|material> --result-file <dir>/result.json
+
+  node <ledger-helper> validate-result \
+    --head <head> --engine <engine> --round <n> \
+    --base <review-base-sha> --before <before> --result-file <dir>/result.json
+
+  node <ledger-helper> export-threads \
+    --repo <owner/repo> --pr <number> --threads-file <dir>/threads.json
+
+  node <ledger-helper> attest \
+    --repo <owner/repo> --pr <number> --head <head> \
+    --engine <engine> --round <n> --base <review-base-sha> --before <before> \
+    --result-file <dir>/result.json --expected-result-sha256 <resultSha256> \
+    --threads-file <dir>/threads.json --expected-threads-sha256 <sha256> \
+    --allowed-heads-file <dir>/heads.json
+  ```
+
+  Omit `--classification` when `<head>` equals `<before>`. `validate-result`
+  prints `resultSha256`; `export-threads` writes a fresh owner-only snapshot and
+  prints its `sha256`; it refuses an existing file, so export to a new path
+  before every `attest` attempt. `<dir>/heads.json` is a JSON array of full
+  SHAs, from `<before>` through each head the pass pushed to `<head>`, in push
+  order, each SHA once: a pass that pushed nothing writes `["<before>"]`.
 
 ## Record what the pass cost
 

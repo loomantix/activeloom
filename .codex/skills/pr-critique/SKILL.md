@@ -46,7 +46,8 @@ At Lean, round 2 is already convergence; follow the tier-specific stance in `cri
 
 ## Step 0: Human-glance gate
 
-Classify the range before every other step in this skill — before the
+After the reviewer environment preflight, when present, classify the range
+before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
 snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance".
 Apply that section's **Verified zero-file comparison** first: when
