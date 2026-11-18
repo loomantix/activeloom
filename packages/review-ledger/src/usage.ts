@@ -73,6 +73,14 @@ const COMMANDS: Record<string, CommandUsage> = {
     summary: 'Reopen a disposed finding as a new occurrence on its thread.',
     synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
   },
+  'revalidate-occurrence': {
+    summary:
+      "Carry an undisposed occurrence, reproduced at the current head, into this pass's run.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      '--content-file holds the current-head reproduction only; the helper writes the revalidation marker and its content hash.',
+    ],
+  },
   'correct-severity': {
     summary: 'Record a corrected severity for a posted finding.',
     synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> [--from-severity <${oneOf(SUPPORTED_SEVERITIES)}>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,

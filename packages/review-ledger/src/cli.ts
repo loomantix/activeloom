@@ -4,6 +4,7 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { revalidateOccurrence } from './revalidation.js';
 import {
   PACKAGE_VERSION,
   PROTOCOL_VERSION,
@@ -828,6 +829,39 @@ function runCliCommand(argv: string[]): number {
         lens: args.lens,
       });
       process.stdout.write(JSON.stringify(out) + '\n');
+      break;
+    }
+    case 'revalidate-occurrence': {
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.head ||
+        !args.engine ||
+        args.round === undefined ||
+        !args.fingerprint ||
+        args.occurrence === undefined ||
+        args.commentId === undefined ||
+        !args.threadId ||
+        !args.contentFile
+      ) {
+        failUsage(
+          'revalidate-occurrence requires --repo, --pr, --head, --engine, --round, --fingerprint, --occurrence, --comment-id, --thread-id, and --content-file',
+        );
+      }
+      writeSortedJson(
+        revalidateOccurrence({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          fingerprint: args.fingerprint,
+          occurrence: args.occurrence,
+          commentId: args.commentId,
+          threadId: args.threadId,
+          contentFile: args.contentFile,
+        }),
+      );
       break;
     }
     case 'reopen-occurrence': {

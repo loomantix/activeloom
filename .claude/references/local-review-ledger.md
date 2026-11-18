@@ -763,6 +763,52 @@ node <ledger-helper> reopen-occurrence \
   --content-file <regular-utf8-file>
 ```
 
+If the latest occurrence is still undisposed at an earlier head, recurrence is
+the wrong transaction: `reopen-occurrence` requires every previous occurrence
+to have a disposition. After authorizing the current pass with `authorize-pass`
+and reproducing the defect at the exact current head, carry the existing
+occurrence into that actor's active run:
+
+```bash
+node <ledger-helper> revalidate-occurrence \
+  --repo <owner/repo> --pr <number> --head <current-pr-head> \
+  --engine <authorized-engine> --round <authorized-round> \
+  --fingerprint <stable-id> --occurrence <existing-number> \
+  --comment-id <original-root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file-with-current-head-reproduction>
+```
+
+The command appends a read-back-verified `local-review-revalidation:v1` reply
+to the existing unresolved root thread. Its first line seals canonical JSON
+with `engine`, `round`, `head`, `fingerprint`, `occurrence`, `fromEngine`,
+`fromRound`, `fromHead`, `runId`, `runCommentId`, `maxRounds`, and `contentSha`.
+The content hash covers the nonempty reproduction explanation after that line.
+The source identity must identify the latest undisposed occurrence. The head
+must advance, except that an occurrence may be rebound at the unchanged head to
+a later authenticated run after an authorized restart: an already-carried
+occurrence when its last carry named an earlier run, and an uncarried finding
+when it was posted before that run started. Missing timestamps refuse the
+unchanged-head rebind.
+The run binding must match an authenticated run and its
+unchanged cap. A cross-actor takeover, an ended or absent run, a duplicate root,
+a prior disposition (including one with a fabricated identity), a changed cap,
+or conflicting evidence is refused. Retry the identical command after an
+uncertain response; it reuses the same reply. `reconcile` reports these replies
+under `revalidations` alongside the effective finding identity.
+
+The fingerprint, occurrence number, original finding marker, severity, root
+thread, and full reply history remain intact. No roster, run declaration, cap,
+or round budget is changed. Readers derive the effective head, engine, and
+round from the verified reply; it is not a disposition or a second finding.
+Existing upward corrections remain effective; severity can only be raised
+through `correct-severity`. Then run `authorize-fix` as above, using the current
+run and head with the original occurrence number. Its `preflight-fix` check,
+`preflight-publish`, `dispose`, `verify-ledger`, `write-result`, and `reconcile`
+consume that same effective identity. A fixed disposition must still follow
+the revalidated head; no false `fixed`, `dismissed`, or `deferred` outcome is
+needed to carry an open defect forward. Run authorization, pass ordering,
+convergence eligibility, and final exact-head validation remain required.
+
 After the fix is pushed, use the resumable `dispose` transaction. It posts or
 reuses the exact disposition, verifies it, resolves the thread, and verifies
 the final state. A lost mutation response is reconciled against GitHub within
