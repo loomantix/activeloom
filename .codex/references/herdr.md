@@ -60,7 +60,7 @@ The report reads `herd.json` and, for aliases, `type <cli>` in the user's shell,
 
   Preserve an explicit Claude opt-out or custom mode; offer a change only when the user asks to change that choice. Add only the flags the entry lacks, never one `launch_args` or `permission_off_args` already holds under either spelling. An entry that already holds `-s danger-full-access` is one flag short of the full bypass: adding `-a never` to it is the full-bypass tier, so offer it as that tier with that tier's line, never as a fix-up. Write the chosen tier to `herd.json` under that engine's `permission_off_args` only on the user's explicit choice, then run `permissions` again. If they decline, continue.
 
-- **`sandbox_without_approval` is true.** That engine runs with approvals off and the sandbox kept, the combination above that is not a tier: its sessions fail partway through, at the first `gh` call or push. Before any launch, name the flags, say why it fails, and offer the tiers for that engine as above. If the user declines, block every launch on that engine.
+- **`sandbox_without_approval` is true.** For Codex, approvals are off and the sandbox is kept. For Gemini, agy's user `toolPermission: proceed-in-sandbox` or `enableTerminalSandbox` setting (including `--settings` overrides) enables a mount sandbox. It hides linked-worktree Git metadata and `~/.config` access needed by gh authentication and activeloom profiles. Name the reported sources, blocks and `clearing_tier` before any launch. `--dangerously-skip-permissions` clears only the `proceed-in-sandbox` preset; `enableTerminalSandbox: true` or a `--sandbox` flag needs an owner-selected `--settings` override with `enableTerminalSandbox: false` and no `--sandbox` flag. Never change user settings automatically. Offer the engine's tiers; if the user declines, block its launches. Read-only Gemini launches omit `permission_off_args`: when `sandbox_in_read_only` is true, block them and name the sources; the only clearing route is an owner-selected `--settings` override in `launch_args`, never the bypass.
 - **`turned_off` is not empty.** Tell the user in one line per engine what its sessions run without, for example `codex: -a never -s danger-full-access turns off approval prompts and the sandbox`. For `claude`, `--permission-mode auto` is the editing-pane default unless `herd.json` sets it; when it comes from the default, say so and name `"permission_off_args": []` in `herd.json` as the opt-out. Do not ask again; the setting is theirs.
 - **`turned_off_in_read_only` is not empty.** Those flags are in `launch_args`, so read-only sessions run without the check too. Tell the user and recommend moving them to `permission_off_args`.
 - **Alias repeats.** Use `alias.repeats` for editing sessions and `alias.read_only_repeats` for read-only sessions; check both when the run starts both modes. If the applicable list is not empty, the alias adds a flag that launch also passes. Block that launch: name the repeated flags, and tell the user to remove them from the alias and keep them in `herd.json`.
@@ -98,6 +98,31 @@ Models and efforts come from the review profile: `python3 -I <skills root>/revie
 | `gemini` | `agy`          | `--model <m> --effort <e>`                 | `--mode plan`            | `/<skill> <args>`                                 | `/exit`         |
 
 For a Claude pane, also set the pane environment when splitting it: `--env ANTHROPIC_MODEL=<m> --env CLAUDE_CODE_EFFORT_LEVEL=<e>`. A read-only session takes `user-args --read-only`.
+
+### Human handoff
+
+When a human must launch an Agy pass, print the full launch line, substituting
+the active run's pinned model and effort, the absolute review worktree and all
+resolved user arguments. With the approved full-bypass tier it is:
+
+```bash
+cd <review-worktree> && agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions
+```
+
+If the owner chose a `--settings` override instead, print that exact argument
+in place of the bypass flag. Preserve an active run's pins; do not resolve new
+settings for it. A bare `agy` will not work for this handoff: it can select the
+default model and retain the user sandbox. Include the skill invocation and
+these in-session preflight commands, using the installed `.agents` helper:
+
+```bash
+git rev-parse HEAD
+node .agents/skills/critique/scripts/review-ledger.js --version
+```
+
+Require the helper version to match its sibling `review-ledger.version` pin.
+On failure, the reviewer reports the command and exact error, posts nothing and
+stops; the controller or user owns any relaunch.
 
 ## Tabs and panes
 
