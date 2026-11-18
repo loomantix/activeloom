@@ -362,10 +362,9 @@ Run these lanes as independently as the active runtime permits:
    - `.agents/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.agents/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
 8. Verify and deduplicate lane findings against the source and complete PR
-   ledger. For each confirmed root cause, use the deterministic ledger helper
-   required by `.agents/references/local-review-ledger.md` to post one inline
-   comment on an exact GitHub diff anchor before editing. Do not hand-compose
-   review-comment API requests.
+   ledger. For each confirmed root cause, post one inline comment on an exact
+   GitHub diff anchor before editing, with `post-finding` as written in
+   [Ledger commands](#ledger-commands).
 9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
    justifies the churn. Defer the rest, and create an issue only for an urgent
    follow-up that should be scheduled within roughly two weeks.
@@ -375,8 +374,8 @@ Run these lanes as independently as the active runtime permits:
     "Fix, reply, and resolve" describes, and invoke the helper exactly once
     after the final fix; a second publication fails closed. Otherwise push normally with no
     force.
-11. Use the ledger helper's resumable `dispose` transaction for every posted
-    finding. Reconcile failures through the workflow's bounded recovery. On an
+11. Use the ledger helper's resumable `dispose` transaction, as written in
+    [Ledger commands](#ledger-commands), for every posted finding. Reconcile failures through the workflow's bounded recovery. On an
     uncertain helper response, retry only the identical command; correct a
     preflight rejection only when it is known to have performed no mutation.
 12. Always use the ledger helper's `write-result` command to create the v3
@@ -387,13 +386,120 @@ Run these lanes as independently as the active runtime permits:
     it and the helper-written blocked result for the outer controller; report
     the failure without overwriting either file. For unfinished review work,
     call `write-blocked-result` with an
-    owner-only blocker file. Outside agent-loop, create the complete
-    review-thread export and ordered
-    forward-only before-to-after head list as private temporary files, use
-    `write-result`, then use `attest --threads-file <path>
---allowed-heads-file <path>`. `attest` verifies the ledger and requires
-    `--expected-result-sha256` from `validate-result` before publishing, so
+    owner-only blocker file. Outside agent-loop, publish the result with
+    `write-result`, `validate-result`, `export-threads` and `attest`, in that
+    order, exactly as [Ledger commands](#ledger-commands) writes them, so
     manual and automated passes share one protocol.
+
+## Ledger commands
+
+Record every ledger item with these commands, run as written with the
+bracketed values filled in. `node .agents/skills/critique/scripts/review-ledger.js <subcommand> --help`
+prints a subcommand's complete flags. A refused argument prints the same
+synopsis: correct the command to match it and run it again. When the launcher
+names a relay surface root, resolve each `.agents/...` path below under that
+root. `<dir>` is an owner-only directory outside the worktree; write each
+prose file there with the file-editing tool.
+
+Confirm the pass, once, before any lane. Skip this when
+`$AGENT_LOOP_REVIEW_ROUND` is set:
+
+```bash
+python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
+  authorize-pass --repo <owner/repo> --pr <number> --head <pr-head> \
+  --base <review-base-sha> --engine gemini --round <n>
+```
+
+It prints the `run_id` the run-scoped commands below take.
+
+Post each verified finding before editing anything for it. The content file
+holds the finding prose only; the helper writes the marker and its hash:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  post-finding --repo <owner/repo> --pr <number> --head <pr-head> \
+  --path <repository-relative-path> --line <right-side-line> \
+  --engine gemini --round <n> --fingerprint <stable-id> \
+  --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
+  --content-file <dir>/finding-<stable-id>.md
+```
+
+For a pass in an authenticated local-review run, authorize the fix with that
+run's pinned ID, then edit. Use the ID returned by `authorize-pass`, or the
+controller-supplied `ACTIVELOOM_RUN_ID` when the controller authorized the round:
+
+```bash
+python3 -I .agents/skills/critique/scripts/local-review-handoff.py \
+  authorize-fix --run-id <run_id> --repo <owner/repo> --pr <number> \
+  --head <pr-head> --base <review-base-sha> --engine gemini --round <n> \
+  --fingerprint <stable-id> --occurrence 1
+```
+
+For an agent-loop pass that supplies `AGENT_LOOP_REVIEW_ROUND` without an
+authenticated local-review run, check the posted finding directly instead:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  preflight-fix --repo <owner/repo> --pr <number> --head <pr-head> \
+  --engine gemini --round <n> --fingerprint <stable-id> --occurrence 1
+```
+
+Keep the controller's round and publication flow. A refused run authorization
+is a blocker; it does not authorize falling back to the agent-loop command.
+
+After the fix is pushed, read the thread with
+`node .agents/skills/critique/scripts/review-ledger.js reconcile --repo <owner/repo> --pr <number> --head <pushed-head> --fingerprint <stable-id>`,
+then dispose the finding exactly once. On an uncertain response, retry the
+identical command; the helper replays it instead of adding a second reply:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  dispose --repo <owner/repo> --pr <number> --head <pushed-head> \
+  --engine gemini --round <n> --fingerprint <stable-id> --occurrence 1 \
+  --outcome <fixed|dismissed|deferred> \
+  --comment-id <root-comment-id> --thread-id <thread-id> \
+  --content-file <dir>/disposition-<stable-id>.md
+```
+
+Record the result. `<before>` is the PR head this pass started from and
+`<head>` the PR head it ends on. Add `--classification <minor|material>` to
+`write-result` only when `<head>` differs from `<before>`. With
+`$AGENT_LOOP_REVIEW_RESULT_FILE` set, write the result to that file and stop
+there: the wrapper attests. Otherwise write it to `<dir>/result.json` and publish it with the three
+commands that follow `write-result`:
+
+```bash
+node .agents/skills/critique/scripts/review-ledger.js \
+  write-result --repo <owner/repo> --pr <number> --head <head> \
+  --engine gemini --round <n> --base <review-base-sha> --before <before> \
+  --result-file <dir>/result.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  validate-result --head <head> --engine gemini --round <n> \
+  --base <review-base-sha> --before <before> --result-file <dir>/result.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  export-threads --repo <owner/repo> --pr <number> \
+  --threads-file <dir>/threads.json
+
+node .agents/skills/critique/scripts/review-ledger.js \
+  attest --repo <owner/repo> --pr <number> --head <head> \
+  --engine gemini --round <n> --base <review-base-sha> --before <before> \
+  --result-file <dir>/result.json --expected-result-sha256 <resultSha256> \
+  --threads-file <dir>/threads.json --expected-threads-sha256 <sha256> \
+  --allowed-heads-file <dir>/heads.json
+```
+
+`validate-result` prints `resultSha256` and `export-threads` prints `sha256`.
+`export-threads` refuses an existing file: before every `attest` attempt,
+export to a new path, such as `<dir>/threads-2.json`, and pass that path and
+its `sha256`. `<dir>/heads.json` is a JSON array of full SHAs from `<before>`
+through each head this pass pushed to `<head>`, in push order, each SHA once:
+a pass that pushed nothing writes `["<before>"]`. The pass is complete when
+`attest` prints `verified: true`. For unfinished review work, write one short
+blocker to `<dir>/blocker.txt` and run `write-blocked-result` with the same
+`--head`, `--engine`, `--round`, `--base`, `--before` and `--result-file`, plus
+`--blocker-file <dir>/blocker.txt`.
 
 ## Output
 

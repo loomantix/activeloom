@@ -22,11 +22,11 @@ THE SOFTWARE.
 */
 
 // src/cli.ts
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.16.2" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.17.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -144,6 +144,246 @@ function fail(message) {
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+// src/usage.ts
+var UsageError = class extends LedgerError {
+  constructor(message) {
+    super(message);
+    this.name = "LedgerError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function failUsage(message) {
+  throw new UsageError(message);
+}
+var oneOf = (values) => values.join("|");
+var ENGINE = `<${oneOf(SUPPORTED_ENGINES)}>`;
+var SHA = "<full-sha>";
+var SCOPE = "--repo <owner/repo> --pr <number>";
+var PASS = `--engine ${ENGINE} --round <n>`;
+var RESULT_IDENTITY = `--head ${SHA} ${PASS} --base ${SHA} --before ${SHA}`;
+var THREAD_SNAPSHOT = "[--threads-file <file> --expected-threads-sha256 <sha256>]";
+var HISTORY = "[--historical-comment-ids-file <file>]";
+var COMMANDS = {
+  "lifecycle-state": {
+    summary: "Print the PR-wide review-run lifecycle.",
+    synopsis: SCOPE
+  },
+  "preflight-anchor": {
+    summary: "Check that a finding can anchor on the PR diff.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>]`
+  },
+  "post-finding": {
+    summary: "Post one verified finding inline, before any fix.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>] ${PASS} --fingerprint <stable-id> [--occurrence <n>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --content-file <file>`,
+    notes: [
+      "--content-file holds the finding prose only; the helper writes the marker and its content-sha256. There is no hash flag."
+    ]
+  },
+  "reopen-occurrence": {
+    summary: "Reopen a disposed finding as a new occurrence on its thread.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "correct-severity": {
+    summary: "Record a corrected severity for a posted finding.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> [--from-severity <${oneOf(SUPPORTED_SEVERITIES)}>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "preflight-fix": {
+    summary: "Authorize a fix for a posted finding before editing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n>`
+  },
+  "preflight-publish": {
+    summary: "Check a publish-fixes manifest before pushing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --findings-file <file>`
+  },
+  dispose: {
+    summary: "Reply with a finding disposition and resolve its thread; resumable, so retry the identical command.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> [--occurrence <n>] --outcome <${oneOf(SUPPORTED_OUTCOMES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      "Run it once per finding. The helper refuses a second disposition for the same occurrence."
+    ]
+  },
+  reply: {
+    summary: "Reply on a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --comment-id <root-comment-id> (--content-file <file> | --body-file <file>) [${PASS}] [--fingerprint <stable-id>] [--outcome <${oneOf(SUPPORTED_OUTCOMES)}>]`
+  },
+  resolve: {
+    summary: "Resolve a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --thread-id <thread-node-id>`
+  },
+  reconcile: {
+    summary: "Show the occurrences, dispositions and next action for one fingerprint.",
+    synopsis: `${SCOPE} --head ${SHA} --fingerprint <stable-id>`
+  },
+  "post-pr-comment": {
+    summary: "Post a PR conversation comment.",
+    synopsis: `${SCOPE} --head ${SHA} --body-file <file>`
+  },
+  "classify-effect": {
+    summary: "Classify the effect of a commit range.",
+    synopsis: `--base ${SHA} --head ${SHA}`
+  },
+  "classify-changeset": {
+    summary: "Classify a range for the human-glance gate and tier.",
+    synopsis: `(--base ${SHA} --head ${SHA} | --diff-file <file>) [--prompt-surface <glob>]... [--force-review]`
+  },
+  "write-result": {
+    summary: "Write this pass's canonical v3 result file for a clean or changed pass.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> [--classification <${oneOf(SUPPORTED_CLASSIFICATIONS)}>] [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`,
+    notes: [
+      "--before is the PR head this pass started from; --head is the head it ends on.",
+      "--classification is required only when the head moved, and only takes minor or material.",
+      "Outside agent-loop, publish the written result with validate-result and then attest."
+    ]
+  },
+  "recover-result": {
+    summary: "Recover a saved result candidate after a finalization failure.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-recovery-sha256 <sha256> [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`
+  },
+  "write-blocked-result": {
+    summary: "Write a blocked v3 result naming one blocker.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> --blocker-file <file>`
+  },
+  "validate-result": {
+    summary: "Validate a result file and print its resultSha256.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> [--result-head ${SHA}]`
+  },
+  "export-threads": {
+    summary: "Write the PR's complete review-thread snapshot for attest and print its sha256.",
+    synopsis: `${SCOPE} --threads-file <new-file>`,
+    notes: [
+      "Pass the printed path and sha256 to attest as --threads-file and --expected-threads-sha256."
+    ]
+  },
+  attest: {
+    summary: "Verify the ledger and publish the pass/completion attestation.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-result-sha256 <sha256> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`,
+    notes: [
+      "--expected-result-sha256 is the resultSha256 validate-result printed."
+    ]
+  },
+  finalize: {
+    summary: "Finish an interrupted pass from its saved result file.",
+    synopsis: `${SCOPE} --result-file <file> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`
+  },
+  "check-blocked-round": {
+    summary: "Check a blocked round for the controller recovery path.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} [--allowed-heads-file <file>] ${HISTORY}`
+  },
+  "verify-ledger": {
+    summary: "Verify every finding's disposition, optionally against a result.",
+    synopsis: `${SCOPE} --head ${SHA} ${THREAD_SNAPSHOT} [--actor <login>] ${HISTORY} [${PASS} --base ${SHA} --before ${SHA} --result-file <file> [--result-head ${SHA}] [--allowed-heads-file <file>]]`
+  },
+  "post-roster": {
+    summary: "Declare the review roster.",
+    synopsis: `${SCOPE} --head ${SHA} --author ${ENGINE} --reviewers <engine[,engine]|none> --content-file <file> [--actor <login>]`
+  },
+  "read-roster": {
+    summary: "Print the effective review roster.",
+    synopsis: `${SCOPE} [--actor <login>]`
+  },
+  coverage: {
+    summary: "Report attestation coverage at a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "verify-coverage": {
+    summary: "Require every declared reviewer to have attested a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "emit-telemetry": {
+    summary: "Record this pass's telemetry; always exits 0.",
+    synopsis: `${SCOPE} --engine <engine> --pass-type <${oneOf(TELEMETRY_PASS_TYPES)}> --trigger <${oneOf(TELEMETRY_TRIGGERS)}> --stance <${oneOf(TELEMETRY_STANCES)}> --status <${oneOf(TELEMETRY_STATUSES)}> --token-source <${oneOf(TELEMETRY_TOKEN_SOURCES)}> --round <n> --base ${SHA} --head ${SHA} --findings-file <file> [--review-tier <${oneOf(TELEMETRY_REVIEW_TIERS)}>] [--idempotency-key <key>] [--telemetry-run-id <id>] [--engine-version <v>] [--tokens-file <file>] [--lanes-file <file>] [--changeset-file <file> | --diff-file <file>] [--prompt-surface <glob>]... [--duration-seconds <n>] [--emitted-at <iso>] [--prompt-stack-sha256 <sha256>] [--prompt-stack-version <v>] [--repo-instructions-sha256 <sha256>] [--truncated] [--dry-run] [--actor <login>]`
+  },
+  "enrich-telemetry-duration": {
+    summary: "Add a measured duration to an emitted telemetry record.",
+    synopsis: `${SCOPE} --idempotency-key <key> --engine <engine> --round <n> --base ${SHA} --head ${SHA} --duration-seconds <n> [--actor <login>]`
+  },
+  "replay-telemetry": {
+    summary: "Re-emit a saved telemetry recovery record.",
+    synopsis: "--repo <owner/repo> --file <file> [--dry-run] [--actor <login>]"
+  },
+  "telemetry-recorded": {
+    summary: "Report whether a telemetry record exists.",
+    synopsis: `${SCOPE} --idempotency-key <key> [--actor <login>]`
+  },
+  "metrics-setup": {
+    summary: "Create the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  "metrics-rotate": {
+    summary: "Rotate the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  export: {
+    summary: "Export telemetry records as JSON lines.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  report: {
+    summary: "Summarize telemetry records.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  "read-result": {
+    summary: "Print a result file.",
+    synopsis: "(--result-file <file> | --file <file>)"
+  },
+  "format-findings": {
+    summary: "Format a findings JSON array for a report.",
+    synopsis: "(--json-file <file> | --file <file>)"
+  },
+  "silent-pin": { summary: "Pin a PR to silent mode.", synopsis: SCOPE },
+  "silent-status": {
+    summary: "Report whether a PR is silent.",
+    synopsis: SCOPE
+  },
+  summary: {
+    summary: "Render a silent PR's end-of-loop summary.",
+    synopsis: SCOPE
+  },
+  "post-summary": {
+    summary: "Post a silent PR's approved summary.",
+    synopsis: `${SCOPE} --confirmed --expected-summary-sha256 <sha256>`
+  },
+  "read-ledger": {
+    summary: "Print the PR ledger comments and threads.",
+    synopsis: SCOPE
+  }
+};
+var COMMAND_NAMES = Object.keys(COMMANDS);
+function commandSynopsis(command) {
+  return Object.hasOwn(COMMANDS, command) ? COMMANDS[command].synopsis : void 0;
+}
+function commandHelp(command) {
+  const entry = COMMANDS[command];
+  const lines = [
+    `usage: review-ledger ${command} ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  for (const note of entry.notes ?? []) lines.push(`- ${note}`);
+  return lines.join("\n") + "\n";
+}
+function overviewHelp() {
+  const width = Math.max(...COMMAND_NAMES.map((name) => name.length));
+  const lines = [
+    "usage: review-ledger <subcommand> [flags]",
+    "       review-ledger <subcommand> --help",
+    "       review-ledger --version | --protocol-version",
+    "",
+    "Subcommands:",
+    ...COMMAND_NAMES.map(
+      (name) => `  ${name.padEnd(width)}  ${COMMANDS[name].summary}`
+    )
+  ];
+  return lines.join("\n") + "\n";
+}
+function usageHint(command) {
+  if (command !== void 0 && Object.hasOwn(COMMANDS, command)) {
+    return `usage: review-ledger ${command} ${COMMANDS[command].synopsis}
+Run \`review-ledger ${command} --help\` for details; use only the flags it lists.`;
+  }
+  return `subcommands: ${COMMAND_NAMES.join(", ")}
+Run \`review-ledger <subcommand> --help\` for its flags.`;
 }
 
 // src/github.ts
@@ -1454,6 +1694,9 @@ function reviewThreads(repo, pr, threadsFile, expectedDigest) {
   return threads;
 }
 function fetchReviewThreads(repo, pr) {
+  return parseReviewThreadPages(fetchReviewThreadPages(repo, pr));
+}
+function fetchReviewThreadPages(repo, pr) {
   const parts = repo.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     fail("--repo must be OWNER/REPO");
@@ -1494,7 +1737,8 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     "-F",
     `number=${pr}`
   ]);
-  return parseReviewThreadPages(pages);
+  parseReviewThreadPages(pages);
+  return pages;
 }
 function findRootThread(repo, pr, rootCommentId) {
   const parts = repo.split("/");
@@ -22286,7 +22530,9 @@ function resolveChangesetReport(args) {
     );
   }
   if (!args.base || !args.head) {
-    fail("changeset classification requires --diff-file or --base and --head");
+    failUsage(
+      "changeset classification requires --diff-file or --base and --head"
+    );
   }
   return classifyRange({ base: args.base, head: args.head, options });
 }
@@ -22315,17 +22561,17 @@ function nowUtcSecond() {
 }
 function parsePositiveInteger(value, name) {
   if (!/^[1-9]\d*$/.test(value)) {
-    fail(`${name} must be a positive integer`);
+    failUsage(`${name} must be a positive integer`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
-    fail(`${name} must be a positive safe integer`);
+    failUsage(`${name} must be a positive safe integer`);
   }
   return parsed;
 }
 function parseEnum(arg, value, allowed) {
   if (!allowed.includes(value)) {
-    fail(`${arg} must be one of: ${allowed.join(", ")}`);
+    failUsage(`${arg} must be one of: ${allowed.join(", ")}`);
   }
   return value;
 }
@@ -22377,7 +22623,7 @@ function parseCliArgs(argv) {
     const next = argv[i + 1];
     const parseVal = (name) => {
       if (next === void 0 || next.startsWith("--")) {
-        fail(`missing argument for ${name}`);
+        failUsage(`missing argument for ${name}`);
       }
       i += 2;
       return next;
@@ -22574,7 +22820,7 @@ function parseCliArgs(argv) {
         args.expectedSummarySha256 = parseVal(arg);
         break;
       default:
-        fail(`unknown argument: ${arg}`);
+        failUsage(`unknown argument: ${arg}`);
     }
   }
   return args;
@@ -22584,7 +22830,7 @@ function validateArgs(args) {
     return;
   }
   if (!args.command) {
-    fail("subcommand required");
+    failUsage("subcommand required");
   }
   if (args.engineRaw !== void 0 && ![
     "emit-telemetry",
@@ -22614,7 +22860,7 @@ function validateArgs(args) {
       const names = missing.map(
         (m) => `--${String(m).replace(/([A-Z])/g, "-$1").toLowerCase()}`
       );
-      fail(`v3 content mode requires ${names.join(", ")}`);
+      failUsage(`v3 content mode requires ${names.join(", ")}`);
     }
   }
   if (args.command === "verify-ledger") {
@@ -22627,7 +22873,7 @@ function validateArgs(args) {
     ];
     const present = resultFields.map((f) => args[f] !== void 0);
     if (present.some(Boolean) && !present.every(Boolean)) {
-      fail(
+      failUsage(
         "verify-ledger result evidence requires --engine, --round, --base, --before, and --result-file"
       );
     }
@@ -22658,13 +22904,13 @@ function runCliCommand(argv) {
   switch (args.command) {
     case "lifecycle-state": {
       if (!args.repo || args.pr === void 0)
-        fail("lifecycle-state requires --repo and --pr");
+        failUsage("lifecycle-state requires --repo and --pr");
       writeSortedJson(readLifecycle(args.repo, args.pr));
       break;
     }
     case "preflight-fix": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0) {
-        fail(
+        failUsage(
           "preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence"
         );
       }
@@ -22685,7 +22931,7 @@ function runCliCommand(argv) {
     }
     case "preflight-publish": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.findingsFile) {
-        fail(
+        failUsage(
           "preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file"
         );
       }
@@ -22705,10 +22951,10 @@ function runCliCommand(argv) {
     }
     case "preflight-anchor": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("preflight-anchor requires --repo, --pr, --head, and --path");
+        failUsage("preflight-anchor requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("preflight-anchor requires --line or --file-level");
+        failUsage("preflight-anchor requires --line or --file-level");
       }
       const out = preflightAnchor({
         repo: args.repo,
@@ -22724,13 +22970,13 @@ function runCliCommand(argv) {
     }
     case "post-finding": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("post-finding requires --repo, --pr, --head, and --path");
+        failUsage("post-finding requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("post-finding requires --line or --file-level");
+        failUsage("post-finding requires --line or --file-level");
       }
       if (!args.contentFile && !args.bodyFile) {
-        fail("post-finding requires --content-file or --body-file");
+        failUsage("post-finding requires --content-file or --body-file");
       }
       const out = postFinding({
         repo: args.repo,
@@ -22754,7 +23000,7 @@ function runCliCommand(argv) {
     }
     case "reopen-occurrence": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || !args.lens || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("reopen-occurrence missing required parameters");
+        failUsage("reopen-occurrence missing required parameters");
       }
       const out = reopenOccurrence({
         repo: args.repo,
@@ -22775,7 +23021,7 @@ function runCliCommand(argv) {
     }
     case "correct-severity": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("correct-severity missing required parameters");
+        failUsage("correct-severity missing required parameters");
       }
       const out = correctSeverity({
         repo: args.repo,
@@ -22796,7 +23042,7 @@ function runCliCommand(argv) {
     }
     case "dispose": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || !args.outcome || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("dispose missing required parameters");
+        failUsage("dispose missing required parameters");
       }
       const out = dispose({
         repo: args.repo,
@@ -22816,7 +23062,7 @@ function runCliCommand(argv) {
     }
     case "reply": {
       if (!args.repo || args.pr === void 0 || !args.head || args.commentId === void 0 || !args.bodyFile && !args.contentFile) {
-        fail(
+        failUsage(
           "reply requires --repo, --pr, --head, --comment-id, and --body-file or --content-file"
         );
       }
@@ -22837,7 +23083,9 @@ function runCliCommand(argv) {
     }
     case "post-pr-comment": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.bodyFile) {
-        fail("post-pr-comment requires --repo, --pr, --head, and --body-file");
+        failUsage(
+          "post-pr-comment requires --repo, --pr, --head, and --body-file"
+        );
       }
       const out = postPrComment({
         repo: args.repo,
@@ -22850,14 +23098,14 @@ function runCliCommand(argv) {
     }
     case "classify-effect": {
       if (!args.base || !args.head) {
-        fail("classify-effect requires --base and --head");
+        failUsage("classify-effect requires --base and --head");
       }
       writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
     }
     case "validate-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile) {
-        fail("validate-result missing required arguments");
+        failUsage("validate-result missing required arguments");
       }
       const out = validateResult({
         head: args.head,
@@ -22874,7 +23122,7 @@ function runCliCommand(argv) {
     case "recover-result":
     case "write-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.repo || args.pr === void 0) {
-        fail("write-result missing required arguments");
+        failUsage("write-result missing required arguments");
       }
       const params = {
         head: args.head,
@@ -22891,7 +23139,7 @@ function runCliCommand(argv) {
         classification: args.classification
       };
       if (args.command === "recover-result" && (!args.expectedRecoverySha256 || args.classification !== void 0)) {
-        fail(
+        failUsage(
           "recover-result requires --expected-recovery-sha256 and reads classification from the saved candidate"
         );
       }
@@ -22904,7 +23152,7 @@ function runCliCommand(argv) {
     }
     case "check-blocked-round": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before) {
-        fail(
+        failUsage(
           "check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before"
         );
       }
@@ -22925,7 +23173,7 @@ function runCliCommand(argv) {
     }
     case "write-blocked-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.blockerFile) {
-        fail("write-blocked-result missing required arguments");
+        failUsage("write-blocked-result missing required arguments");
       }
       const out = writeBlockedResult({
         head: args.head,
@@ -22941,12 +23189,12 @@ function runCliCommand(argv) {
     }
     case "finalize": {
       if (!args.repo || args.pr === void 0 || !args.resultFile) {
-        fail(
+        failUsage(
           "finalize requires --repo, --pr, and --result-file; reuse the original pre-pass historical-comment-ids file when present"
         );
       }
       if (args.head || args.base || args.before || args.engine || args.round !== void 0 || args.expectedResultSha256) {
-        fail(
+        failUsage(
           "finalize reads identity and digest from the saved result; use attest for explicit identity checks"
         );
       }
@@ -22966,7 +23214,7 @@ function runCliCommand(argv) {
     }
     case "attest": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.expectedResultSha256) {
-        fail(
+        failUsage(
           "attest requires --repo, --pr, --head, --engine, --round, --base, --before, --result-file, and --expected-result-sha256"
         );
       }
@@ -22992,7 +23240,7 @@ function runCliCommand(argv) {
     }
     case "resolve": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.threadId) {
-        fail("resolve requires --repo, --pr, --head, and --thread-id");
+        failUsage("resolve requires --repo, --pr, --head, and --thread-id");
       }
       const out = resolve({
         repo: args.repo,
@@ -23005,7 +23253,7 @@ function runCliCommand(argv) {
     }
     case "reconcile": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.fingerprint) {
-        fail("reconcile requires --repo, --pr, --head, and --fingerprint");
+        failUsage("reconcile requires --repo, --pr, --head, and --fingerprint");
       }
       const out = reconcile({
         repo: args.repo,
@@ -23018,7 +23266,7 @@ function runCliCommand(argv) {
     }
     case "verify-ledger": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail("verify-ledger requires --repo, --pr, and --head");
+        failUsage("verify-ledger requires --repo, --pr, and --head");
       }
       const out = verifyLedger({
         repo: args.repo,
@@ -23041,7 +23289,7 @@ function runCliCommand(argv) {
     }
     case "post-roster": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.author || args.reviewers === void 0 || !args.contentFile) {
-        fail(
+        failUsage(
           "post-roster requires --repo, --pr, --head, --author, --reviewers, and --content-file"
         );
       }
@@ -23059,7 +23307,7 @@ function runCliCommand(argv) {
     }
     case "read-roster": {
       if (!args.repo || args.pr === void 0) {
-        fail("read-roster requires --repo and --pr");
+        failUsage("read-roster requires --repo and --pr");
       }
       const out = readRoster({
         repo: args.repo,
@@ -23072,7 +23320,7 @@ function runCliCommand(argv) {
     case "coverage":
     case "verify-coverage": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail(`${args.command} requires --repo, --pr, and --head`);
+        failUsage(`${args.command} requires --repo, --pr, and --head`);
       }
       const run = args.command === "coverage" ? coverage : verifyCoverage;
       const out = run({
@@ -23102,10 +23350,10 @@ function runCliCommand(argv) {
     }
     case "enrich-telemetry-duration": {
       if (args.dryRun)
-        fail("enrich-telemetry-duration does not support --dry-run");
+        failUsage("enrich-telemetry-duration does not support --dry-run");
       const durationSeconds = parseDurationSeconds(args.durationSeconds);
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey || !args.engineRaw || args.round === void 0 || !args.base || !args.head || durationSeconds === null) {
-        fail(
+        failUsage(
           "enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds"
         );
       }
@@ -23126,7 +23374,7 @@ function runCliCommand(argv) {
     }
     case "replay-telemetry": {
       if (!args.repo || !args.file)
-        fail("replay-telemetry requires --repo and --file");
+        failUsage("replay-telemetry requires --repo and --file");
       const record = validateTelemetryRecord(
         readJsonFile(args.file, "metrics recovery record")
       );
@@ -23151,7 +23399,7 @@ function runCliCommand(argv) {
     case "metrics-setup":
     case "metrics-rotate": {
       if (!args.repo || args.dryRun)
-        fail(
+        failUsage(
           "metrics setup/rotation requires --repo and does not support --dry-run"
         );
       process.stderr.write(
@@ -23164,7 +23412,9 @@ function runCliCommand(argv) {
     }
     case "telemetry-recorded": {
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey)
-        fail("telemetry-recorded requires --repo, --pr, and --idempotency-key");
+        failUsage(
+          "telemetry-recorded requires --repo, --pr, and --idempotency-key"
+        );
       writeSortedJson({
         recorded: telemetryRecorded({
           repo: args.repo,
@@ -23248,19 +23498,19 @@ function runCliCommand(argv) {
     case "report":
     case "export": {
       if (!args.repo) {
-        fail("export requires --repo");
+        failUsage("export requires --repo");
       }
       const byNumber = args.pr !== void 0 || args.prs !== void 0;
       const byDate = args.since !== void 0 || args.until !== void 0;
       if (byNumber === byDate || args.pr !== void 0 && args.prs !== void 0) {
-        fail(
+        failUsage(
           "export requires exactly one selection: --pr, --prs, or --since and/or --until"
         );
       }
       const since = args.since === void 0 ? void 0 : parseExportBound(args.since, "--since");
       const until = args.until === void 0 ? void 0 : parseExportBound(args.until, "--until");
       if (since !== void 0 && until !== void 0 && since > until) {
-        fail("export --since must not be later than --until");
+        failUsage("export --since must not be later than --until");
       }
       const selection = byNumber ? {
         numbers: args.pr !== void 0 ? [args.pr] : parsePullRequestNumbers(args.prs)
@@ -23298,7 +23548,7 @@ function runCliCommand(argv) {
     case "read-result": {
       const targetFile = args.file ?? args.resultFile;
       if (!targetFile) {
-        fail("read-result requires --file or --result-file");
+        failUsage("read-result requires --file or --result-file");
       }
       const out = readResult(targetFile);
       process.stdout.write(JSON.stringify(out, null, 2) + "\n");
@@ -23307,7 +23557,7 @@ function runCliCommand(argv) {
     case "format-findings": {
       const jsonPath = args.jsonFile ?? args.file;
       if (!jsonPath) {
-        fail("format-findings requires --json-file or --file");
+        failUsage("format-findings requires --json-file or --file");
       }
       assertRegularFile(
         jsonPath,
@@ -23331,13 +23581,30 @@ function runCliCommand(argv) {
     case "summary":
     case "post-summary": {
       if (!args.repo || args.pr === void 0)
-        fail(`${args.command} requires --repo and --pr`);
+        failUsage(`${args.command} requires --repo and --pr`);
       writeSortedJson(silentCommand(args.command, args.repo, args.pr, args));
+      break;
+    }
+    case "export-threads": {
+      if (!args.repo || args.pr === void 0 || !args.threadsFile)
+        failUsage("export-threads requires --repo, --pr, and --threads-file");
+      const bytes = Buffer.from(
+        JSON.stringify(fetchReviewThreadPages(args.repo, args.pr)) + "\n",
+        "utf8"
+      );
+      const sha256 = sha256Bytes(bytes);
+      writeFileSync2(args.threadsFile, bytes, { flag: "wx", mode: 384 });
+      const threads = loadReviewThreads(args.threadsFile, sha256);
+      writeSortedJson({
+        path: args.threadsFile,
+        sha256,
+        threads: threads.length
+      });
       break;
     }
     case "read-ledger": {
       if (!args.repo || args.pr === void 0)
-        fail("read-ledger requires --repo and --pr");
+        failUsage("read-ledger requires --repo and --pr");
       writeSortedJson({
         mode: silentRunner().storeFor(args.repo, args.pr) ? "silent" : "loud",
         review_comments: getReviewComments(args.repo, args.pr),
@@ -23347,7 +23614,7 @@ function runCliCommand(argv) {
       break;
     }
     default:
-      fail(`unknown command: ${args.command}`);
+      failUsage(`unknown command: ${args.command}`);
   }
   return 0;
 }
@@ -23416,7 +23683,9 @@ function commandFromArgv(argv) {
     "--truncated",
     "--dry-run",
     "--force-review",
-    "--confirmed"
+    "--confirmed",
+    "--help",
+    "-h"
   ]);
   for (let i = 0; i < argv.length; ) {
     const arg = argv[i];
@@ -23428,6 +23697,36 @@ function commandFromArgv(argv) {
   return void 0;
 }
 function runCli(argv = process.argv.slice(2)) {
+  const help = helpRequest(argv);
+  if (help !== void 0) {
+    process.stdout.write(help);
+    return 0;
+  }
+  try {
+    return dispatchCli(argv);
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw new UsageError(
+        `${error.message}
+${usageHint(commandFromArgv(argv))}`
+      );
+    }
+    throw error;
+  }
+}
+function helpRequest(argv) {
+  const own = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv;
+  const first = commandFromArgv(own);
+  const asked = own.includes("--help") || own.includes("-h") || first === "help";
+  if (!asked) return void 0;
+  const command = first === "help" ? commandFromArgv(own.slice(own.indexOf("help") + 1)) : first;
+  if (command === void 0) return overviewHelp();
+  if (commandSynopsis(command) === void 0)
+    return `unknown subcommand: ${command}
+${overviewHelp()}`;
+  return commandHelp(command);
+}
+function dispatchCli(argv) {
   resetGitHubRunner();
   setGitHubRunner(
     new SilentRunner(
