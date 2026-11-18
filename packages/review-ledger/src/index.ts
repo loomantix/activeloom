@@ -17,6 +17,7 @@ export {
   FINDING_V3_RE,
   PSEUDO_V3_RE,
   DISPOSITION_V3_RE,
+  SEVERITY_V3_RE,
   FINDING_V1_RE,
   DISPOSITION_V1_RE,
   PROTOCOL_THREAD_MARKER_RE,
@@ -48,6 +49,11 @@ export {
 } from './constants.js';
 
 export { LedgerError, fail } from './errors.js';
+export { revalidateOccurrence, matchRevalidation } from './revalidation.js';
+export type {
+  RevalidateOccurrenceParams,
+  Revalidation,
+} from './revalidation.js';
 
 export { sha256Text, sha256Bytes, requireToken, requireSha } from './hash.js';
 
@@ -61,12 +67,15 @@ export {
   validateContentString,
   buildFindingBody,
   buildDispositionBody,
+  isUpwardSeverity,
+  buildSeverityCorrectionBody,
   matchProtocol,
   matchMarkerLine,
   verifyV1Marker,
   matchPseudoV3,
   matchFinding,
   matchDisposition,
+  matchSeverityCorrection,
 } from './protocol.js';
 
 export {
@@ -99,6 +108,7 @@ export {
   checkBlockedRound,
   postFinding,
   reopenOccurrence,
+  correctSeverity,
   dispose,
   reply,
   postPrComment,
@@ -209,6 +219,7 @@ export type {
   ReviewFinding,
   FindingV3Match,
   DispositionV3Match,
+  SeverityV3Match,
   FindingV1Match,
   DispositionV1Match,
   PseudoV3Match,
@@ -230,6 +241,8 @@ export type {
   PostFindingResult,
   ReopenOccurrenceParams,
   ReopenOccurrenceResult,
+  CorrectSeverityParams,
+  CorrectSeverityResult,
   DisposeParams,
   DisposeResult,
   ReplyParams,

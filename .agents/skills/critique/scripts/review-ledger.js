@@ -22,11 +22,29 @@ THE SOFTWARE.
 */
 
 // src/cli.ts
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
+
+// src/errors.ts
+var LedgerError = class extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "LedgerError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function fail(message) {
+  throw new LedgerError(message);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/hash.ts
+import { createHash } from "crypto";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.15.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.18.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -74,6 +92,7 @@ var PR_V1_MARKERS = [
 var FINDING_V3_RE = /^<!-- local-review:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var PSEUDO_V3_RE = /^<!-- local-review:v3 engine=(?:claude|gemini|antigravity) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+)(?: outcome=deferred)? -->$/m;
 var DISPOSITION_V3_RE = /^<!-- local-review-disposition:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
+var SEVERITY_V3_RE = /^<!-- local-review-severity:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) from=(?<from>blocking|major|minor|nit) to=(?<to>blocking|major|minor|nit) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var ROSTER_V1_MARKER = "<!-- local-review-roster:v1";
 var ROSTER_V1_RE = /^<!-- local-review-roster:v1 author=(?<author>codex|claude|gemini|antigravity) reviewers=(?<reviewers>none|(?:codex|claude|gemini|antigravity)(?:,(?:codex|claude|gemini|antigravity))?) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var ROSTER_V2_MARKER = "<!-- local-review-roster:v2";
@@ -130,19 +149,24 @@ var CANONICAL_TOKEN_BUCKETS = [
   "reasoning"
 ];
 
-// src/errors.ts
-var LedgerError = class extends Error {
-  constructor(message, options) {
-    super(message, options);
-    this.name = "LedgerError";
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-};
-function fail(message) {
-  throw new LedgerError(message);
+// src/hash.ts
+function sha256Text(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+function requireToken(value, label) {
+  if (!TOKEN_RE.test(value)) {
+    fail(`${label} must match [A-Za-z0-9._:/-]+`);
+  }
+  return value;
+}
+function requireSha(value, name) {
+  if (!SHA_RE.test(value)) {
+    fail(`--${name} must be a full 40-character lowercase commit SHA`);
+  }
+  return value;
 }
 
 // src/github.ts
@@ -172,29 +196,6 @@ function parseJsonOrFail(raw, message) {
 
 // src/protocol.ts
 import { readFileSync } from "fs";
-
-// src/hash.ts
-import { createHash } from "crypto";
-function sha256Text(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-function sha256Bytes(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-function requireToken(value, label) {
-  if (!TOKEN_RE.test(value)) {
-    fail(`${label} must match [A-Za-z0-9._:/-]+`);
-  }
-  return value;
-}
-function requireSha(value, name) {
-  if (!SHA_RE.test(value)) {
-    fail(`--${name} must be a full 40-character lowercase commit SHA`);
-  }
-  return value;
-}
-
-// src/protocol.ts
 function readLegacyBody(path, marker, bodyText) {
   let body;
   if (bodyText !== void 0) {
@@ -283,6 +284,35 @@ function buildDispositionBody(params) {
     fail("outcome must be one of: fixed, dismissed, deferred");
   }
   const marker = `<!-- local-review-disposition:v3 engine=${params.engine} round=${params.round} head=${requireSha(params.head, "head")} fingerprint=${requireToken(params.fingerprint, "fingerprint")} occurrence=${params.occurrence} outcome=${params.outcome} content-sha256=${sha256Text(params.content)} -->`;
+  return { marker, body: `${marker}
+${params.content}` };
+}
+function isUpwardSeverity(from, to) {
+  const fromIndex = SUPPORTED_SEVERITIES.indexOf(from);
+  const toIndex = SUPPORTED_SEVERITIES.indexOf(to);
+  return fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex;
+}
+function buildSeverityCorrectionBody(params) {
+  if (!SUPPORTED_ENGINES.includes(params.engine)) {
+    fail("engine must be one of: codex, claude, gemini, antigravity");
+  }
+  if (!Number.isSafeInteger(params.round) || params.round < 1) {
+    fail("round must be a positive integer");
+  }
+  if (!Number.isSafeInteger(params.occurrence) || params.occurrence < 1) {
+    fail("occurrence must be a positive integer");
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.from)) {
+    fail("from severity must be one of: blocking, major, minor, nit");
+  }
+  if (!SUPPORTED_SEVERITIES.includes(params.to)) {
+    fail("severity must be one of: blocking, major, minor, nit");
+  }
+  if (!isUpwardSeverity(params.from, params.to)) {
+    fail("severity correction must increase severity");
+  }
+  validateContentString(params.content);
+  const marker = `<!-- local-review-severity:v3 engine=${params.engine} round=${params.round} head=${requireSha(params.head, "head")} fingerprint=${requireToken(params.fingerprint, "fingerprint")} occurrence=${params.occurrence} from=${params.from} to=${params.to} content-sha256=${sha256Text(params.content)} -->`;
   return { marker, body: `${marker}
 ${params.content}` };
 }
@@ -381,6 +411,36 @@ function matchDisposition(body) {
     contentSha: match.groups["content_sha"]
   };
 }
+function matchSeverityCorrection(body) {
+  if (body.includes("<!-- local-review-severity:") && !body.includes("<!-- local-review-severity:v3")) {
+    fail("authenticated <!-- local-review-severity:v3 record is malformed");
+  }
+  const match = matchProtocol(
+    body,
+    SEVERITY_V3_RE,
+    "<!-- local-review-severity:v3"
+  );
+  if (!match || !match.groups) {
+    return null;
+  }
+  const from = match.groups["from"];
+  const to = match.groups["to"];
+  if (!isUpwardSeverity(from, to)) {
+    fail(
+      "authenticated <!-- local-review-severity:v3 record does not increase severity"
+    );
+  }
+  return {
+    engine: match.groups["engine"],
+    round: parseInt(match.groups["round"], 10),
+    head: match.groups["head"],
+    fingerprint: match.groups["fingerprint"],
+    occurrence: parseInt(match.groups["occurrence"], 10),
+    from,
+    to,
+    contentSha: match.groups["content_sha"]
+  };
+}
 
 // src/runs.ts
 function isCommentId(value) {
@@ -434,12 +494,14 @@ function reviewRuns(rows) {
       fail("local-review run supersession chain is incomplete or forked");
     }
     seen.set(id, { body, commentId });
+    const createdAt = row["created_at"];
     runs.push({
       id,
       commentId,
       base,
       tier,
-      maxRounds
+      maxRounds,
+      ...typeof createdAt === "string" ? { startedAt: createdAt } : {}
     });
   }
   return runs;
@@ -1392,6 +1454,9 @@ function reviewThreads(repo, pr, threadsFile, expectedDigest) {
   return threads;
 }
 function fetchReviewThreads(repo, pr) {
+  return parseReviewThreadPages(fetchReviewThreadPages(repo, pr));
+}
+function fetchReviewThreadPages(repo, pr) {
   const parts = repo.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     fail("--repo must be OWNER/REPO");
@@ -1408,7 +1473,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
           repository { nameWithOwner }
           pullRequest { number }
           comments(first:100) {
-            nodes { databaseId body author { login } }
+            nodes { databaseId body createdAt author { login } }
             pageInfo { hasNextPage }
           }
         }
@@ -1432,7 +1497,8 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     "-F",
     `number=${pr}`
   ]);
-  return parseReviewThreadPages(pages);
+  parseReviewThreadPages(pages);
+  return pages;
 }
 function findRootThread(repo, pr, rootCommentId) {
   const parts = repo.split("/");
@@ -1591,6 +1657,524 @@ function rowsHaveHistoricalMarkers(rows) {
     }
     return PSEUDO_V3_RE.test(body);
   });
+}
+
+// src/revalidation.ts
+var PREFIX = "<!-- local-review-revalidation:v1 ";
+function canonical(record) {
+  return JSON.stringify(record, Object.keys(record).sort());
+}
+function matchRevalidation(body) {
+  if (!body.includes("<!-- local-review-revalidation:")) return null;
+  const line = body.split("\n")[0];
+  if (!line.startsWith(PREFIX) || !line.endsWith(" -->"))
+    fail("malformed revalidation marker");
+  let record;
+  try {
+    record = JSON.parse(line.slice(PREFIX.length, -4));
+  } catch {
+    fail("malformed revalidation JSON");
+  }
+  const keys = [
+    "contentSha",
+    "engine",
+    "fingerprint",
+    "fromEngine",
+    "fromHead",
+    "fromRound",
+    "head",
+    "maxRounds",
+    "occurrence",
+    "round",
+    "runCommentId",
+    "runId"
+  ];
+  if (!record || JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(keys))
+    fail("revalidation fields differ");
+  if (line !== `${PREFIX}${canonical(record)} -->`)
+    fail("noncanonical revalidation marker");
+  const engines = ["codex", "claude", "gemini", "antigravity"];
+  if (!engines.includes(record.engine) || !engines.includes(record.fromEngine))
+    fail("invalid revalidation engine");
+  for (const number of [
+    record.round,
+    record.fromRound,
+    record.occurrence,
+    record.runCommentId,
+    record.maxRounds
+  ])
+    if (!Number.isSafeInteger(number) || number < 1)
+      fail("invalid revalidation integer");
+  requireSha(record.head, "head");
+  requireSha(record.fromHead, "fromHead");
+  requireToken(record.fingerprint, "fingerprint");
+  if (!/^[0-9a-f]{64}$/.test(record.runId)) fail("invalid revalidation run");
+  const content = body.slice(line.length + 1);
+  validateContentString(content);
+  if (sha256Text(content) !== record.contentSha)
+    fail("invalid revalidation content hash");
+  return record;
+}
+function postedBefore(row, startedAt) {
+  const created = row["createdAt"] ?? row["created_at"];
+  if (typeof created !== "string" || startedAt === void 0) return false;
+  const posted = Date.parse(created);
+  const started = Date.parse(startedAt);
+  return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
+}
+function revalidatedComments(input, repo, pr, sameThread = false) {
+  const actor = currentActor();
+  const owned = (row) => (row.author ?? row.user)?.login === actor;
+  if (!input.some(
+    (row) => owned(row) && String(row.body ?? "").includes("<!-- local-review-revalidation:")
+  ))
+    return input;
+  const rows = input.map((row) => ({ ...row }));
+  const originalRows = input;
+  const runs = reviewRuns(getIssueComments(repo, pr));
+  const carriedRuns = /* @__PURE__ */ new Map();
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!owned(row)) continue;
+    const record = matchRevalidation(String(row.body ?? ""));
+    if (!record) continue;
+    const runIndex = runs.findIndex(
+      (run2) => run2.id === record.runId && run2.commentId === record.runCommentId
+    );
+    const run = runs[runIndex];
+    if (!run || run.maxRounds !== record.maxRounds || record.round > run.maxRounds)
+      fail("revalidation run identity or round cap differs");
+    const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
+    const previousRunIndex = carriedRuns.get(occurrenceKey);
+    const findings = rows.map((r, i) => ({
+      row: r,
+      index: i,
+      finding: owned(r) ? matchFinding(String(r.body ?? "")) : null
+    })).filter((entry) => entry.finding?.fingerprint === record.fingerprint);
+    const roots = findings.filter((entry) => entry.finding.occurrence === 1);
+    if (roots.length !== 1)
+      fail("revalidation requires exactly one fingerprint root thread");
+    if (findings.some((entry, i) => entry.finding.occurrence !== i + 1))
+      fail("revalidation finding occurrence sequence is invalid");
+    const rootId = roots[0].row.databaseId ?? roots[0].row.id;
+    if ((!sameThread || row["in_reply_to_id"] !== void 0) && row["in_reply_to_id"] !== rootId)
+      fail("revalidation reply belongs to a different root thread");
+    const targets = findings.filter(
+      (entry) => entry.index < index && entry.finding.engine === record.fromEngine && entry.finding.round === record.fromRound && entry.finding.head === record.fromHead && entry.finding.occurrence === record.occurrence
+    );
+    if (targets.length !== 1 || findings.some(
+      (entry) => entry.index < index && entry.finding.occurrence > record.occurrence
+    ))
+      fail("revalidation does not identify the latest earlier finding");
+    if (rows.slice(0, index).some((r) => {
+      if (!owned(r)) return false;
+      const disposition = matchDisposition(String(r.body ?? ""));
+      return disposition?.fingerprint === record.fingerprint && disposition.occurrence === record.occurrence;
+    }))
+      fail("cannot revalidate a disposed occurrence or fabricated disposition");
+    const target = targets[0];
+    const finding = target.finding;
+    const restartedAtSameHead = record.fromHead === record.head && (previousRunIndex !== void 0 ? previousRunIndex < runIndex : postedBefore(target.row, run.startedAt));
+    if (!restartedAtSameHead && (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head)))
+      fail("revalidation requires a forward head transition");
+    const content = String(target.row.body).slice(
+      String(target.row.body).indexOf("\n") + 1
+    );
+    target.row.body = buildFindingBody({
+      ...finding,
+      engine: record.engine,
+      round: record.round,
+      head: record.head,
+      content
+    }).body;
+    target.row["createdAt"] = row["createdAt"] ?? row["created_at"];
+    target.row["created_at"] = row["created_at"] ?? row["createdAt"];
+    let severity = finding.severity;
+    for (const prior of rows.slice(target.index + 1, index)) {
+      if (!owned(prior)) continue;
+      const correction = matchSeverityCorrection(String(prior.body ?? ""));
+      if (correction?.fingerprint !== record.fingerprint || correction.occurrence !== record.occurrence)
+        continue;
+      if (correction.engine !== finding.engine || correction.round !== finding.round || correction.head !== finding.head || correction.from !== severity || !sameThread && prior["in_reply_to_id"] !== rootId)
+        fail("revalidation has a mismatched severity correction");
+      severity = correction.to;
+      prior.body = buildSeverityCorrectionBody({
+        ...correction,
+        engine: record.engine,
+        round: record.round,
+        head: record.head,
+        content: String(prior.body).slice(String(prior.body).indexOf("\n") + 1)
+      }).body;
+    }
+    row.body = "Verified revalidation evidence.\n";
+    carriedRuns.set(occurrenceKey, runIndex);
+  }
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!owned(row)) continue;
+    const disposition = matchDisposition(String(row.body ?? ""));
+    if (!disposition) continue;
+    const carried = originalRows.some((r) => {
+      if (!owned(r)) return false;
+      const record = matchRevalidation(String(r.body ?? ""));
+      return record?.fingerprint === disposition.fingerprint && record.occurrence === disposition.occurrence;
+    });
+    if (!carried) continue;
+    const finding = rows.slice(0, index).map((r) => owned(r) ? matchFinding(String(r.body ?? "")) : null).filter(
+      (f) => f?.fingerprint === disposition.fingerprint && f.occurrence === disposition.occurrence
+    );
+    if (finding.length !== 1 || finding[0].engine !== disposition.engine || finding[0].round !== disposition.round)
+      fail("revalidated occurrence has a fabricated disposition identity");
+  }
+  return rows;
+}
+function requireRevalidationRun(params) {
+  const state = readLifecycle(params.repo, params.pr);
+  if (state.state !== "active" || !state.run || state.run.actor !== currentActor())
+    fail("revalidation requires an active authenticated actor-owned run");
+  if (!Number.isSafeInteger(params.round) || params.round < 1 || params.round > state.run.maxRounds)
+    fail("revalidation round exceeds the unchanged run cap");
+  return state.run;
+}
+function revalidateOccurrence(params) {
+  const actor = assertLiveActor(assertActor());
+  verifyHead(params.repo, params.pr, params.head);
+  const run = requireRevalidationRun(params);
+  const content = resolveContent(params);
+  if (content === void 0)
+    fail("revalidate-occurrence requires exact-head reproduction evidence");
+  validateContentString(content);
+  const comments = getReviewComments(params.repo, params.pr);
+  const existing = comments.filter((row) => {
+    const record2 = matchRevalidation(String(row.body ?? ""));
+    return record2?.fingerprint === params.fingerprint && record2.occurrence === params.occurrence && record2.head === params.head && record2.engine === params.engine && record2.round === params.round && record2.runId === run.id;
+  });
+  if (existing.length > 1) fail("duplicate revalidation identity");
+  const prior = existing[0];
+  const view = revalidatedComments(
+    prior ? comments.filter((row) => row !== prior) : comments,
+    params.repo,
+    params.pr
+  );
+  const findings = view.map((row) => ({ row, finding: matchFinding(String(row.body ?? "")) })).filter((entry) => entry.finding?.fingerprint === params.fingerprint);
+  const roots = findings.filter((entry) => entry.finding.occurrence === 1);
+  if (roots.length !== 1 || (roots[0].row.databaseId ?? roots[0].row.id) !== params.commentId)
+    fail("revalidation requires the original fingerprint root comment");
+  const target = findings.filter(
+    (entry) => entry.finding.occurrence === params.occurrence
+  );
+  if (target.length !== 1)
+    fail("revalidation requires an authenticated original occurrence");
+  if (getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  }))
+    fail("cannot revalidate a resolved thread");
+  const record = {
+    engine: params.engine,
+    round: params.round,
+    head: params.head,
+    fingerprint: params.fingerprint,
+    occurrence: params.occurrence,
+    fromEngine: target[0].finding.engine,
+    fromRound: target[0].finding.round,
+    fromHead: target[0].finding.head,
+    runId: run.id,
+    runCommentId: run.commentId,
+    maxRounds: run.maxRounds,
+    contentSha: sha256Text(content)
+  };
+  const marker = `${PREFIX}${canonical(record)} -->`;
+  const body = `${marker}
+${content}`;
+  if (prior && prior.body !== body)
+    fail("revalidation identity has conflicting evidence");
+  const candidate = {
+    id: -1,
+    user: { login: actor },
+    body,
+    in_reply_to_id: params.commentId
+  };
+  revalidatedComments(
+    [...comments.filter((row) => row !== prior), candidate],
+    params.repo,
+    params.pr
+  );
+  assertLiveActor(actor);
+  const posted = postReviewComment(
+    params.repo,
+    params.pr,
+    params.head,
+    marker,
+    body,
+    { replyTo: params.commentId }
+  );
+  revalidatedComments(
+    getReviewComments(params.repo, params.pr),
+    params.repo,
+    params.pr
+  );
+  if (getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  }))
+    fail("revalidation thread was resolved during publication");
+  verifyHead(params.repo, params.pr, params.head);
+  if (requireRevalidationRun(params).id !== run.id)
+    fail("active run changed during revalidation");
+  assertLiveActor(actor);
+  return {
+    comment_id: posted.commentId,
+    replayed: posted.replayed,
+    verified: true
+  };
+}
+
+// src/usage.ts
+var UsageError = class extends LedgerError {
+  constructor(message) {
+    super(message);
+    this.name = "LedgerError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function failUsage(message) {
+  throw new UsageError(message);
+}
+var oneOf = (values) => values.join("|");
+var ENGINE = `<${oneOf(SUPPORTED_ENGINES)}>`;
+var SHA = "<full-sha>";
+var SCOPE = "--repo <owner/repo> --pr <number>";
+var PASS = `--engine ${ENGINE} --round <n>`;
+var RESULT_IDENTITY = `--head ${SHA} ${PASS} --base ${SHA} --before ${SHA}`;
+var THREAD_SNAPSHOT = "[--threads-file <file> --expected-threads-sha256 <sha256>]";
+var HISTORY = "[--historical-comment-ids-file <file>]";
+var COMMANDS = {
+  "lifecycle-state": {
+    summary: "Print the PR-wide review-run lifecycle.",
+    synopsis: SCOPE
+  },
+  "preflight-anchor": {
+    summary: "Check that a finding can anchor on the PR diff.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>]`
+  },
+  "post-finding": {
+    summary: "Post one verified finding inline, before any fix.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>] ${PASS} --fingerprint <stable-id> [--occurrence <n>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --content-file <file>`,
+    notes: [
+      "--content-file holds the finding prose only; the helper writes the marker and its content-sha256. There is no hash flag."
+    ]
+  },
+  "reopen-occurrence": {
+    summary: "Reopen a disposed finding as a new occurrence on its thread.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "revalidate-occurrence": {
+    summary: "Carry an undisposed occurrence, reproduced at the current head, into this pass's run.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      "--content-file holds the current-head reproduction only; the helper writes the revalidation marker and its content hash."
+    ]
+  },
+  "correct-severity": {
+    summary: "Record a corrected severity for a posted finding.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> [--from-severity <${oneOf(SUPPORTED_SEVERITIES)}>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "preflight-fix": {
+    summary: "Authorize a fix for a posted finding before editing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n>`
+  },
+  "preflight-publish": {
+    summary: "Check a publish-fixes manifest before pushing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --findings-file <file>`
+  },
+  dispose: {
+    summary: "Reply with a finding disposition and resolve its thread; resumable, so retry the identical command.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> [--occurrence <n>] --outcome <${oneOf(SUPPORTED_OUTCOMES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      "Run it once per finding. The helper refuses a second disposition for the same occurrence."
+    ]
+  },
+  reply: {
+    summary: "Reply on a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --comment-id <root-comment-id> (--content-file <file> | --body-file <file>) [${PASS}] [--fingerprint <stable-id>] [--outcome <${oneOf(SUPPORTED_OUTCOMES)}>]`
+  },
+  resolve: {
+    summary: "Resolve a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --thread-id <thread-node-id>`
+  },
+  reconcile: {
+    summary: "Show the occurrences, dispositions and next action for one fingerprint.",
+    synopsis: `${SCOPE} --head ${SHA} --fingerprint <stable-id>`
+  },
+  "post-pr-comment": {
+    summary: "Post a PR conversation comment.",
+    synopsis: `${SCOPE} --head ${SHA} --body-file <file>`
+  },
+  "classify-effect": {
+    summary: "Classify the effect of a commit range.",
+    synopsis: `--base ${SHA} --head ${SHA}`
+  },
+  "classify-changeset": {
+    summary: "Classify a range for the human-glance gate and tier.",
+    synopsis: `(--base ${SHA} --head ${SHA} | --diff-file <file>) [--prompt-surface <glob>]... [--force-review]`
+  },
+  "write-result": {
+    summary: "Write this pass's canonical v3 result file for a clean or changed pass.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> [--classification <${oneOf(SUPPORTED_CLASSIFICATIONS)}>] [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`,
+    notes: [
+      "--before is the PR head this pass started from; --head is the head it ends on.",
+      "--classification is required only when the head moved, and only takes minor or material.",
+      "Outside agent-loop, publish the written result with validate-result and then attest."
+    ]
+  },
+  "recover-result": {
+    summary: "Recover a saved result candidate after a finalization failure.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-recovery-sha256 <sha256> [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`
+  },
+  "write-blocked-result": {
+    summary: "Write a blocked v3 result naming one blocker.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> --blocker-file <file>`
+  },
+  "validate-result": {
+    summary: "Validate a result file and print its resultSha256.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> [--result-head ${SHA}]`
+  },
+  "export-threads": {
+    summary: "Write the PR's complete review-thread snapshot for attest and print its sha256.",
+    synopsis: `${SCOPE} --threads-file <new-file>`,
+    notes: [
+      "Pass the printed path and sha256 to attest as --threads-file and --expected-threads-sha256."
+    ]
+  },
+  attest: {
+    summary: "Verify the ledger and publish the pass/completion attestation.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-result-sha256 <sha256> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`,
+    notes: [
+      "--expected-result-sha256 is the resultSha256 validate-result printed."
+    ]
+  },
+  finalize: {
+    summary: "Finish an interrupted pass from its saved result file.",
+    synopsis: `${SCOPE} --result-file <file> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`
+  },
+  "check-blocked-round": {
+    summary: "Check a blocked round for the controller recovery path.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} [--allowed-heads-file <file>] ${HISTORY}`
+  },
+  "verify-ledger": {
+    summary: "Verify every finding's disposition, optionally against a result.",
+    synopsis: `${SCOPE} --head ${SHA} ${THREAD_SNAPSHOT} [--actor <login>] ${HISTORY} [${PASS} --base ${SHA} --before ${SHA} --result-file <file> [--result-head ${SHA}] [--allowed-heads-file <file>]]`
+  },
+  "post-roster": {
+    summary: "Declare the review roster.",
+    synopsis: `${SCOPE} --head ${SHA} --author ${ENGINE} --reviewers <engine[,engine]|none> --content-file <file> [--actor <login>]`
+  },
+  "read-roster": {
+    summary: "Print the effective review roster.",
+    synopsis: `${SCOPE} [--actor <login>]`
+  },
+  coverage: {
+    summary: "Report attestation coverage at a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "verify-coverage": {
+    summary: "Require every declared reviewer to have attested a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "emit-telemetry": {
+    summary: "Record this pass's telemetry; always exits 0.",
+    synopsis: `${SCOPE} --engine <engine> --pass-type <${oneOf(TELEMETRY_PASS_TYPES)}> --trigger <${oneOf(TELEMETRY_TRIGGERS)}> --stance <${oneOf(TELEMETRY_STANCES)}> --status <${oneOf(TELEMETRY_STATUSES)}> --token-source <${oneOf(TELEMETRY_TOKEN_SOURCES)}> --round <n> --base ${SHA} --head ${SHA} --findings-file <file> [--review-tier <${oneOf(TELEMETRY_REVIEW_TIERS)}>] [--idempotency-key <key>] [--telemetry-run-id <id>] [--engine-version <v>] [--tokens-file <file>] [--lanes-file <file>] [--changeset-file <file> | --diff-file <file>] [--prompt-surface <glob>]... [--duration-seconds <n>] [--emitted-at <iso>] [--prompt-stack-sha256 <sha256>] [--prompt-stack-version <v>] [--repo-instructions-sha256 <sha256>] [--truncated] [--dry-run] [--actor <login>]`
+  },
+  "enrich-telemetry-duration": {
+    summary: "Add a measured duration to an emitted telemetry record.",
+    synopsis: `${SCOPE} --idempotency-key <key> --engine <engine> --round <n> --base ${SHA} --head ${SHA} --duration-seconds <n> [--actor <login>]`
+  },
+  "replay-telemetry": {
+    summary: "Re-emit a saved telemetry recovery record.",
+    synopsis: "--repo <owner/repo> --file <file> [--dry-run] [--actor <login>]"
+  },
+  "telemetry-recorded": {
+    summary: "Report whether a telemetry record exists.",
+    synopsis: `${SCOPE} --idempotency-key <key> [--actor <login>]`
+  },
+  "metrics-setup": {
+    summary: "Create the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  "metrics-rotate": {
+    summary: "Rotate the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  export: {
+    summary: "Export telemetry records as JSON lines.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  report: {
+    summary: "Summarize telemetry records.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  "read-result": {
+    summary: "Print a result file.",
+    synopsis: "(--result-file <file> | --file <file>)"
+  },
+  "format-findings": {
+    summary: "Format a findings JSON array for a report.",
+    synopsis: "(--json-file <file> | --file <file>)"
+  },
+  "silent-pin": { summary: "Pin a PR to silent mode.", synopsis: SCOPE },
+  "silent-status": {
+    summary: "Report whether a PR is silent.",
+    synopsis: SCOPE
+  },
+  summary: {
+    summary: "Render a silent PR's end-of-loop summary.",
+    synopsis: SCOPE
+  },
+  "post-summary": {
+    summary: "Post a silent PR's approved summary.",
+    synopsis: `${SCOPE} --confirmed --expected-summary-sha256 <sha256>`
+  },
+  "read-ledger": {
+    summary: "Print the PR ledger comments and threads.",
+    synopsis: SCOPE
+  }
+};
+var COMMAND_NAMES = Object.keys(COMMANDS);
+function commandSynopsis(command) {
+  return Object.hasOwn(COMMANDS, command) ? COMMANDS[command].synopsis : void 0;
+}
+function commandHelp(command) {
+  const entry = COMMANDS[command];
+  const lines = [
+    `usage: review-ledger ${command} ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  for (const note of entry.notes ?? []) lines.push(`- ${note}`);
+  return lines.join("\n") + "\n";
+}
+function overviewHelp() {
+  const width = Math.max(...COMMAND_NAMES.map((name) => name.length));
+  const lines = [
+    "usage: review-ledger <subcommand> [flags]",
+    "       review-ledger <subcommand> --help",
+    "       review-ledger --version | --protocol-version",
+    "",
+    "Subcommands:",
+    ...COMMAND_NAMES.map(
+      (name) => `  ${name.padEnd(width)}  ${COMMANDS[name].summary}`
+    )
+  ];
+  return lines.join("\n") + "\n";
+}
+function usageHint(command) {
+  if (command !== void 0 && Object.hasOwn(COMMANDS, command)) {
+    return `usage: review-ledger ${command} ${COMMANDS[command].synopsis}
+Run \`review-ledger ${command} --help\` for details; use only the flags it lists.`;
+  }
+  return `subcommands: ${COMMAND_NAMES.join(", ")}
+Run \`review-ledger <subcommand> --help\` for its flags.`;
 }
 
 // ../../node_modules/.pnpm/@babel+parser@8.1.0/node_modules/@babel/parser/lib/index.js
@@ -16884,12 +17468,39 @@ function readResultRecovery(params, actor) {
 }
 
 // src/ledger.ts
+function ledgerComments(repo, pr) {
+  return revalidatedComments(getReviewComments(repo, pr), repo, pr);
+}
+function requireCarriedFixRun(params) {
+  const records = getReviewComments(params.repo, params.pr).map((row) => matchRevalidation(String(row.body ?? ""))).filter(
+    (record) => record?.fingerprint === params.fingerprint && record.occurrence === params.occurrence
+  );
+  const latest = records.at(-1);
+  if (latest) {
+    const run = requireRevalidationRun(params);
+    if (run.id !== latest.runId || run.commentId !== latest.runCommentId || run.maxRounds !== latest.maxRounds || latest.engine !== params.engine || latest.round !== params.round)
+      fail("carried finding belongs to a different active run or pass");
+  }
+  return latest;
+}
 function threadProtocolRecords(thread, historicalCommentIds) {
   verifyPseudoV3History([thread], historicalCommentIds);
-  const comments = thread.comments.nodes;
+  const rawComments = thread.comments.nodes;
+  const hasRevalidation = rawComments.some(
+    (row) => String(row.body ?? "").includes("<!-- local-review-revalidation:")
+  );
+  if (hasRevalidation && (!thread.repository?.nameWithOwner || thread.pullRequest?.number === void 0))
+    fail("revalidation thread requires repository and PR scope");
+  const comments = hasRevalidation ? revalidatedComments(
+    rawComments,
+    thread.repository.nameWithOwner,
+    thread.pullRequest.number,
+    true
+  ) : rawComments;
   const actor = currentActor();
   const findingsV3 = [];
   const dispositionsV3 = [];
+  const severitiesV3 = [];
   const findingsV1 = [];
   const dispositionsV1 = [];
   for (let index = 0; index < comments.length; index++) {
@@ -16909,19 +17520,26 @@ function threadProtocolRecords(thread, historicalCommentIds) {
     const pseudo = matchPseudoV3(body);
     const findingV3 = matchFinding(body);
     const dispositionV3 = matchDisposition(body);
+    const severityV3 = matchSeverityCorrection(body);
     if (body.includes("<!-- local-review:v3") && !findingV3 && !pseudo) {
       fail("actor-owned local-review:v3 marker is malformed or unsupported");
     }
     const findingV1 = FINDING_V1_RE.exec(body);
     const dispositionV1 = DISPOSITION_V1_RE.exec(body);
-    if (PROTOCOL_THREAD_MARKER_RE.test(firstLine) && !findingV3 && !dispositionV3 && !findingV1 && !dispositionV1) {
+    if (PROTOCOL_THREAD_MARKER_RE.test(firstLine) && !findingV3 && !dispositionV3 && !severityV3 && !findingV1 && !dispositionV1) {
       fail("actor-owned local-review marker is malformed or unsupported");
     }
     if (findingV3) {
+      if (typeof row["createdAt"] === "string") {
+        findingV3.postedAt = row["createdAt"];
+      }
       findingsV3.push([index, findingV3]);
     }
     if (dispositionV3) {
       dispositionsV3.push([index, dispositionV3]);
+    }
+    if (severityV3) {
+      severitiesV3.push([index, severityV3]);
     }
     const legacyMarker = LEGACY_THREAD_MARKER_RE.test(firstLine);
     if ((body.includes(FINDING_V1) || body.includes(DISPOSITION_V1) || legacyMarker) && !findingV1 && !dispositionV1) {
@@ -16975,7 +17593,47 @@ function threadProtocolRecords(thread, historicalCommentIds) {
       }
     }
   }
-  return { findingsV3, dispositionsV3, findingsV1, dispositionsV1 };
+  applyThreadSeverityCorrections(findingsV3, dispositionsV3, severitiesV3);
+  return {
+    findingsV3,
+    dispositionsV3,
+    severitiesV3,
+    findingsV1,
+    dispositionsV1
+  };
+}
+function applyThreadSeverityCorrections(findingsV3, dispositionsV3, severitiesV3) {
+  for (const [correctionIndex, correction] of severitiesV3) {
+    const matchingFindings = findingsV3.filter(
+      ([findingIndex2, finding2]) => findingIndex2 < correctionIndex && finding2.engine === correction.engine && finding2.round === correction.round && finding2.head === correction.head && finding2.fingerprint === correction.fingerprint && finding2.occurrence === correction.occurrence
+    );
+    if (matchingFindings.length !== 1) {
+      fail(
+        "local-review severity correction does not match an earlier finding in the same thread"
+      );
+    }
+    const [findingIndex, finding] = matchingFindings[0];
+    if (dispositionsV3.some(
+      ([dispIndex, disp]) => dispIndex < correctionIndex && disp.engine === finding.engine && disp.round === finding.round && disp.fingerprint === finding.fingerprint && disp.occurrence === finding.occurrence
+    )) {
+      fail(
+        "local-review severity correction was posted after its finding was disposed"
+      );
+    }
+    if (findingsV3.some(
+      ([nextIndex, nextFinding]) => nextIndex > findingIndex && nextIndex < correctionIndex && nextFinding.fingerprint === finding.fingerprint
+    )) {
+      fail(
+        "local-review severity correction was posted after a later occurrence reopened the finding"
+      );
+    }
+    if (correction.from !== finding.severity || !isUpwardSeverity(finding.severity, correction.to)) {
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
+    }
+    finding.severity = correction.to;
+  }
 }
 function pairDispositions(findings, dispositions) {
   const matched = [];
@@ -17117,10 +17775,27 @@ function verifyThreadDispositions(threads, historicalCommentIds, options) {
   verifyBlockingNotDeferred(options?.repo, matched);
   return matched;
 }
+function postedBeforeRun(finding, runStartedAt) {
+  if (finding.postedAt === void 0 || runStartedAt === void 0) {
+    return false;
+  }
+  const posted = Date.parse(finding.postedAt);
+  const started = Date.parse(runStartedAt);
+  return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
+}
+function currentRun(repo, pr) {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1);
+}
+function currentRunStartedAt(repo, pr) {
+  return currentRun(repo, pr)?.startedAt;
+}
 function sameRoundDispositions(args, matched, allowedHeads, slips) {
   const evidence = /* @__PURE__ */ new Map();
   for (const [finding, disposition] of matched) {
     if (finding.engine !== args.engine || finding.round !== args.round) {
+      continue;
+    }
+    if (postedBeforeRun(finding, args.runStartedAt)) {
       continue;
     }
     const findingHead = finding.head;
@@ -17221,7 +17896,7 @@ function transitionHeads(params) {
   return heads;
 }
 function convergenceStartRound(repo, pr) {
-  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === "lean" ? 2 : 3;
+  return currentRun(repo, pr)?.tier === "lean" ? 2 : 3;
 }
 function verifyResultEvidence(args, threads, options) {
   const data = options?.data ?? validateResultData(args, readResultBytes(args.resultFile));
@@ -17236,7 +17911,11 @@ function verifyResultEvidence(args, threads, options) {
     { repo: args.repo, pr: args.pr }
   );
   const allowedHeads = options?.allowedHeads ?? transitionHeads(args);
-  const evidence = sameRoundDispositions(args, matched, allowedHeads);
+  const evidence = sameRoundDispositions(
+    { ...args, runStartedAt: currentRunStartedAt(args.repo, args.pr) },
+    matched,
+    allowedHeads
+  );
   const evidenceFingerprints = evidence.map(([fingerprint]) => fingerprint);
   const expected = [...data.findingFingerprints].sort();
   if (evidenceFingerprints.length !== expected.length || evidenceFingerprints.some((value, index) => value !== expected[index])) {
@@ -17283,7 +17962,11 @@ function writeResult(params) {
     head: params.head,
     allowedHeadsFile: params.allowedHeadsFile
   });
-  const dispositions = sameRoundDispositions(params, matched, allowedHeads);
+  const dispositions = sameRoundDispositions(
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
+    matched,
+    allowedHeads
+  );
   const changed = params.before !== params.head;
   if (!changed && dispositions.some(([, hasFix]) => hasFix)) {
     fail("clean review results cannot have same-round fixes");
@@ -17355,7 +18038,7 @@ function checkBlockedRound(params) {
   const allowedHeads = transitionHeads(params);
   const slips = [];
   const dispositions = sameRoundDispositions(
-    params,
+    { ...params, runStartedAt: currentRunStartedAt(params.repo, params.pr) },
     matched,
     allowedHeads,
     slips
@@ -17426,8 +18109,9 @@ function preflightAnchor(params) {
   };
 }
 function preflightFix(params) {
+  requireCarriedFixRun(params);
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
   const severity = fixableFindingSeverity(comments, params, stance);
   verifyHead(params.repo, params.pr, params.head);
@@ -17446,8 +18130,10 @@ function preflightPublish(params) {
     fail("preflight-publish findings must not repeat");
   }
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
+  for (const finding of params.findings)
+    requireCarriedFixRun({ ...params, ...finding });
   const findings = params.findings.map((finding) => ({
     ...finding,
     severity: fixableFindingSeverity(
@@ -17491,14 +18177,65 @@ function fixableFindingSeverity(comments, params, stance) {
   return severity;
 }
 function findingRows(comments, fingerprint) {
-  const rows = [];
-  for (const row of comments) {
-    const match = matchFinding(String(row.body ?? ""));
-    if (match !== null && match.fingerprint === fingerprint) {
-      rows.push({ row, match });
+  const findings = [];
+  const dispositions = [];
+  const corrections = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
+    const body = String(row.body ?? "");
+    const finding = matchFinding(body);
+    const disposition = matchDisposition(body);
+    const correction = matchSeverityCorrection(body);
+    if (finding !== null && finding.fingerprint === fingerprint) {
+      findings.push({ index, row, match: { ...finding } });
+    }
+    if (disposition !== null && disposition.fingerprint === fingerprint) {
+      dispositions.push({ index, row, match: disposition });
+    }
+    if (correction !== null && correction.fingerprint === fingerprint) {
+      corrections.push({ index, row, match: correction });
     }
   }
-  return rows;
+  const rootEntries = findings.filter((entry) => entry.match.occurrence === 1);
+  const rootId = rootEntries.length === 1 ? rootEntries[0].row.databaseId ?? rootEntries[0].row.id : void 0;
+  for (const corr of corrections) {
+    const inReplyTo = corr.row["in_reply_to_id"];
+    if (typeof rootId === "number" && typeof inReplyTo === "number" && inReplyTo !== rootId) {
+      fail(
+        "local-review severity correction does not belong to the finding root thread"
+      );
+    }
+    const matching = findings.filter(
+      (f) => f.index < corr.index && f.match.engine === corr.match.engine && f.match.round === corr.match.round && f.match.head === corr.match.head && f.match.fingerprint === corr.match.fingerprint && f.match.occurrence === corr.match.occurrence
+    );
+    if (matching.length !== 1) {
+      fail(
+        "local-review severity correction does not match an earlier finding in the same thread"
+      );
+    }
+    const target = matching[0];
+    if (dispositions.some(
+      (d) => d.index < corr.index && d.match.engine === target.match.engine && d.match.round === target.match.round && d.match.fingerprint === target.match.fingerprint && d.match.occurrence === target.match.occurrence
+    )) {
+      fail(
+        "local-review severity correction was posted after its finding was disposed"
+      );
+    }
+    if (findings.some(
+      (f) => f.index > target.index && f.index < corr.index && f.match.fingerprint === target.match.fingerprint
+    )) {
+      fail(
+        "local-review severity correction was posted after a later occurrence reopened the finding"
+      );
+    }
+    if (corr.match.from !== target.match.severity || !isUpwardSeverity(target.match.severity, corr.match.to)) {
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
+    }
+    target.match.severity = corr.match.to;
+  }
+  return findings.map(({ row, match }) => ({ row, match }));
 }
 function assertRootComment(rows, commentId) {
   const roots = rows.filter((entry) => entry.match.occurrence === 1);
@@ -17542,7 +18279,7 @@ function postFinding(params) {
   let commentId;
   let replayed = false;
   if (isV3) {
-    const comments = getReviewComments(params.repo, params.pr);
+    const comments = ledgerComments(params.repo, params.pr);
     if (rowsHaveHistoricalMarkers(comments)) {
       verifyHistoricalThreads(params.repo, params.pr);
     }
@@ -17615,7 +18352,7 @@ function reopenOccurrence(params) {
     content
   });
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -17671,6 +18408,22 @@ function reopenOccurrence(params) {
   };
 }
 function dispose(params) {
+  const carried = requireCarriedFixRun({
+    ...params,
+    occurrence: params.occurrence ?? 1
+  });
+  if (carried && params.outcome === "fixed") {
+    if (carried.head === params.head)
+      fail(
+        "a carried finding requires a published forward fix head before a fixed disposition"
+      );
+    verifyForwardTransitionOrFail(
+      params.repo,
+      carried.head,
+      params.head,
+      "a carried finding requires a published forward fix head before a fixed disposition"
+    );
+  }
   const content = resolveContent(params);
   if (content === void 0) {
     fail("dispose requires content or content-file");
@@ -17686,7 +18439,7 @@ function dispose(params) {
     content
   });
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -17736,6 +18489,157 @@ function dispose(params) {
     replayed,
     thread_replayed: threadReplayed,
     resolved: true,
+    verified: true
+  };
+}
+function correctSeverity(params) {
+  const content = resolveContent(params);
+  if (content === void 0) {
+    fail("correct-severity requires content or content-file");
+  }
+  const occurrence = params.occurrence ?? 1;
+  if (!Number.isSafeInteger(occurrence) || occurrence < 1) {
+    fail("occurrence must be a positive integer");
+  }
+  if (params.from !== void 0 && !isUpwardSeverity(params.from, params.severity)) {
+    fail("severity correction must increase severity");
+  }
+  const actor = assertLiveActor(assertActor());
+  verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
+  const comments = ledgerComments(params.repo, params.pr);
+  if (rowsHaveHistoricalMarkers(comments)) {
+    verifyHistoricalThreads(params.repo, params.pr);
+  }
+  const resolved = getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  });
+  if (resolved) {
+    fail("cannot correct severity on a resolved review thread");
+  }
+  const rawFindings = [];
+  const rawDispositions = [];
+  const rawCorrections = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
+    const body2 = String(row.body ?? "");
+    const finding = matchFinding(body2);
+    const disposition = matchDisposition(body2);
+    const correction = matchSeverityCorrection(body2);
+    if (finding !== null && finding.fingerprint === params.fingerprint) {
+      rawFindings.push({ index, row, match: { ...finding } });
+    }
+    if (disposition !== null && disposition.fingerprint === params.fingerprint) {
+      rawDispositions.push({ index, row, match: disposition });
+    }
+    if (correction !== null && correction.fingerprint === params.fingerprint) {
+      rawCorrections.push({ index, row, body: body2, match: correction });
+    }
+  }
+  assertRootComment(rawFindings, params.commentId);
+  const targetFindings = rawFindings.filter(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+  );
+  if (targetFindings.length !== 1) {
+    fail(
+      "severity correction does not identify an existing finding occurrence at this head, engine, and round"
+    );
+  }
+  if (rawFindings.some(({ match }) => match.occurrence > occurrence)) {
+    fail("severity correction requires the latest finding occurrence");
+  }
+  if (rawDispositions.some(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.fingerprint === params.fingerprint && match.occurrence === occurrence
+  )) {
+    fail("cannot correct severity of a disposed finding");
+  }
+  const targetCorrections = rawCorrections.filter(
+    ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+  );
+  const lastCorrection = targetCorrections.at(-1);
+  let fromSeverity;
+  let marker;
+  let body;
+  if (lastCorrection !== void 0 && lastCorrection.match.to === params.severity && (params.from === void 0 || lastCorrection.match.from === params.from)) {
+    const priorRecords = findingRows(
+      comments.slice(0, lastCorrection.index),
+      params.fingerprint
+    );
+    const priorTarget = priorRecords.find(
+      ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+    );
+    if (!priorTarget || priorTarget.match.severity !== lastCorrection.match.from || rawCorrections.some((corr) => corr.index > lastCorrection.index)) {
+      fail(
+        "local-review severity correction conflicts with current finding severity"
+      );
+    }
+    fromSeverity = lastCorrection.match.from;
+    const built = buildSeverityCorrectionBody({
+      engine: params.engine,
+      round: params.round,
+      head: params.head,
+      fingerprint: params.fingerprint,
+      occurrence,
+      from: fromSeverity,
+      to: params.severity,
+      content
+    });
+    marker = built.marker;
+    body = built.body;
+    if (lastCorrection.body !== body) {
+      fail(
+        "severity correction identity already exists with conflicting content or severity"
+      );
+    }
+  } else {
+    const records = findingRows(comments, params.fingerprint);
+    const targetRecord = records.find(
+      ({ match }) => match.engine === params.engine && match.round === params.round && match.head === params.head && match.occurrence === occurrence
+    );
+    const currentSeverity = targetRecord.match.severity;
+    fromSeverity = params.from ?? currentSeverity;
+    if (fromSeverity !== currentSeverity) {
+      fail(
+        `severity correction from=${fromSeverity} does not match current finding severity ${currentSeverity}`
+      );
+    }
+    const built = buildSeverityCorrectionBody({
+      engine: params.engine,
+      round: params.round,
+      head: params.head,
+      fingerprint: params.fingerprint,
+      occurrence,
+      from: fromSeverity,
+      to: params.severity,
+      content
+    });
+    marker = built.marker;
+    body = built.body;
+  }
+  const { commentId, replayed } = postReviewComment(
+    params.repo,
+    params.pr,
+    params.head,
+    marker,
+    body,
+    { replyTo: params.commentId }
+  );
+  const threadReplayed = setThreadState(
+    params.threadId,
+    false,
+    params.commentId,
+    { repo: params.repo, pr: params.pr }
+  );
+  verifyHead(params.repo, params.pr, params.head);
+  assertLiveActor(actor);
+  return {
+    comment_id: commentId,
+    from_severity: fromSeverity,
+    severity: params.severity,
+    replayed,
+    thread_replayed: threadReplayed,
+    resolved: false,
     verified: true
   };
 }
@@ -17959,37 +18863,86 @@ function assertThreadIdsInScope(repo, pr, threadIds) {
 }
 function reconcile(params) {
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
   const findingRows2 = [];
   const dispositionRows = [];
-  for (const row of comments) {
+  const severityCorrectionRows = [];
+  const findingEntries = [];
+  const dispositionEntries = [];
+  const correctionEntries = [];
+  for (let index = 0; index < comments.length; index++) {
+    const row = comments[index];
     const body = String(row.body ?? "");
     const finding = matchFinding(body);
     const disposition = matchDisposition(body);
+    const correction = matchSeverityCorrection(body);
     if (finding && finding.fingerprint === params.fingerprint) {
-      findingRows2.push({ id: row.databaseId ?? row.id, ...finding });
+      const rowObj = {
+        id: row.databaseId ?? row.id,
+        ...finding
+      };
+      findingRows2.push(rowObj);
+      findingEntries.push({ index, rowObj, match: { ...finding } });
     }
     if (disposition && disposition.fingerprint === params.fingerprint) {
       dispositionRows.push({ id: row.databaseId ?? row.id, ...disposition });
+      dispositionEntries.push({ index, match: disposition });
+    }
+    if (correction && correction.fingerprint === params.fingerprint) {
+      severityCorrectionRows.push({
+        id: row.databaseId ?? row.id,
+        ...correction
+      });
+      correctionEntries.push({
+        index,
+        inReplyTo: row["in_reply_to_id"],
+        match: correction
+      });
     }
   }
   const occurrences = findingRows2.map((row) => row["occurrence"]).sort((a, b) => a - b);
   const sequenceValid = occurrences.every((val, idx) => val === idx + 1);
+  const rootIds = findingRows2.filter((row) => row["occurrence"] === 1).map((row) => row["id"]).filter((id) => typeof id === "number");
+  const rootCommentId = rootIds.length === 1 ? rootIds[0] : void 0;
+  let correctionsValid = true;
+  for (const corr of correctionEntries) {
+    if (rootCommentId !== void 0 && typeof corr.inReplyTo === "number" && corr.inReplyTo !== rootCommentId) {
+      correctionsValid = false;
+      break;
+    }
+    const matching = findingEntries.filter(
+      (f) => f.index < corr.index && f.match.engine === corr.match.engine && f.match.round === corr.match.round && f.match.head === corr.match.head && f.match.fingerprint === corr.match.fingerprint && f.match.occurrence === corr.match.occurrence
+    );
+    if (matching.length !== 1) {
+      correctionsValid = false;
+      break;
+    }
+    const target = matching[0];
+    if (dispositionEntries.some(
+      (d) => d.index < corr.index && d.match.engine === target.match.engine && d.match.round === target.match.round && d.match.fingerprint === target.match.fingerprint && d.match.occurrence === target.match.occurrence
+    ) || findingEntries.some(
+      (f) => f.index > target.index && f.index < corr.index && f.match.fingerprint === target.match.fingerprint
+    ) || corr.match.from !== target.match.severity || !isUpwardSeverity(target.match.severity, corr.match.to)) {
+      correctionsValid = false;
+      break;
+    }
+    target.match.severity = corr.match.to;
+    target.rowObj["severity"] = corr.match.to;
+  }
   const identity2 = (row) => `${String(row["engine"])}|${String(row["round"])}|${String(row["fingerprint"])}|${String(row["occurrence"])}`;
   const findingKeys = new Set(findingRows2.map(identity2));
   const dispositionKeys = dispositionRows.map(identity2);
   const disposed = new Set(
     dispositionRows.map((row) => row["occurrence"])
   );
-  const ledgerValid = sequenceValid && new Set(dispositionKeys).size === dispositionKeys.length && dispositionKeys.every((key) => findingKeys.has(key));
+  const ledgerValid = sequenceValid && correctionsValid && new Set(dispositionKeys).size === dispositionKeys.length && dispositionKeys.every((key) => findingKeys.has(key));
   const undisposed = occurrences.filter((occ) => !disposed.has(occ));
   const nextAction = !ledgerValid ? "repair-sequence" : undisposed.length > 0 ? "dispose" : occurrences.length > 0 ? "reopen-occurrence" : "post-finding";
   let threadId = null;
   let threadResolved = null;
-  const rootIds = findingRows2.filter((row) => row["occurrence"] === 1).map((row) => row["id"]).filter((id) => typeof id === "number");
   if (ledgerValid && rootIds.length === 1) {
     const candidate = findRootThread(params.repo, params.pr, rootIds[0]);
     if (candidate === null) {
@@ -18004,6 +18957,11 @@ function reconcile(params) {
   return {
     findings: findingRows2,
     dispositions: dispositionRows,
+    severityCorrections: severityCorrectionRows,
+    revalidations: getReviewComments(params.repo, params.pr).flatMap((row) => {
+      const record = matchRevalidation(String(row.body ?? ""));
+      return record?.fingerprint === params.fingerprint ? [{ id: row.databaseId ?? row.id, ...record }] : [];
+    }),
     sequenceValid,
     ledgerValid,
     nextOccurrence: sequenceValid ? occurrences.length + 1 : null,
@@ -19621,6 +20579,16 @@ function parseApi(args, payload) {
   method ??= hasFields || input ? "POST" : "GET";
   return { method, endpoint: endpoint.split("?")[0], slurp, fields };
 }
+function isReadOnlyGhCall(args, payload) {
+  const request = parseApi(args, payload);
+  if (request === null) return READ_ONLY_GH.has(args.slice(0, 2).join(" "));
+  if (request.endpoint !== "graphql") return request.method === "GET";
+  if (args.some((arg) => arg === "--input" || arg.startsWith("--input=")))
+    return false;
+  const body = payload ?? {};
+  const query = body.query ?? request.fields["query"];
+  return typeof query === "string" && !/^\s*mutation\b/.test(query);
+}
 function json(value) {
   return JSON.stringify(value);
 }
@@ -20083,6 +21051,7 @@ function threadNodes(store, state, first) {
         nodes: comments.slice(0, first).map((c) => ({
           databaseId: c.id,
           body: c.body,
+          createdAt: c.created_at,
           author: { login: c.user.login }
         })),
         pageInfo: { hasNextPage: comments.length > first }
@@ -21107,13 +22076,13 @@ function reconcileConcurrentRoster(repo, pr, body, postedCommentId) {
     fail("local-review roster conflicts with concurrent evidence");
   }
   const ids = rows.map((row) => row["id"]).sort((a, b) => a - b);
-  const canonical = ids[0];
+  const canonical2 = ids[0];
   for (const duplicate of ids.slice(1)) {
     deleteIssueComment(repo, pr, duplicate);
   }
   return {
-    commentId: canonical,
-    usedPostedComment: canonical === postedCommentId
+    commentId: canonical2,
+    usedPostedComment: canonical2 === postedCommentId
   };
 }
 function postRoster(params) {
@@ -21122,9 +22091,9 @@ function postRoster(params) {
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
   const existing = resolveRoster(rows);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
   const needsFreshRoster = Boolean(
-    currentRun?.ownerTransition && (existing.commentId ?? 0) <= currentRun.commentId
+    currentRun2?.ownerTransition && (existing.commentId ?? 0) <= currentRun2.commentId
   );
   const replayCandidate = existing.present && existing.version === 2 && !needsFreshRoster ? buildRosterBody({
     author: params.author,
@@ -21279,8 +22248,8 @@ function coverage(params) {
   assertActor(params.actor);
   verifyHead(params.repo, params.pr, params.head);
   const rows = getIssueComments(params.repo, params.pr);
-  const currentRun = readLifecycle(params.repo, params.pr).run;
-  const minimumCommentId = currentRun?.ownerTransition ? currentRun.commentId : 0;
+  const currentRun2 = readLifecycle(params.repo, params.pr).run;
+  const minimumCommentId = currentRun2?.ownerTransition ? currentRun2.commentId : 0;
   const resolvedRoster = resolveRoster(rows);
   const roster = minimumCommentId && (resolvedRoster.commentId ?? 0) <= minimumCommentId ? resolveRoster([]) : resolvedRoster;
   const attested = attestationsAtHead(rows, params.head, minimumCommentId);
@@ -21736,12 +22705,16 @@ function renderSummary(store, state) {
     for (const reply2 of replies) {
       const occurrence = matchFinding(reply2.body);
       if (occurrence?.fingerprint === finding.fingerprint && occurrence.occurrence > finding.occurrence) {
-        finding = occurrence;
+        finding = { ...occurrence };
         findingBody = reply2.body;
       }
     }
     let last = null;
     for (const reply2 of replies) {
+      const correction = matchSeverityCorrection(reply2.body);
+      if (last === null && correction?.fingerprint === finding.fingerprint && correction.occurrence === finding.occurrence && correction.engine === finding.engine && correction.round === finding.round && correction.head === finding.head && correction.from === finding.severity && isUpwardSeverity(finding.severity, correction.to)) {
+        finding = { ...finding, severity: correction.to };
+      }
       const disposition = matchDisposition(reply2.body);
       if (disposition?.fingerprint === finding.fingerprint && disposition.occurrence === finding.occurrence && disposition.engine === finding.engine && disposition.round === finding.round)
         last = { ...disposition, body: reply2.body };
@@ -21884,7 +22857,9 @@ function resolveChangesetReport(args) {
     );
   }
   if (!args.base || !args.head) {
-    fail("changeset classification requires --diff-file or --base and --head");
+    failUsage(
+      "changeset classification requires --diff-file or --base and --head"
+    );
   }
   return classifyRange({ base: args.base, head: args.head, options });
 }
@@ -21913,17 +22888,17 @@ function nowUtcSecond() {
 }
 function parsePositiveInteger(value, name) {
   if (!/^[1-9]\d*$/.test(value)) {
-    fail(`${name} must be a positive integer`);
+    failUsage(`${name} must be a positive integer`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
-    fail(`${name} must be a positive safe integer`);
+    failUsage(`${name} must be a positive safe integer`);
   }
   return parsed;
 }
 function parseEnum(arg, value, allowed) {
   if (!allowed.includes(value)) {
-    fail(`${arg} must be one of: ${allowed.join(", ")}`);
+    failUsage(`${arg} must be one of: ${allowed.join(", ")}`);
   }
   return value;
 }
@@ -21975,7 +22950,7 @@ function parseCliArgs(argv) {
     const next = argv[i + 1];
     const parseVal = (name) => {
       if (next === void 0 || next.startsWith("--")) {
-        fail(`missing argument for ${name}`);
+        failUsage(`missing argument for ${name}`);
       }
       i += 2;
       return next;
@@ -22072,7 +23047,11 @@ function parseCliArgs(argv) {
       case "--occurrence":
         args.occurrence = parsePositiveInteger(parseVal(arg), arg);
         break;
+      case "--from-severity":
+        args.fromSeverity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
+        break;
       case "--severity":
+      case "--to-severity":
         args.severity = parseEnum(arg, parseVal(arg), SUPPORTED_SEVERITIES);
         break;
       case "--lens":
@@ -22168,7 +23147,7 @@ function parseCliArgs(argv) {
         args.expectedSummarySha256 = parseVal(arg);
         break;
       default:
-        fail(`unknown argument: ${arg}`);
+        failUsage(`unknown argument: ${arg}`);
     }
   }
   return args;
@@ -22178,7 +23157,7 @@ function validateArgs(args) {
     return;
   }
   if (!args.command) {
-    fail("subcommand required");
+    failUsage("subcommand required");
   }
   if (args.engineRaw !== void 0 && ![
     "emit-telemetry",
@@ -22196,17 +23175,19 @@ function validateArgs(args) {
   if (args.expectedResultSha256 !== void 0 && !SHA_64_RE.test(args.expectedResultSha256)) {
     fail("--expected-result-sha256 must be a lowercase SHA-256 digest");
   }
-  if (args.contentFile && (args.command === "post-finding" || args.command === "reopen-occurrence" || args.command === "dispose")) {
+  if (args.contentFile && (args.command === "post-finding" || args.command === "reopen-occurrence" || args.command === "correct-severity" || args.command === "dispose")) {
     const required = ["engine", "round", "fingerprint"];
     if (args.command === "post-finding") {
       required.push("severity", "lens");
+    } else if (args.command === "correct-severity") {
+      required.push("severity");
     }
     const missing = required.filter((r) => args[r] === void 0);
     if (missing.length > 0) {
       const names = missing.map(
         (m) => `--${String(m).replace(/([A-Z])/g, "-$1").toLowerCase()}`
       );
-      fail(`v3 content mode requires ${names.join(", ")}`);
+      failUsage(`v3 content mode requires ${names.join(", ")}`);
     }
   }
   if (args.command === "verify-ledger") {
@@ -22219,7 +23200,7 @@ function validateArgs(args) {
     ];
     const present = resultFields.map((f) => args[f] !== void 0);
     if (present.some(Boolean) && !present.every(Boolean)) {
-      fail(
+      failUsage(
         "verify-ledger result evidence requires --engine, --round, --base, --before, and --result-file"
       );
     }
@@ -22250,13 +23231,13 @@ function runCliCommand(argv) {
   switch (args.command) {
     case "lifecycle-state": {
       if (!args.repo || args.pr === void 0)
-        fail("lifecycle-state requires --repo and --pr");
+        failUsage("lifecycle-state requires --repo and --pr");
       writeSortedJson(readLifecycle(args.repo, args.pr));
       break;
     }
     case "preflight-fix": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0) {
-        fail(
+        failUsage(
           "preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence"
         );
       }
@@ -22277,7 +23258,7 @@ function runCliCommand(argv) {
     }
     case "preflight-publish": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.findingsFile) {
-        fail(
+        failUsage(
           "preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file"
         );
       }
@@ -22297,10 +23278,10 @@ function runCliCommand(argv) {
     }
     case "preflight-anchor": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("preflight-anchor requires --repo, --pr, --head, and --path");
+        failUsage("preflight-anchor requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("preflight-anchor requires --line or --file-level");
+        failUsage("preflight-anchor requires --line or --file-level");
       }
       const out = preflightAnchor({
         repo: args.repo,
@@ -22316,13 +23297,13 @@ function runCliCommand(argv) {
     }
     case "post-finding": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("post-finding requires --repo, --pr, --head, and --path");
+        failUsage("post-finding requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("post-finding requires --line or --file-level");
+        failUsage("post-finding requires --line or --file-level");
       }
       if (!args.contentFile && !args.bodyFile) {
-        fail("post-finding requires --content-file or --body-file");
+        failUsage("post-finding requires --content-file or --body-file");
       }
       const out = postFinding({
         repo: args.repo,
@@ -22344,9 +23325,31 @@ function runCliCommand(argv) {
       process.stdout.write(JSON.stringify(out) + "\n");
       break;
     }
+    case "revalidate-occurrence": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || args.commentId === void 0 || !args.threadId || !args.contentFile) {
+        failUsage(
+          "revalidate-occurrence requires --repo, --pr, --head, --engine, --round, --fingerprint, --occurrence, --comment-id, --thread-id, and --content-file"
+        );
+      }
+      writeSortedJson(
+        revalidateOccurrence({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          fingerprint: args.fingerprint,
+          occurrence: args.occurrence,
+          commentId: args.commentId,
+          threadId: args.threadId,
+          contentFile: args.contentFile
+        })
+      );
+      break;
+    }
     case "reopen-occurrence": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || !args.lens || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("reopen-occurrence missing required parameters");
+        failUsage("reopen-occurrence missing required parameters");
       }
       const out = reopenOccurrence({
         repo: args.repo,
@@ -22365,9 +23368,30 @@ function runCliCommand(argv) {
       process.stdout.write(JSON.stringify(out) + "\n");
       break;
     }
+    case "correct-severity": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || args.commentId === void 0 || !args.threadId || !args.contentFile) {
+        failUsage("correct-severity missing required parameters");
+      }
+      const out = correctSeverity({
+        repo: args.repo,
+        pr: args.pr,
+        head: args.head,
+        engine: args.engine,
+        round: args.round,
+        fingerprint: args.fingerprint,
+        occurrence: args.occurrence,
+        from: args.fromSeverity,
+        severity: args.severity,
+        commentId: args.commentId,
+        threadId: args.threadId,
+        contentFile: args.contentFile
+      });
+      process.stdout.write(JSON.stringify(out) + "\n");
+      break;
+    }
     case "dispose": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || !args.outcome || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("dispose missing required parameters");
+        failUsage("dispose missing required parameters");
       }
       const out = dispose({
         repo: args.repo,
@@ -22387,7 +23411,7 @@ function runCliCommand(argv) {
     }
     case "reply": {
       if (!args.repo || args.pr === void 0 || !args.head || args.commentId === void 0 || !args.bodyFile && !args.contentFile) {
-        fail(
+        failUsage(
           "reply requires --repo, --pr, --head, --comment-id, and --body-file or --content-file"
         );
       }
@@ -22408,7 +23432,9 @@ function runCliCommand(argv) {
     }
     case "post-pr-comment": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.bodyFile) {
-        fail("post-pr-comment requires --repo, --pr, --head, and --body-file");
+        failUsage(
+          "post-pr-comment requires --repo, --pr, --head, and --body-file"
+        );
       }
       const out = postPrComment({
         repo: args.repo,
@@ -22421,14 +23447,14 @@ function runCliCommand(argv) {
     }
     case "classify-effect": {
       if (!args.base || !args.head) {
-        fail("classify-effect requires --base and --head");
+        failUsage("classify-effect requires --base and --head");
       }
       writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
     }
     case "validate-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile) {
-        fail("validate-result missing required arguments");
+        failUsage("validate-result missing required arguments");
       }
       const out = validateResult({
         head: args.head,
@@ -22445,7 +23471,7 @@ function runCliCommand(argv) {
     case "recover-result":
     case "write-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.repo || args.pr === void 0) {
-        fail("write-result missing required arguments");
+        failUsage("write-result missing required arguments");
       }
       const params = {
         head: args.head,
@@ -22462,7 +23488,7 @@ function runCliCommand(argv) {
         classification: args.classification
       };
       if (args.command === "recover-result" && (!args.expectedRecoverySha256 || args.classification !== void 0)) {
-        fail(
+        failUsage(
           "recover-result requires --expected-recovery-sha256 and reads classification from the saved candidate"
         );
       }
@@ -22475,7 +23501,7 @@ function runCliCommand(argv) {
     }
     case "check-blocked-round": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before) {
-        fail(
+        failUsage(
           "check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before"
         );
       }
@@ -22496,7 +23522,7 @@ function runCliCommand(argv) {
     }
     case "write-blocked-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.blockerFile) {
-        fail("write-blocked-result missing required arguments");
+        failUsage("write-blocked-result missing required arguments");
       }
       const out = writeBlockedResult({
         head: args.head,
@@ -22512,12 +23538,12 @@ function runCliCommand(argv) {
     }
     case "finalize": {
       if (!args.repo || args.pr === void 0 || !args.resultFile) {
-        fail(
+        failUsage(
           "finalize requires --repo, --pr, and --result-file; reuse the original pre-pass historical-comment-ids file when present"
         );
       }
       if (args.head || args.base || args.before || args.engine || args.round !== void 0 || args.expectedResultSha256) {
-        fail(
+        failUsage(
           "finalize reads identity and digest from the saved result; use attest for explicit identity checks"
         );
       }
@@ -22537,7 +23563,7 @@ function runCliCommand(argv) {
     }
     case "attest": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.expectedResultSha256) {
-        fail(
+        failUsage(
           "attest requires --repo, --pr, --head, --engine, --round, --base, --before, --result-file, and --expected-result-sha256"
         );
       }
@@ -22563,7 +23589,7 @@ function runCliCommand(argv) {
     }
     case "resolve": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.threadId) {
-        fail("resolve requires --repo, --pr, --head, and --thread-id");
+        failUsage("resolve requires --repo, --pr, --head, and --thread-id");
       }
       const out = resolve({
         repo: args.repo,
@@ -22576,7 +23602,7 @@ function runCliCommand(argv) {
     }
     case "reconcile": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.fingerprint) {
-        fail("reconcile requires --repo, --pr, --head, and --fingerprint");
+        failUsage("reconcile requires --repo, --pr, --head, and --fingerprint");
       }
       const out = reconcile({
         repo: args.repo,
@@ -22589,7 +23615,7 @@ function runCliCommand(argv) {
     }
     case "verify-ledger": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail("verify-ledger requires --repo, --pr, and --head");
+        failUsage("verify-ledger requires --repo, --pr, and --head");
       }
       const out = verifyLedger({
         repo: args.repo,
@@ -22612,7 +23638,7 @@ function runCliCommand(argv) {
     }
     case "post-roster": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.author || args.reviewers === void 0 || !args.contentFile) {
-        fail(
+        failUsage(
           "post-roster requires --repo, --pr, --head, --author, --reviewers, and --content-file"
         );
       }
@@ -22630,7 +23656,7 @@ function runCliCommand(argv) {
     }
     case "read-roster": {
       if (!args.repo || args.pr === void 0) {
-        fail("read-roster requires --repo and --pr");
+        failUsage("read-roster requires --repo and --pr");
       }
       const out = readRoster({
         repo: args.repo,
@@ -22643,7 +23669,7 @@ function runCliCommand(argv) {
     case "coverage":
     case "verify-coverage": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail(`${args.command} requires --repo, --pr, and --head`);
+        failUsage(`${args.command} requires --repo, --pr, and --head`);
       }
       const run = args.command === "coverage" ? coverage : verifyCoverage;
       const out = run({
@@ -22673,10 +23699,10 @@ function runCliCommand(argv) {
     }
     case "enrich-telemetry-duration": {
       if (args.dryRun)
-        fail("enrich-telemetry-duration does not support --dry-run");
+        failUsage("enrich-telemetry-duration does not support --dry-run");
       const durationSeconds = parseDurationSeconds(args.durationSeconds);
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey || !args.engineRaw || args.round === void 0 || !args.base || !args.head || durationSeconds === null) {
-        fail(
+        failUsage(
           "enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds"
         );
       }
@@ -22697,7 +23723,7 @@ function runCliCommand(argv) {
     }
     case "replay-telemetry": {
       if (!args.repo || !args.file)
-        fail("replay-telemetry requires --repo and --file");
+        failUsage("replay-telemetry requires --repo and --file");
       const record = validateTelemetryRecord(
         readJsonFile(args.file, "metrics recovery record")
       );
@@ -22722,7 +23748,7 @@ function runCliCommand(argv) {
     case "metrics-setup":
     case "metrics-rotate": {
       if (!args.repo || args.dryRun)
-        fail(
+        failUsage(
           "metrics setup/rotation requires --repo and does not support --dry-run"
         );
       process.stderr.write(
@@ -22735,7 +23761,9 @@ function runCliCommand(argv) {
     }
     case "telemetry-recorded": {
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey)
-        fail("telemetry-recorded requires --repo, --pr, and --idempotency-key");
+        failUsage(
+          "telemetry-recorded requires --repo, --pr, and --idempotency-key"
+        );
       writeSortedJson({
         recorded: telemetryRecorded({
           repo: args.repo,
@@ -22819,19 +23847,19 @@ function runCliCommand(argv) {
     case "report":
     case "export": {
       if (!args.repo) {
-        fail("export requires --repo");
+        failUsage("export requires --repo");
       }
       const byNumber = args.pr !== void 0 || args.prs !== void 0;
       const byDate = args.since !== void 0 || args.until !== void 0;
       if (byNumber === byDate || args.pr !== void 0 && args.prs !== void 0) {
-        fail(
+        failUsage(
           "export requires exactly one selection: --pr, --prs, or --since and/or --until"
         );
       }
       const since = args.since === void 0 ? void 0 : parseExportBound(args.since, "--since");
       const until = args.until === void 0 ? void 0 : parseExportBound(args.until, "--until");
       if (since !== void 0 && until !== void 0 && since > until) {
-        fail("export --since must not be later than --until");
+        failUsage("export --since must not be later than --until");
       }
       const selection = byNumber ? {
         numbers: args.pr !== void 0 ? [args.pr] : parsePullRequestNumbers(args.prs)
@@ -22869,7 +23897,7 @@ function runCliCommand(argv) {
     case "read-result": {
       const targetFile = args.file ?? args.resultFile;
       if (!targetFile) {
-        fail("read-result requires --file or --result-file");
+        failUsage("read-result requires --file or --result-file");
       }
       const out = readResult(targetFile);
       process.stdout.write(JSON.stringify(out, null, 2) + "\n");
@@ -22878,7 +23906,7 @@ function runCliCommand(argv) {
     case "format-findings": {
       const jsonPath = args.jsonFile ?? args.file;
       if (!jsonPath) {
-        fail("format-findings requires --json-file or --file");
+        failUsage("format-findings requires --json-file or --file");
       }
       assertRegularFile(
         jsonPath,
@@ -22902,13 +23930,30 @@ function runCliCommand(argv) {
     case "summary":
     case "post-summary": {
       if (!args.repo || args.pr === void 0)
-        fail(`${args.command} requires --repo and --pr`);
+        failUsage(`${args.command} requires --repo and --pr`);
       writeSortedJson(silentCommand(args.command, args.repo, args.pr, args));
+      break;
+    }
+    case "export-threads": {
+      if (!args.repo || args.pr === void 0 || !args.threadsFile)
+        failUsage("export-threads requires --repo, --pr, and --threads-file");
+      const bytes = Buffer.from(
+        JSON.stringify(fetchReviewThreadPages(args.repo, args.pr)) + "\n",
+        "utf8"
+      );
+      const sha256 = sha256Bytes(bytes);
+      writeFileSync2(args.threadsFile, bytes, { flag: "wx", mode: 384 });
+      const threads = loadReviewThreads(args.threadsFile, sha256);
+      writeSortedJson({
+        path: args.threadsFile,
+        sha256,
+        threads: threads.length
+      });
       break;
     }
     case "read-ledger": {
       if (!args.repo || args.pr === void 0)
-        fail("read-ledger requires --repo and --pr");
+        failUsage("read-ledger requires --repo and --pr");
       writeSortedJson({
         mode: silentRunner().storeFor(args.repo, args.pr) ? "silent" : "loud",
         review_comments: getReviewComments(args.repo, args.pr),
@@ -22918,7 +23963,7 @@ function runCliCommand(argv) {
       break;
     }
     default:
-      fail(`unknown command: ${args.command}`);
+      failUsage(`unknown command: ${args.command}`);
   }
   return 0;
 }
@@ -22969,7 +24014,14 @@ function localGh(argv) {
     );
     ghArgs = [...ghArgs.slice(0, input), ...ghArgs.slice(input + 2)];
   }
-  process.stdout.write(getGitHubRunner().runGh(ghArgs, payload));
+  const runner = getGitHubRunner();
+  const scope = scopeFromArgv(argv.slice(0, split));
+  const silent = scope !== void 0 && runner instanceof SilentRunner && runner.storeFor(scope.repo, scope.pr) !== null;
+  if (!silent && !isReadOnlyGhCall(ghArgs, payload))
+    fail(
+      "local-gh only reads on a PR whose ledger is hosted; record findings, replies, results and markers with the command the skill step names (post-finding, dispose, write-result, attest), never through local-gh"
+    );
+  process.stdout.write(runner.runGh(ghArgs, payload));
   return 0;
 }
 function commandFromArgv(argv) {
@@ -22980,7 +24032,9 @@ function commandFromArgv(argv) {
     "--truncated",
     "--dry-run",
     "--force-review",
-    "--confirmed"
+    "--confirmed",
+    "--help",
+    "-h"
   ]);
   for (let i = 0; i < argv.length; ) {
     const arg = argv[i];
@@ -22992,6 +24046,36 @@ function commandFromArgv(argv) {
   return void 0;
 }
 function runCli(argv = process.argv.slice(2)) {
+  const help = helpRequest(argv);
+  if (help !== void 0) {
+    process.stdout.write(help);
+    return 0;
+  }
+  try {
+    return dispatchCli(argv);
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw new UsageError(
+        `${error.message}
+${usageHint(commandFromArgv(argv))}`
+      );
+    }
+    throw error;
+  }
+}
+function helpRequest(argv) {
+  const own = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv;
+  const first = commandFromArgv(own);
+  const asked = own.includes("--help") || own.includes("-h") || first === "help";
+  if (!asked) return void 0;
+  const command = first === "help" ? commandFromArgv(own.slice(own.indexOf("help") + 1)) : first;
+  if (command === void 0) return overviewHelp();
+  if (commandSynopsis(command) === void 0)
+    return `unknown subcommand: ${command}
+${overviewHelp()}`;
+  return commandHelp(command);
+}
+function dispatchCli(argv) {
   resetGitHubRunner();
   setGitHubRunner(
     new SilentRunner(

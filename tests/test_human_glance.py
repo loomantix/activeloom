@@ -127,12 +127,12 @@ def _skill(root: str, skill: str) -> str:
 @pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
 def test_the_gate_is_the_first_section_of_every_entry_point(root: str, skill: str) -> None:
     body = _skill(root, skill)
-    first = re.search(r"^## .*$", body, re.M)
-    assert first is not None, f"{root}/{skill} has no sections"
-    assert first.group(0) == GATE_HEADING, (
-        f"{root}/{skill} opens with {first.group(0)!r}; the human-glance gate must run "
-        "before every other step"
-    )
+    sections = re.findall(r"^## .*$", body, re.M)
+    assert sections, f"{root}/{skill} has no sections"
+    if skill in ("critique", "deepcritique", "refactorpass"):
+        assert sections[:2] == ["## Reviewer environment preflight — hard stop", GATE_HEADING]
+    else:
+        assert sections[0] == GATE_HEADING
 
 
 @pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))

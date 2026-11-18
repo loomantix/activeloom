@@ -28,7 +28,11 @@ import {
 } from '../local-store.js';
 import { SilentRunner, type DelegateRunner } from '../silent-runner.js';
 import { postSummary, renderSummary } from '../silent-summary.js';
-import { buildFindingBody, buildDispositionBody } from '../protocol.js';
+import {
+  buildFindingBody,
+  buildDispositionBody,
+  buildSeverityCorrectionBody,
+} from '../protocol.js';
 
 const REPO = 'client/app';
 const PR = 7;
@@ -143,6 +147,10 @@ describe('silent runner', () => {
     });
     expect(result.resolved).toBe(true);
     expect(fetchReviewThreads(REPO, PR)[0]!.isResolved).toBe(true);
+    // Run scoping reads each finding's creation time from the thread nodes.
+    for (const node of fetchReviewThreads(REPO, PR)[0]!.comments.nodes) {
+      expect(typeof node['createdAt']).toBe('string');
+    }
 
     const writes = github.calls.filter((c) =>
       /-X (POST|PATCH|DELETE)|mutation/.test(c),
@@ -484,6 +492,50 @@ describe('silent summary', () => {
     expect(summary.summary).not.toMatch(/<!--|claude|round/i);
   });
 
+  it('renders corrected severity when an upward severity correction precedes the fix', () => {
+    const posted = finding(
+      'null-guard',
+      '**The handler dereferences a null user.**\n\nEvidence.',
+    );
+    const store = new LocalStore(root, REPO, PR);
+    const replies = `repos/${REPO}/pulls/${PR}/comments/${posted.comment_id}/replies`;
+    runner.runGh(['api', '-X', 'POST', replies], {
+      body: buildSeverityCorrectionBody({
+        engine: 'claude',
+        round: 1,
+        head: HEAD,
+        fingerprint: 'null-guard',
+        occurrence: 1,
+        from: 'major',
+        to: 'blocking',
+        content: 'Verified blocking impact.',
+      }).body,
+    });
+    const { threadId } = reconcile({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      fingerprint: 'null-guard',
+    });
+    dispose({
+      repo: REPO,
+      pr: PR,
+      head: HEAD,
+      engine: 'claude',
+      round: 1,
+      fingerprint: 'null-guard',
+      occurrence: 1,
+      outcome: 'fixed',
+      commentId: posted.comment_id,
+      threadId: threadId!,
+      content: `Fixed in ${HEAD}. Added a guard before the dereference.`,
+    });
+    const summary = renderSummary(store, store.read());
+    expect(summary.summary).toContain(
+      '- **blocking** `src/app.ts`: The handler dereferences a null user. Added a guard before the dereference. (1111111)',
+    );
+  });
+
   it('posts only the approved bytes, once', () => {
     closeOne();
     const store = new LocalStore(root, REPO, PR);
@@ -540,6 +592,89 @@ describe('silent summary', () => {
         runCli(['post-summary', ...scope, '--confirmed', ...digest]),
       ).toThrowError(/requires --expected-summary-sha256/);
     });
+  });
+});
+
+describe('local-gh', () => {
+  const HOSTED = 8;
+  const hosted = ['--repo', REPO, '--pr', String(HOSTED), '--'];
+  let sent: string[];
+
+  beforeEach(() => {
+    // Only an explicit pin makes a PR silent here, so PR 8 stays hosted.
+    delete process.env[SILENT_FORCE_ENV];
+    sent = [];
+    vi.spyOn(DefaultGitHubRunner.prototype, 'runGh').mockImplementation(
+      (args) => {
+        sent.push(args.join(' '));
+        return args.join(' ') === 'api user'
+          ? JSON.stringify({ login: 'operator' })
+          : '[]';
+      },
+    );
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [['api', `repos/${REPO}/issues/${HOSTED}/comments`, '--paginate']],
+    [['api', 'graphql', '-f', 'query=query { viewer { login } }']],
+    [['pr', 'view', String(HOSTED)]],
+  ])('passes a read on a hosted PR: %j', (args) => {
+    expect(runCli(['local-gh', ...hosted, ...args])).toBe(0);
+    expect(sent).toContain(args.join(' '));
+  });
+
+  it.each([
+    [
+      [
+        'api',
+        '-X',
+        'POST',
+        `repos/${REPO}/issues/${HOSTED}/comments`,
+        '-f',
+        'body=<!-- local-review-pass:v3 engine=gemini round=1 -->',
+      ],
+    ],
+    [['api', `repos/${REPO}/issues/${HOSTED}/comments`, '-f', 'body=x']],
+    [['pr', 'comment', String(HOSTED), '--body', 'x']],
+    [['pr', 'review', String(HOSTED), '--comment', '--body', 'x']],
+    [['api', 'graphql', '-f', 'query=mutation { x }']],
+    [['api', 'graphql', '--input', '/tmp/query.json']],
+  ])('refuses a write on a hosted PR: %j', (args) => {
+    expect(() => runCli(['local-gh', ...hosted, ...args])).toThrowError(
+      /local-gh only reads on a PR whose ledger is hosted/,
+    );
+    expect(sent).not.toContain(args.join(' '));
+  });
+
+  it('refuses a write that names no PR scope', () => {
+    expect(() =>
+      runCli(['local-gh', '--', 'pr', 'comment', '1', '--body', 'x']),
+    ).toThrowError(/local-gh only reads/);
+  });
+
+  it('keeps a silent PR write local', () => {
+    runner.pin(REPO, PR, 'run-arg');
+    expect(
+      runCli([
+        'local-gh',
+        '--repo',
+        REPO,
+        '--pr',
+        String(PR),
+        '--',
+        'api',
+        `repos/${REPO}/issues/${PR}/comments`,
+        '-f',
+        'body=hello',
+      ]),
+    ).toBe(0);
+    expect(getAllIssueComments(REPO, PR).map((row) => row['body'])).toEqual([
+      'hello',
+    ]);
+    expect(sent.some((call) => call.includes('body=hello'))).toBe(false);
   });
 });
 

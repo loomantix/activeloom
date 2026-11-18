@@ -171,6 +171,26 @@ review-ledger post-finding \
   --content-file ./finding-notes.txt
 ```
 
+### Correct Finding Severity
+
+Append an upward severity correction reply with impact evidence for an unresolved current occurrence before disposition:
+
+```bash
+review-ledger correct-severity \
+  --repo owner/repo \
+  --pr 123 \
+  --head 0123456789abcdef0123456789abcdef01234567 \
+  --engine gemini \
+  --round 3 \
+  --fingerprint auth-token-leak \
+  --occurrence 1 \
+  --from-severity major \
+  --severity blocking \
+  --comment-id 1001 \
+  --thread-id PRRT_kwDO123 \
+  --content-file ./blocking-impact.txt
+```
+
 ### Dispose Finding
 
 Post a disposition reply and resolve the review thread:

@@ -79,7 +79,10 @@ def test_launchers_export_the_preflight_skip_variable(path: str) -> None:
 def test_preflight_follows_the_human_glance_gate(root: str, skill: str) -> None:
     body = (ROOT / root / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
     sections = re.findall(r"^## .*$", body, re.M)
-    expected = 0 if skill == "agent-loop" else 1
+    guarded = skill in ("critique", "deepcritique")
+    expected = 0 if skill == "agent-loop" else 2 if guarded else 1
+    if guarded:
+        assert sections[:2] == ["## Reviewer environment preflight — hard stop", "## Step 0: Human-glance gate"]
     assert sections.index(HEADING) == expected
 
 

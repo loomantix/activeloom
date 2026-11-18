@@ -5,6 +5,8 @@ description: High-fidelity PR-first review chain that opens or reuses a draft PR
 
 # Deep Critique
 
+{{> review/reviewer-environment-preflight}}
+
 {{> review/human-glance-gate}}
 
 ## Review profile preflight
@@ -178,6 +180,12 @@ recovery instead of overwriting the blocker.
 The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
+When `$AGENT_LOOP_REVIEW_RESULT_FILE` is unset, this pass is standalone: after
+the final lane, publish the result with `write-result`, `validate-result`,
+`export-threads` and `attest`, exactly as `critique`'s Ledger commands section
+writes them, and report the pass complete only once `attest` prints
+`verified: true`.
+
 ```text
 Deep critique pass complete.
 PR: #<pr-number>
@@ -192,7 +200,8 @@ Next:
   A fix invalidates only the attestations naming the superseded head; an engine
   that already attested this head does not re-run.
   Mark ready only after verify-coverage passes at the exact head, that round
-  produced no material fix, and every local-review thread is resolved.
+  has no material fix awaiting an independent non-material pass, and every
+  local-review thread is resolved.
 ```
 
 A clean convergence pass returns to the controller for remaining exact-head

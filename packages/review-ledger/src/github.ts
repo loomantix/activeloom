@@ -1189,6 +1189,14 @@ export function fetchReviewThreads(
   repo: string,
   pr: number,
 ): GitHubReviewThreadNode[] {
+  return parseReviewThreadPages(fetchReviewThreadPages(repo, pr));
+}
+
+/**
+ * Fetch the raw paginated review-thread response, the exact shape a sealed
+ * `--threads-file` snapshot holds. Validated before it is returned.
+ */
+export function fetchReviewThreadPages(repo: string, pr: number): unknown[] {
   const parts = repo.split('/');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     fail('--repo must be OWNER/REPO');
@@ -1205,7 +1213,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
           repository { nameWithOwner }
           pullRequest { number }
           comments(first:100) {
-            nodes { databaseId body author { login } }
+            nodes { databaseId body createdAt author { login } }
             pageInfo { hasNextPage }
           }
         }
@@ -1231,7 +1239,8 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     `number=${pr}`,
   ]);
 
-  return parseReviewThreadPages(pages);
+  parseReviewThreadPages(pages);
+  return pages;
 }
 
 /** Find the review thread whose first comment is `rootCommentId`. */

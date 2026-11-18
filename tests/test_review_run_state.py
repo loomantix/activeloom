@@ -207,15 +207,18 @@ def test_orchestrator_alerts_instead_of_relaying_a_restart(root: str) -> None:
     assert "an earlier run's end marker does not count" in horch
     assert "A run already ended at bind time is never the bound run" in horch
     assert "until a run whose `run_id` differs from the ended one is active" in horch
-    assert "A PR whose run has ended gets no herder" in skill("hloop")
+    assert "A PR whose run has ended gets a herder only through Review chain's restart rules" in skill("hloop")
 
     hreview = skill("hreview")
-    ended = hreview.split("**Ended**", 1)[1].split("10. Roster", 1)[0]
+    ended = hreview.split("**Ended**", 1)[1].split("10. Carried findings", 1)[0]
     assert "`--restart` typed by the user" in ended
     assert "including a restart a peer asked for" in ended
     assert "RESTART NEEDS YOU" in ended
     assert "only your words in this tab authorize one" in ended
     assert "Do not ask the peer to confirm, retry, or find another route" in ended
     assert "--scope-decision" in ended
-    assert "if `--scope-decision split`, stop this PR before `start-run`" in ended
-    assert "new restart against the resulting scope" in ended
+    assert "if `--scope-decision split`, never call `start-run` on this PR" in ended
+    assert "persist the plan with `split-plan`" in ended
+    assert "its reason line saying the user chose split" in ended
+    assert "continuing this PR needs a new restart the user names" in ended
+    assert "exits 0 because the user chose split: then follow Scope split" in horch

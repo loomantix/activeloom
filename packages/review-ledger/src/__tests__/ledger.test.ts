@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  correctSeverity,
+  revalidateOccurrence,
+  matchRevalidation,
   dispose,
   postFinding,
   preflightAnchor,
@@ -7,6 +10,7 @@ import {
   preflightPublish,
   buildFindingBody,
   buildDispositionBody,
+  buildSeverityCorrectionBody,
   sha256Text,
   reconcile,
   reopenOccurrence,
@@ -93,6 +97,7 @@ class MockGitHubRunner implements GitHubRunner {
         path?: string;
         line?: number;
         side?: string;
+        in_reply_to_id?: number;
       };
       const row = {
         id,
@@ -104,6 +109,9 @@ class MockGitHubRunner implements GitHubRunner {
         path: data?.path,
         line: data?.line,
         side: data?.side,
+        in_reply_to_id: cmd.includes('/replies')
+          ? Number(args[3]?.split('/').at(-2))
+          : data?.in_reply_to_id,
       };
       if (cmd.includes('/pulls/')) {
         this.reviewComments.push(row);
@@ -173,7 +181,10 @@ class MockGitHubRunner implements GitHubRunner {
           },
         });
       }
-      if (p?.query?.includes('resolveReviewThread')) {
+      if (
+        p?.query?.includes('resolveReviewThread') &&
+        !p.query.includes('unresolveReviewThread')
+      ) {
         const t = this.threads.find((th) => th.id === p.variables?.threadId);
         if (t) t.isResolved = true;
         return JSON.stringify({
@@ -233,6 +244,541 @@ describe('ledger operations and workflow verification', () => {
   });
 
   afterEach(() => resetGitHubRunner());
+
+  describe('carry-forward revalidation', () => {
+    const oldHead = '3333333333333333333333333333333333333333';
+    const params = {
+      repo: 'example/project',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 1,
+      fingerprint: 'inherited',
+      occurrence: 1,
+      commentId: 101,
+      threadId: 'carry-thread',
+      content: `The defect remains reachable at ${headSha}: the same input bypasses the guard.\n`,
+    };
+    function run(cap = 4, actor = mock.actor) {
+      const content = 'Authorized review run.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: cap,
+          start_head: headSha,
+          supersedes: null,
+          tier: 'deep',
+        }),
+      );
+      mock.issueComments = [
+        {
+          id: 50,
+          user: { login: actor },
+          body: `<!-- local-review-run:v1 id=${digest} tier=deep max-rounds=${cap} base=${mock.prBase} start-head=${headSha} supersedes=none content-sha256=${digest} -->\n${content}`,
+        },
+      ];
+    }
+    function syncThread() {
+      mock.threads[0]!.comments.nodes = mock.reviewComments.map((row) => ({
+        ...row,
+        databaseId: row['id'] as number,
+        author: row['user'] as { login: string },
+      }));
+    }
+    beforeEach(() => {
+      run();
+      const finding = buildFindingBody({
+        ...params,
+        head: oldHead,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'Original reproduction.\n',
+      });
+      mock.reviewComments = [
+        {
+          id: 101,
+          user: { login: mock.actor },
+          body: finding.body,
+          createdAt: '2025-01-01T00:00:00Z',
+        },
+      ];
+      mock.threads = [
+        {
+          id: params.threadId,
+          isResolved: false,
+          repository: { nameWithOwner: params.repo },
+          pullRequest: { number: params.pr },
+          comments: { nodes: [], pageInfo: { hasNextPage: false } },
+        },
+      ];
+      syncThread();
+    });
+
+    it('revalidates, authorizes, publishes, disposes, verifies and writes the current-head result without changing history or budget', () => {
+      const original = structuredClone(mock.reviewComments[0]);
+      const budget = structuredClone(mock.issueComments);
+      const receipt = revalidateOccurrence(params);
+      expect(receipt).toMatchObject({ verified: true, replayed: false });
+      expect(revalidateOccurrence(params)).toMatchObject({ replayed: true });
+      expect(mock.reviewComments).toHaveLength(2);
+      expect(mock.reviewComments[0]).toEqual(original);
+      expect(mock.issueComments).toEqual(budget);
+      expect(preflightFix(params)).toMatchObject({
+        severity: 'blocking',
+        verified: true,
+      });
+      expect(
+        preflightPublish({
+          ...params,
+          findings: [{ fingerprint: params.fingerprint, occurrence: 1 }],
+        }),
+      ).toMatchObject({ verified: true });
+      syncThread();
+      expect(reconcile(params)).toMatchObject({
+        ledgerValid: true,
+        undisposedOccurrences: [1],
+        findings: [{ head: headSha, occurrence: 1 }],
+        revalidations: [{ fromHead: oldHead, head: headSha, maxRounds: 4 }],
+      });
+      expect(() =>
+        dispose({
+          ...params,
+          outcome: 'fixed',
+          content: 'A false same-head fix.\n',
+        }),
+      ).toThrow(/published forward fix head/);
+      const after = '4444444444444444444444444444444444444444';
+      mock.prHead = after;
+      dispose({
+        ...params,
+        head: after,
+        outcome: 'fixed',
+        content: 'Fixed the guard and verified the reproduction.\n',
+      });
+      syncThread();
+      expect(verifyLedger({ ...params, head: after })).toMatchObject({
+        verified: true,
+      });
+      const resultFile = join(tmpdir(), `carry-result-${process.pid}.json`);
+      try {
+        expect(
+          writeResult({
+            ...params,
+            head: after,
+            before: headSha,
+            base: mock.prBase,
+            classification: 'material',
+            resultFile,
+          }),
+        ).toMatchObject({
+          status: 'changed',
+          findingFingerprints: ['inherited'],
+        });
+      } finally {
+        if (existsSync(resultFile)) unlinkSync(resultFile);
+      }
+      expect(mock.reviewComments[0]).toEqual(original);
+      expect(mock.issueComments).toEqual(budget);
+      // A real recurrence remains available after the carried occurrence is settled.
+      reopenOccurrence({
+        ...params,
+        head: after,
+        occurrence: 2,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'A later recurrence.\n',
+      });
+      syncThread();
+      expect(reconcile({ ...params, head: after })).toMatchObject({
+        ledgerValid: true,
+        undisposedOccurrences: [2],
+      });
+    });
+
+    it.each([
+      'foreign-finding',
+      'foreign-run',
+      'no-run',
+      'ended-run',
+      'stale-head',
+      'same-head',
+      'duplicate-root',
+      'disposed',
+      'fabricated-disposition',
+      'cap-change',
+      'round-cap',
+      'wrong-thread',
+      'empty-evidence',
+    ])('rejects %s without writing', (scenario) => {
+      let request = { ...params };
+      if (scenario === 'foreign-finding')
+        mock.reviewComments[0]!['user'] = { login: 'other-actor' };
+      if (scenario === 'foreign-run') run(4, 'other-actor');
+      if (scenario === 'no-run') mock.issueComments = [];
+      if (scenario === 'ended-run') {
+        const id = /id=([a-f0-9]+)/.exec(
+          String(mock.issueComments[0]!['body']),
+        )![1];
+        mock.issueComments.push({
+          id: 51,
+          user: { login: mock.actor },
+          body: `<!-- local-review-run-end:v1 id=${id} outcome=aborted head=${headSha} -->\nStopped.\n`,
+        });
+      }
+      if (scenario === 'stale-head') request.head = oldHead;
+      if (scenario === 'same-head') mock.prHead = request.head = oldHead;
+      if (scenario === 'duplicate-root')
+        mock.reviewComments.push({ ...mock.reviewComments[0]!, id: 102 });
+      if (scenario === 'disposed' || scenario === 'fabricated-disposition') {
+        mock.reviewComments.push({
+          id: 103,
+          user: { login: mock.actor },
+          body: buildDispositionBody({
+            ...params,
+            head: oldHead,
+            round: scenario === 'disposed' ? 1 : 2,
+            outcome: 'fixed',
+            content: 'Claimed fixed.\n',
+          }).body,
+        });
+      }
+      if (scenario === 'cap-change') run(3);
+      if (scenario === 'round-cap') request.round = 5;
+      if (scenario === 'wrong-thread') request.threadId = 'unrelated';
+      if (scenario === 'empty-evidence') request.content = ' \n';
+      syncThread();
+      const before = structuredClone(mock.reviewComments);
+      expect(() => revalidateOccurrence(request)).toThrow();
+      expect(mock.reviewComments).toEqual(before);
+    });
+
+    it('rejects tampered run-cap evidence in every reader and fix gate', () => {
+      revalidateOccurrence(params);
+      const row = mock.reviewComments[1]!;
+      row['body'] = String(row['body']).replace(
+        '"maxRounds":4',
+        '"maxRounds":3',
+      );
+      syncThread();
+      expect(() => preflightFix(params)).toThrow(/cap|run/);
+      expect(() => reconcile(params)).toThrow(/cap|run/);
+      expect(() => verifyLedger(params)).toThrow(/cap|run/);
+    });
+
+    it('keeps the source marker and upward severity correction when revalidating', () => {
+      mock.prHead = oldHead;
+      mock.reviewComments[0]!['body'] = buildFindingBody({
+        ...params,
+        head: oldHead,
+        severity: 'major',
+        lens: 'correctness',
+        content: 'Original major finding.\n',
+      }).body;
+      syncThread();
+      correctSeverity({
+        ...params,
+        head: oldHead,
+        severity: 'blocking',
+        from: 'major',
+        content: 'Blocking impact.\n',
+      });
+      const history = structuredClone(mock.reviewComments);
+      mock.prHead = headSha;
+      revalidateOccurrence(params);
+      expect(preflightFix(params)).toMatchObject({ severity: 'blocking' });
+      expect(mock.reviewComments.slice(0, 2)).toEqual(history);
+      expect(
+        matchRevalidation(String(mock.reviewComments[2]!['body'])),
+      ).toMatchObject({ head: headSha, fromHead: oldHead });
+    });
+
+    it('can recover an undisposed carried finding after restart at the same head', () => {
+      revalidateOccurrence(params);
+      const oldRunId = /id=([a-f0-9]+)/.exec(
+        String(mock.issueComments[0]!['body']),
+      )![1];
+      mock.issueComments.push({
+        id: 51,
+        user: { login: mock.actor },
+        body: `<!-- local-review-run-end:v1 id=${oldRunId} outcome=aborted head=${headSha} -->`,
+      });
+      const content = 'Authorized restart after interruption.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 4,
+          start_head: headSha,
+          supersedes: 50,
+          tier: 'deep',
+        }),
+      );
+      mock.issueComments.push({
+        id: 52,
+        user: { login: mock.actor },
+        body: `<!-- local-review-run:v1 id=${digest} tier=deep max-rounds=4 base=${mock.prBase} start-head=${headSha} supersedes=50 content-sha256=${digest} -->\n${content}`,
+      });
+      expect(() => preflightFix(params)).toThrow(
+        /different active run or pass/,
+      );
+      expect(() => revalidateOccurrence(params)).not.toThrow();
+      expect(preflightFix(params)).toMatchObject({ verified: true });
+      expect(revalidateOccurrence(params)).toMatchObject({ replayed: true });
+      expect(() => revalidateOccurrence({ ...params, round: 2 })).toThrow(
+        /forward head transition/,
+      );
+      const after = '4444444444444444444444444444444444444444';
+      mock.prHead = after;
+      dispose({
+        ...params,
+        head: after,
+        outcome: 'fixed',
+        content: 'Fixed after the authorized restart.\n',
+      });
+      syncThread();
+      expect(verifyLedger({ ...params, head: after })).toMatchObject({
+        verified: true,
+      });
+      const resultFile = join(tmpdir(), `restart-result-${process.pid}.json`);
+      try {
+        expect(
+          writeResult({
+            ...params,
+            head: after,
+            before: headSha,
+            base: mock.prBase,
+            classification: 'material',
+            resultFile,
+          }),
+        ).toMatchObject({
+          status: 'changed',
+          findingFingerprints: ['inherited'],
+        });
+      } finally {
+        if (existsSync(resultFile)) unlinkSync(resultFile);
+      }
+    });
+
+    it('carries an uncarried finding into a run restarted at its own head', () => {
+      // Run A posts the finding at H and aborts; run B restarts at the same H.
+      mock.reviewComments[0]!['body'] = buildFindingBody({
+        ...params,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'Original reproduction.\n',
+      }).body;
+      mock.reviewComments[0]!['createdAt'] = '2025-01-02T00:00:00Z';
+      mock.reviewComments[0]!['created_at'] = '2025-01-02T00:00:00Z';
+      mock.issueComments[0]!['created_at'] = '2025-01-01T00:00:00Z';
+      syncThread();
+      // Inside run A an unchanged head is still not a carry.
+      expect(() => revalidateOccurrence(params)).toThrow(
+        /forward head transition/,
+      );
+      const oldRunId = /id=([a-f0-9]+)/.exec(
+        String(mock.issueComments[0]!['body']),
+      )![1];
+      mock.issueComments.push({
+        id: 51,
+        user: { login: mock.actor },
+        created_at: '2025-01-03T00:00:00Z',
+        body: `<!-- local-review-run-end:v1 id=${oldRunId} outcome=aborted head=${headSha} -->`,
+      });
+      const content = 'Authorized restart after interruption.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 4,
+          start_head: headSha,
+          supersedes: 50,
+          tier: 'deep',
+        }),
+      );
+      mock.issueComments.push({
+        id: 52,
+        user: { login: mock.actor },
+        created_at: '2025-01-04T00:00:00Z',
+        body: `<!-- local-review-run:v1 id=${digest} tier=deep max-rounds=4 base=${mock.prBase} start-head=${headSha} supersedes=50 content-sha256=${digest} -->\n${content}`,
+      });
+      const history = structuredClone(mock.reviewComments);
+      expect(revalidateOccurrence(params)).toMatchObject({
+        verified: true,
+        replayed: false,
+      });
+      mock.reviewComments[1]!['created_at'] = '2025-01-05T00:00:00Z';
+      mock.reviewComments[1]!['createdAt'] = '2025-01-05T00:00:00Z';
+      expect(mock.reviewComments.slice(0, 1)).toEqual(history);
+      expect(revalidateOccurrence(params)).toMatchObject({ replayed: true });
+      expect(() => revalidateOccurrence({ ...params, round: 2 })).toThrow(
+        /forward head transition/,
+      );
+      expect(preflightFix(params)).toMatchObject({ verified: true });
+      const after = '4444444444444444444444444444444444444444';
+      mock.prHead = after;
+      dispose({
+        ...params,
+        head: after,
+        outcome: 'fixed',
+        content: 'Fixed after the authorized restart.\n',
+      });
+      syncThread();
+      expect(verifyLedger({ ...params, head: after })).toMatchObject({
+        verified: true,
+      });
+      const resultFile = join(tmpdir(), `uncarried-result-${process.pid}.json`);
+      try {
+        expect(
+          writeResult({
+            ...params,
+            head: after,
+            before: headSha,
+            base: mock.prBase,
+            classification: 'material',
+            resultFile,
+          }),
+        ).toMatchObject({
+          status: 'changed',
+          findingFingerprints: ['inherited'],
+        });
+      } finally {
+        if (existsSync(resultFile)) unlinkSync(resultFile);
+      }
+    });
+
+    it('refuses an unchanged-head carry when the finding or run lacks a timestamp', () => {
+      mock.reviewComments[0]!['body'] = buildFindingBody({
+        ...params,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'Original reproduction.\n',
+      }).body;
+      delete mock.reviewComments[0]!['createdAt'];
+      syncThread();
+      expect(() => revalidateOccurrence(params)).toThrow(
+        /forward head transition/,
+      );
+      expect(mock.reviewComments).toHaveLength(1);
+    });
+
+    it('can revalidate again at a later head without inventing a new occurrence', () => {
+      const original = structuredClone(mock.reviewComments[0]);
+      revalidateOccurrence(params);
+      const nextHead = '4444444444444444444444444444444444444444';
+      mock.prHead = nextHead;
+      revalidateOccurrence({
+        ...params,
+        head: nextHead,
+        round: 3,
+        content: `The same defect still reproduces at ${nextHead}.\n`,
+      });
+      expect(mock.reviewComments).toHaveLength(3);
+      expect(mock.reviewComments[0]).toEqual(original);
+      expect(
+        preflightFix({ ...params, head: nextHead, round: 3 }),
+      ).toMatchObject({ stance: 'convergence', severity: 'blocking' });
+      expect(() => preflightFix({ ...params, head: nextHead })).toThrow(
+        /different active run or pass/,
+      );
+    });
+
+    it.each([
+      'fromHead',
+      'head',
+      'runId',
+      'severity',
+      'reply-root',
+      'content-hash',
+    ])('rejects mismatched or fabricated %s evidence', (field) => {
+      revalidateOccurrence(params);
+      const row = mock.reviewComments[1]!;
+      const [marker, ...content] = String(row['body']).split('\n');
+      const record = matchRevalidation(String(row['body']))!;
+      const changed = { ...record } as Record<string, unknown>;
+      if (field === 'fromHead') changed['fromHead'] = headSha;
+      if (field === 'head') changed['head'] = oldHead;
+      if (field === 'runId') changed['runId'] = '0'.repeat(64);
+      if (field === 'severity') changed['severity'] = 'minor';
+      if (field === 'reply-root') row['in_reply_to_id'] = 999;
+      if (field === 'content-hash')
+        row['body'] = `${marker}\nDifferent reproduction.\n`;
+      else
+        row['body'] =
+          `<!-- local-review-revalidation:v1 ${JSON.stringify(changed, Object.keys(changed).sort())} -->\n${content.join('\n')}`;
+      syncThread();
+      expect(() => preflightFix(params)).toThrow();
+      expect(() => reconcile(params)).toThrow();
+    });
+
+    it('refuses a fabricated disposition after revalidation and leaves the run cap alone', () => {
+      revalidateOccurrence(params);
+      mock.reviewComments.push({
+        id: 301,
+        user: { login: mock.actor },
+        body: buildDispositionBody({
+          ...params,
+          round: 2,
+          outcome: 'fixed',
+          content: 'Invented outcome.\n',
+        }).body,
+      });
+      expect(() => preflightFix(params)).toThrow(/fabricated disposition/);
+      expect(() => reconcile(params)).toThrow(/fabricated disposition/);
+      syncThread();
+      expect(() => verifyLedger(params)).toThrow(/fabricated disposition/);
+    });
+  });
+
+  it('reproduces the undisposed earlier-head blocker deadlock in both existing commands', () => {
+    const oldHead = '3333333333333333333333333333333333333333';
+    const finding = buildFindingBody({
+      engine: 'codex',
+      round: 1,
+      head: oldHead,
+      fingerprint: 'inherited',
+      occurrence: 1,
+      severity: 'blocking',
+      lens: 'correctness',
+      content: 'The defect still reproduces at the next head.\n',
+    });
+    mock.reviewComments.push({
+      id: 101,
+      user: { login: mock.actor },
+      body: finding.body,
+    });
+    expect(() =>
+      reopenOccurrence({
+        repo: 'example/project',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 1,
+        fingerprint: 'inherited',
+        occurrence: 2,
+        severity: 'blocking',
+        lens: 'correctness',
+        commentId: 101,
+        threadId: 'thread',
+        content: 'Still reachable.\n',
+      }),
+    ).toThrow(
+      'every prior finding occurrence must have exactly one disposition',
+    );
+    expect(() =>
+      preflightFix({
+        repo: 'example/project',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 1,
+        fingerprint: 'inherited',
+        occurrence: 1,
+      }),
+    ).toThrow('requires exactly one authenticated finding at this head');
+    expect(mock.reviewComments).toHaveLength(1);
+    expect(mock.reviewComments[0]!.body).toBe(finding.body);
+  });
 
   it('verifies anchor with preflightAnchor', () => {
     const res = preflightAnchor({
@@ -795,5 +1341,368 @@ describe('ledger operations and workflow verification', () => {
     } finally {
       if (existsSync(resultFile)) unlinkSync(resultFile);
     }
+  });
+
+  it('appends verified upward severity corrections for unresolved findings and unlocks convergence fix gates only for the corrected finding', () => {
+    const postRes1 = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'security',
+      content: 'Initial major finding prose.',
+    });
+    const postRes2 = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-still-major',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'correctness',
+      content: 'Unrelated major finding prose.',
+    });
+
+    mock.threads.push(
+      {
+        id: 'PRRT_escalated',
+        isResolved: false,
+        repository: { nameWithOwner: 'loomantix/platform-oss' },
+        pullRequest: { number: 10 },
+        comments: {
+          nodes: [{ databaseId: postRes1.comment_id }],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+      {
+        id: 'PRRT_still_major',
+        isResolved: false,
+        repository: { nameWithOwner: 'loomantix/platform-oss' },
+        pullRequest: { number: 10 },
+        comments: {
+          nodes: [{ databaseId: postRes2.comment_id }],
+          pageInfo: { hasNextPage: false },
+        },
+      },
+    );
+
+    // Before correction, convergence preflight refuses the major finding.
+    expect(() =>
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-escalated occurrence 1 is major/,
+    );
+
+    const originalRootBody = String(mock.reviewComments[0]!['body']);
+    const corrRes = correctSeverity({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      from: 'major',
+      severity: 'blocking',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content:
+        'Verified unauthenticated callers reach the write path and corrupt persistent records.',
+    });
+
+    expect(corrRes).toEqual({
+      comment_id: expect.any(Number),
+      from_severity: 'major',
+      severity: 'blocking',
+      replayed: false,
+      thread_replayed: true,
+      resolved: false,
+      verified: true,
+    });
+    // Original finding marker and comment body are preserved verbatim.
+    expect(mock.reviewComments[0]!['body']).toBe(originalRootBody);
+    expect(mock.threads[0]!.isResolved).toBe(false);
+
+    // Idempotent replay does not duplicate the correction comment.
+    const countAfterFirst = mock.reviewComments.length;
+    const replayRes = correctSeverity({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'blocking',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content:
+        'Verified unauthenticated callers reach the write path and corrupt persistent records.',
+    });
+    expect(replayRes.replayed).toBe(true);
+    expect(replayRes.comment_id).toBe(corrRes.comment_id);
+    expect(mock.reviewComments.length).toBe(countAfterFirst);
+
+    // Now preflightFix and preflightPublish authorize ONLY fp-escalated.
+    expect(
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+      }),
+    ).toEqual({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      severity: 'blocking',
+      stance: 'convergence',
+      verified: true,
+    });
+
+    expect(
+      preflightPublish({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        findings: [{ fingerprint: 'fp-escalated', occurrence: 1 }],
+      }).findings,
+    ).toEqual([
+      { fingerprint: 'fp-escalated', occurrence: 1, severity: 'blocking' },
+    ]);
+
+    // Uncorrected major finding on the same PR is still refused.
+    expect(() =>
+      preflightFix({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-still-major',
+        occurrence: 1,
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-still-major occurrence 1 is major/,
+    );
+    expect(() =>
+      preflightPublish({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        findings: [
+          { fingerprint: 'fp-escalated', occurrence: 1 },
+          { fingerprint: 'fp-still-major', occurrence: 1 },
+        ],
+      }),
+    ).toThrowError(
+      /convergence fixes require a posted blocking finding; fp-still-major occurrence 1 is major/,
+    );
+
+    // Reconcile reflects effective blocking severity and the correction record.
+    const reconciled = reconcile({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      fingerprint: 'fp-escalated',
+    });
+    expect(reconciled.ledgerValid).toBe(true);
+    expect(reconciled.nextAction).toBe('dispose');
+    expect(reconciled.findings[0]!['severity']).toBe('blocking');
+    expect(reconciled.severityCorrections).toHaveLength(1);
+
+    // Deferring or dismissing the corrected blocker is rejected.
+    expect(() =>
+      dispose({
+        repo: 'loomantix/platform-oss',
+        pr: 10,
+        head: headSha,
+        engine: 'codex',
+        round: 3,
+        fingerprint: 'fp-escalated',
+        occurrence: 1,
+        outcome: 'deferred',
+        commentId: postRes1.comment_id,
+        threadId: 'PRRT_escalated',
+        content: 'Attempted deferral.',
+      }),
+    ).toThrowError('blocking local-review findings must be fixed');
+
+    // Fixing the corrected blocker succeeds.
+    const dispRes = dispose({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-escalated',
+      occurrence: 1,
+      outcome: 'fixed',
+      commentId: postRes1.comment_id,
+      threadId: 'PRRT_escalated',
+      content: 'Fixed by enforcing authentication before handler execution.',
+    });
+    expect(dispRes.resolved).toBe(true);
+  });
+
+  it('fails closed on invalid severity correction attempts and reconciles corrupted corrections', () => {
+    const postRes = postFinding({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      path: 'src/index.ts',
+      line: 2,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      severity: 'major',
+      lens: 'security',
+      content: 'Initial major finding.',
+    });
+    mock.threads.push({
+      id: 'PRRT_guard',
+      isResolved: false,
+      repository: { nameWithOwner: 'loomantix/platform-oss' },
+      pullRequest: { number: 10 },
+      comments: {
+        nodes: [{ databaseId: postRes.comment_id }],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+
+    const baseParams = {
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex' as const,
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      commentId: postRes.comment_id,
+      threadId: 'PRRT_guard',
+      content: 'Impact evidence.',
+    };
+
+    // Lowering or same-severity attempts fail closed.
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'minor' }),
+    ).toThrowError('severity correction must increase severity');
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'major' }),
+    ).toThrowError('severity correction must increase severity');
+
+    // Wrong from-severity fails closed.
+    expect(() =>
+      correctSeverity({ ...baseParams, from: 'minor', severity: 'blocking' }),
+    ).toThrowError(
+      'severity correction from=minor does not match current finding severity major',
+    );
+
+    // Wrong engine, round, occurrence, or root commentId fail closed.
+    expect(() =>
+      correctSeverity({
+        ...baseParams,
+        engine: 'claude',
+        severity: 'blocking',
+      }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({ ...baseParams, round: 2, severity: 'blocking' }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({ ...baseParams, occurrence: 2, severity: 'blocking' }),
+    ).toThrowError(
+      'severity correction does not identify an existing finding occurrence at this head, engine, and round',
+    );
+    expect(() =>
+      correctSeverity({ ...baseParams, commentId: 999, severity: 'blocking' }),
+    ).toThrowError('--comment-id is not the root comment of --thread-id');
+
+    // Resolved thread fails closed.
+    mock.threads[0]!.isResolved = true;
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'blocking' }),
+    ).toThrowError('cannot correct severity on a resolved review thread');
+    mock.threads[0]!.isResolved = false;
+
+    // Disposed finding fails closed.
+    dispose({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      engine: 'codex',
+      round: 3,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      outcome: 'deferred',
+      commentId: postRes.comment_id,
+      threadId: 'PRRT_guard',
+      content: 'Deferred to follow-up.',
+    });
+    mock.threads[0]!.isResolved = false;
+    expect(() =>
+      correctSeverity({ ...baseParams, severity: 'blocking' }),
+    ).toThrowError('cannot correct severity of a disposed finding');
+
+    // A correction injected after disposition causes reconcile to report repair-sequence.
+    const postDispCorrection = buildSeverityCorrectionBody({
+      engine: 'codex',
+      round: 3,
+      head: headSha,
+      fingerprint: 'fp-guard',
+      occurrence: 1,
+      from: 'major',
+      to: 'blocking',
+      content: 'Late correction after disposition.',
+    });
+    mock.reviewComments.push({
+      id: 888,
+      databaseId: 888,
+      user: { login: mock.actor },
+      author: { login: mock.actor },
+      body: postDispCorrection.body,
+    });
+    const badReconcile = reconcile({
+      repo: 'loomantix/platform-oss',
+      pr: 10,
+      head: headSha,
+      fingerprint: 'fp-guard',
+    });
+    expect(badReconcile.ledgerValid).toBe(false);
+    expect(badReconcile.nextAction).toBe('repair-sequence');
   });
 });

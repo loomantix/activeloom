@@ -5,9 +5,42 @@ description: High-fidelity PR-first Codex review chain that opens or reuses a dr
 
 # Deep Critique
 
+## Reviewer environment preflight — hard stop
+
+This preflight precedes all other entry gates, including instructions below to
+classify or check context first. Before profile setup, GitHub reads, telemetry,
+classification or any ledger write,
+run these commands separately in the supplied review worktree:
+
+```bash
+git rev-parse HEAD
+node .codex/skills/critique/scripts/review-ledger.js --version
+```
+
+Compare the reported helper version with
+`.codex/skills/critique/scripts/review-ledger.version`. On either command's
+nonzero exit, a missing pin or a version mismatch, stop and report the failing
+command, exit status and exact stdout/stderr (or both versions for a mismatch).
+Post nothing. Do not simulate a ledger write, hand-write markers, create a
+worktree, re-clone, change settings or start a launcher to escape the failure.
+Agy's sandbox can hide the primary checkout's Git metadata and user configuration
+(including gh authentication and activeloom profiles); missing paths inside it
+do not prove the host worktree or configuration is broken. Report this possible
+cause to the controller or user, who owns relaunching with the approved settings.
+
+At any later ledger or controller refusal, including `transition-run`, stop and
+report the exact command and error to the controller or user. Never retry the
+same transition, invent flags or scripts, simulate its write, or use another
+tool, worktree or launcher to obtain the refused effect. This overrides generic
+retry or recovery instructions for this reviewer pass. It does not cancel the
+protocol's own steps after a refusal: still finalize a `blocked` result through
+the helper, preserve any recovery sidecar, and re-run an identical idempotent
+helper command (such as `dispose`) where the ledger prescribes it.
+
 ## Step 0: Human-glance gate
 
-Classify the range before every other step in this skill — before the
+After the reviewer environment preflight, when present, classify the range
+before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
 snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance".
 Apply that section's **Verified zero-file comparison** first: when
@@ -70,7 +103,9 @@ uses the ledger helper still runs exactly as written, and the helper keeps the
 post local. A step that posts with raw `gh` is not intercepted: write that text
 into the scratchpad that `silent-status` names instead. Where a step below
 replies to a hosted reviewer, write that reply into the scratchpad, then
-resolve the thread with `gh`.
+resolve the thread with `gh`. The helper's `local-gh` subcommand is internal
+to the run controller; never call it yourself, and on a PR that is not silent it
+refuses every write.
 
 ## Automatic chain dispatch
 
@@ -353,7 +388,8 @@ Next:
   A fix invalidates only the attestations naming the superseded head; an engine
   that already attested this head does not re-run.
   Mark ready only after verify-coverage passes at the exact head, that round
-  produced no material fix, and every local-review thread is resolved.
+  has no material fix awaiting an independent non-material pass, and every
+  local-review thread is resolved.
 ```
 
 A clean convergence pass returns to the controller for remaining exact-head
