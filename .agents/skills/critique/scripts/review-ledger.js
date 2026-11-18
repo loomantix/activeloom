@@ -44,7 +44,7 @@ import { createHash } from "crypto";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.17.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.17.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -1711,6 +1711,13 @@ function matchRevalidation(body) {
     fail("invalid revalidation content hash");
   return record;
 }
+function postedBefore(row, startedAt) {
+  const created = row["createdAt"] ?? row["created_at"];
+  if (typeof created !== "string" || startedAt === void 0) return false;
+  const posted = Date.parse(created);
+  const started = Date.parse(startedAt);
+  return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
+}
 function revalidatedComments(input, repo, pr, sameThread = false) {
   const actor = currentActor();
   const owned = (row) => (row.author ?? row.user)?.login === actor;
@@ -1735,9 +1742,6 @@ function revalidatedComments(input, repo, pr, sameThread = false) {
       fail("revalidation run identity or round cap differs");
     const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
     const previousRunIndex = carriedRuns.get(occurrenceKey);
-    const restartedAtSameHead = record.fromHead === record.head && previousRunIndex !== void 0 && previousRunIndex < runIndex;
-    if (!restartedAtSameHead && (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head)))
-      fail("revalidation requires a forward head transition");
     const findings = rows.map((r, i) => ({
       row: r,
       index: i,
@@ -1766,6 +1770,9 @@ function revalidatedComments(input, repo, pr, sameThread = false) {
       fail("cannot revalidate a disposed occurrence or fabricated disposition");
     const target = targets[0];
     const finding = target.finding;
+    const restartedAtSameHead = record.fromHead === record.head && (previousRunIndex !== void 0 ? previousRunIndex < runIndex : postedBefore(target.row, run.startedAt));
+    if (!restartedAtSameHead && (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head)))
+      fail("revalidation requires a forward head transition");
     const content = String(target.row.body).slice(
       String(target.row.body).indexOf("\n") + 1
     );

@@ -560,6 +560,108 @@ describe('ledger operations and workflow verification', () => {
       }
     });
 
+    it('carries an uncarried finding into a run restarted at its own head', () => {
+      // Run A posts the finding at H and aborts; run B restarts at the same H.
+      mock.reviewComments[0]!['body'] = buildFindingBody({
+        ...params,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'Original reproduction.\n',
+      }).body;
+      mock.reviewComments[0]!['createdAt'] = '2025-01-02T00:00:00Z';
+      mock.reviewComments[0]!['created_at'] = '2025-01-02T00:00:00Z';
+      mock.issueComments[0]!['created_at'] = '2025-01-01T00:00:00Z';
+      syncThread();
+      // Inside run A an unchanged head is still not a carry.
+      expect(() => revalidateOccurrence(params)).toThrow(
+        /forward head transition/,
+      );
+      const oldRunId = /id=([a-f0-9]+)/.exec(
+        String(mock.issueComments[0]!['body']),
+      )![1];
+      mock.issueComments.push({
+        id: 51,
+        user: { login: mock.actor },
+        created_at: '2025-01-03T00:00:00Z',
+        body: `<!-- local-review-run-end:v1 id=${oldRunId} outcome=aborted head=${headSha} -->`,
+      });
+      const content = 'Authorized restart after interruption.\n';
+      const digest = sha256Text(
+        JSON.stringify({
+          base: mock.prBase,
+          content,
+          max_rounds: 4,
+          start_head: headSha,
+          supersedes: 50,
+          tier: 'deep',
+        }),
+      );
+      mock.issueComments.push({
+        id: 52,
+        user: { login: mock.actor },
+        created_at: '2025-01-04T00:00:00Z',
+        body: `<!-- local-review-run:v1 id=${digest} tier=deep max-rounds=4 base=${mock.prBase} start-head=${headSha} supersedes=50 content-sha256=${digest} -->\n${content}`,
+      });
+      const history = structuredClone(mock.reviewComments);
+      expect(revalidateOccurrence(params)).toMatchObject({
+        verified: true,
+        replayed: false,
+      });
+      mock.reviewComments[1]!['created_at'] = '2025-01-05T00:00:00Z';
+      mock.reviewComments[1]!['createdAt'] = '2025-01-05T00:00:00Z';
+      expect(mock.reviewComments.slice(0, 1)).toEqual(history);
+      expect(revalidateOccurrence(params)).toMatchObject({ replayed: true });
+      expect(() => revalidateOccurrence({ ...params, round: 2 })).toThrow(
+        /forward head transition/,
+      );
+      expect(preflightFix(params)).toMatchObject({ verified: true });
+      const after = '4444444444444444444444444444444444444444';
+      mock.prHead = after;
+      dispose({
+        ...params,
+        head: after,
+        outcome: 'fixed',
+        content: 'Fixed after the authorized restart.\n',
+      });
+      syncThread();
+      expect(verifyLedger({ ...params, head: after })).toMatchObject({
+        verified: true,
+      });
+      const resultFile = join(tmpdir(), `uncarried-result-${process.pid}.json`);
+      try {
+        expect(
+          writeResult({
+            ...params,
+            head: after,
+            before: headSha,
+            base: mock.prBase,
+            classification: 'material',
+            resultFile,
+          }),
+        ).toMatchObject({
+          status: 'changed',
+          findingFingerprints: ['inherited'],
+        });
+      } finally {
+        if (existsSync(resultFile)) unlinkSync(resultFile);
+      }
+    });
+
+    it('refuses an unchanged-head carry when the finding or run lacks a timestamp', () => {
+      mock.reviewComments[0]!['body'] = buildFindingBody({
+        ...params,
+        severity: 'blocking',
+        lens: 'correctness',
+        content: 'Original reproduction.\n',
+      }).body;
+      delete mock.reviewComments[0]!['createdAt'];
+      syncThread();
+      expect(() => revalidateOccurrence(params)).toThrow(
+        /forward head transition/,
+      );
+      expect(mock.reviewComments).toHaveLength(1);
+    });
+
     it('can revalidate again at a later head without inventing a new occurrence', () => {
       const original = structuredClone(mock.reviewComments[0]);
       revalidateOccurrence(params);

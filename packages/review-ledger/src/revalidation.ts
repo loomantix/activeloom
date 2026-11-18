@@ -114,6 +114,20 @@ export function matchRevalidation(body: string): Revalidation | null {
   return record;
 }
 
+/** Whether a comment was posted before a run began; missing or unparseable timestamps fail closed. */
+function postedBefore(
+  row: GitHubReviewCommentNode,
+  startedAt: string | undefined,
+): boolean {
+  const created = row['createdAt'] ?? row['created_at'];
+  if (typeof created !== 'string' || startedAt === undefined) return false;
+  const posted = Date.parse(created);
+  const started = Date.parse(startedAt);
+  return (
+    Number.isFinite(posted) && Number.isFinite(started) && posted < started
+  );
+}
+
 /** A derived view only: persisted finding markers and replies are never rewritten. */
 export function revalidatedComments(
   input: GitHubReviewCommentNode[],
@@ -153,16 +167,6 @@ export function revalidatedComments(
       fail('revalidation run identity or round cap differs');
     const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
     const previousRunIndex = carriedRuns.get(occurrenceKey);
-    const restartedAtSameHead =
-      record.fromHead === record.head &&
-      previousRunIndex !== undefined &&
-      previousRunIndex < runIndex;
-    if (
-      !restartedAtSameHead &&
-      (record.fromHead === record.head ||
-        !compareIsForward(repo, record.fromHead, record.head))
-    )
-      fail('revalidation requires a forward head transition');
     const findings = rows
       .map((r, i) => ({
         row: r,
@@ -210,6 +214,19 @@ export function revalidatedComments(
       fail('cannot revalidate a disposed occurrence or fabricated disposition');
     const target = targets[0]!;
     const finding = target.finding!;
+    // An unchanged head may only move evidence into a later run: one that
+    // follows an earlier carry, or that started after the source finding.
+    const restartedAtSameHead =
+      record.fromHead === record.head &&
+      (previousRunIndex !== undefined
+        ? previousRunIndex < runIndex
+        : postedBefore(target.row, run.startedAt));
+    if (
+      !restartedAtSameHead &&
+      (record.fromHead === record.head ||
+        !compareIsForward(repo, record.fromHead, record.head))
+    )
+      fail('revalidation requires a forward head transition');
     const content = String(target.row.body).slice(
       String(target.row.body).indexOf('\n') + 1,
     );
