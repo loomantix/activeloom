@@ -389,6 +389,14 @@ FULL_RUBRIC = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the per-user backlog-refinement settings at an absent test file."""
+    path = tmp_path / "user-config" / "backlog-refinement.json"
+    monkeypatch.setenv("ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG", str(path))
+    return path
+
+
 def _load_rubric_config(tmp_path: Path, text: str) -> Any:
     path = tmp_path / ".backlog/refinement.local.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,6 +934,84 @@ def test_handback_invalid_setting_refused(tmp_path: Path, value: str) -> None:
         _load_rubric_config(tmp_path, FULL_RUBRIC + f'\n<!-- grill-handback: {value} -->\n')
 
 
+def _write_user_settings(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize('repo, user, expected', [
+    ('ask', 'auto', 'auto'),
+    ('auto', 'ask', 'ask'),
+    (None, 'auto', 'auto'),
+    ('auto', None, 'auto'),
+])
+def test_handback_user_setting_overrides_repo_marker(
+    tmp_path: Path, _isolated_user_settings: Path, capsys: pytest.CaptureFixture[str],
+    repo: str | None, user: str | None, expected: str,
+) -> None:
+    if user is not None:
+        _write_user_settings(_isolated_user_settings, {'schema_version': 1, 'grill_handback': user})
+    marker = f'\n<!-- grill-handback: {repo} -->\n' if repo else ''
+    _, config = _load_rubric_config(tmp_path, FULL_RUBRIC + marker)
+    assert config.grill_handback == expected
+    err = capsys.readouterr().err
+    assert (str(_isolated_user_settings) in err) == (user is not None)
+
+
+def test_handback_user_setting_without_mode_keeps_repo_marker(tmp_path: Path, _isolated_user_settings: Path) -> None:
+    _write_user_settings(_isolated_user_settings, {'schema_version': 1})
+    _, config = _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: auto -->\n')
+    assert config.grill_handback == 'auto'
+
+
+def test_handback_user_setting_applies_without_local_rubric(tmp_path: Path, _isolated_user_settings: Path) -> None:
+    _write_user_settings(_isolated_user_settings, {'schema_version': 1, 'grill_handback': 'auto'})
+    mod = _load_script(f"rubric_{tmp_path.name}", RUBRIC)
+    assert mod.load_config(str(tmp_path)).grill_handback == 'auto'
+
+
+def test_handback_user_setting_default_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG')
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
+    _write_user_settings(tmp_path / 'xdg/activeloom/backlog-refinement.json', {'schema_version': 1, 'grill_handback': 'auto'})
+    _, config = _load_rubric_config(tmp_path, FULL_RUBRIC)
+    assert config.grill_handback == 'auto'
+
+
+@pytest.mark.parametrize('data', [
+    {'schema_version': 1, 'grill_handback': 'yes'},
+    {'schema_version': 1, 'grill_handback': ''},
+    {'schema_version': 1, 'grill_handback': True},
+    {'schema_version': 1, 'grill_handback': ['auto']},
+    {'schema_version': 2, 'grill_handback': 'auto'},
+    {'schema_version': True, 'grill_handback': 'auto'},
+    {'grill_handback': 'auto'},
+    {'schema_version': 1, 'grill_handback': 'auto', 'grill-handback': 'auto'},
+    ['auto'],
+    'not json',
+])
+def test_handback_invalid_user_setting_fails_closed(
+    tmp_path: Path, _isolated_user_settings: Path, capsys: pytest.CaptureFixture[str], data: Any,
+) -> None:
+    _write_user_settings(_isolated_user_settings, data)
+    with pytest.raises(SystemExit) as exc:
+        _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: auto -->\n')
+    assert exc.value.code == 1
+    assert str(_isolated_user_settings) in capsys.readouterr().err
+
+
+def test_handback_user_setting_path_must_be_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG', 'relative.json')
+    with pytest.raises(SystemExit):
+        _load_rubric_config(tmp_path, FULL_RUBRIC)
+
+
+def test_handback_user_setting_does_not_mask_invalid_repo_marker(tmp_path: Path, _isolated_user_settings: Path) -> None:
+    _write_user_settings(_isolated_user_settings, {'schema_version': 1, 'grill_handback': 'auto'})
+    with pytest.raises(SystemExit):
+        _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: yes -->\n')
+
+
 def test_handback_grill_queue_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     mod = _load_candidates(tmp_path, monkeypatch)
     issue = _issue('needs: grill', 'agent-bail: open-decision', 'priority: high')
@@ -1110,6 +1196,37 @@ def test_handback_confirmation_gates(apply_mod: ModuleType, monkeypatch: pytest.
         {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
     ]
     monkeypatch.setattr(apply_mod, 'load_config', lambda root: _config(apply_mod, grill_handback=auto))
+    if allowed:
+        assert apply_mod.main() == 0
+        assert 'issue edit' in fake.verbs()
+    else:
+        with pytest.raises(SystemExit):
+            apply_mod.main()
+        assert not any(call[1] in ('edit', 'comment', 'close') for call in fake.calls)
+
+
+@pytest.mark.parametrize('repo, user, flags, allowed', [
+    ('ask', 'auto', ['--confirm-summary'], True),
+    ('auto', 'ask', ['--confirm-summary'], False),
+    ('auto', 'ask', ['--confirm-summary', '--confirm-handback'], True),
+    ('ask', 'auto', [], False),
+])
+def test_handback_apply_honours_resolved_user_setting(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolated_user_settings: Path,
+    repo: str, user: str, flags: list[str], allowed: bool,
+) -> None:
+    rubric_mod = _load_script(f"rubric_apply_{tmp_path.name}", RUBRIC)
+    rubric = tmp_path / '.backlog/refinement.local.md'
+    rubric.parent.mkdir(parents=True, exist_ok=True)
+    rubric.write_text(FULL_RUBRIC + f'\n<!-- grill-handback: {repo} -->\n', encoding='utf-8')
+    _write_user_settings(_isolated_user_settings, {'schema_version': 1, 'grill_handback': user})
+    entry = _handback_entry('permanent')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', *flags)
+    fake.issue['comments'] = [
+        {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
+    ]
+    real = rubric_mod.load_config
+    monkeypatch.setattr(apply_mod, 'load_config', lambda root: real(root)._replace(priority_labels=PRIORITY_TUPLE))
     if allowed:
         assert apply_mod.main() == 0
         assert 'issue edit' in fake.verbs()
