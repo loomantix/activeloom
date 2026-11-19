@@ -1886,7 +1886,7 @@ def _user_handoff(args: argparse.Namespace) -> None:
     ]
     if "refactorpass" in skills:
         lines.append(
-            "   " + _user_skill_line(engine, "refactorpass", str(args.pr))
+            "   " + _user_skill_line(engine, "refactorpass", target)
             + "   (its ledger latch decides whether it runs), then:"
         )
     lines.append("   " + _user_skill_line(engine, skills[-1], target))

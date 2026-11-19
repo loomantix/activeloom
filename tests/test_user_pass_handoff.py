@@ -234,6 +234,11 @@ def test_silent_pr_and_context_reach_the_prompt(
     assert "This PR is silent" in block
     assert "Carried findings: https://example.invalid/thread/1" in block
 
+    wire(controller, monkeypatch, [], record=run_record("lean", ["codex", "claude"]))
+    lean_block = render(controller, capsys, args(worktree))
+    assert "Use .codex/skills/refactorpass/SKILL.md for 7 silent" in lean_block
+    assert "Use .codex/skills/critique/SKILL.md for 7 silent" in lean_block
+
 
 @pytest.mark.parametrize(
     ("setup", "message"),
