@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import os
 import re
 import stat
 import subprocess
@@ -631,3 +632,292 @@ def test_answers_path_uses_herd_state_dir(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     path = so.answers_path(REPO, 7)
     assert path == tmp_path / "activeloom-herd/example-org__example-repo/hgrill/issue-7/signoff-answers.json"
+
+
+def test_legacy_options_rejects_unparsed_leading_option() -> None:
+    body = (
+        "<!-- hgrill-assumptions:start -->\n"
+        "**Product calls — yours to confirm:**\n"
+        "1. ⚠ **Choice** — disagreed. Options: a) x — alpha; (b) y — beta. Applied now: (b).\n"
+        "<!-- hgrill-assumptions:end -->\n"
+    )
+    with pytest.raises(so.SignoffError, match="unparsed option prefix"):
+        so.load_snapshot(REPO, 7, "T", body)
+
+
+def test_unhashable_json_values_fail_closed(server: Any) -> None:
+    with pytest.raises(so.SignoffError, match="kind"):
+        so.validate_snapshot(
+            {"schema": so.SNAPSHOT_SCHEMA, "items": [{"id": "P1", "kind": [], "title": "T"}], "checked": []}
+        )
+    entry = so.build_manifest([server.snap])["issues"][0]
+    for bad_answer in ({"id": [], "answer": "confirm"}, {"id": "A1", "answer": []}):
+        payload = all_confirm(server.snap)
+        payload["answers"][0] = bad_answer
+        with pytest.raises(so.SignoffError):
+            so.validate_submission(payload, entry)
+    assert request(server, "POST", "/answers", {"repo": [], "issue": 1})[0] == 400
+    assert request(server, "POST", "/answers", {"repo": REPO, "issue": []})[0] == 400
+
+
+def test_repo_validation_rejects_dotdot_and_translates_herd_usage_error() -> None:
+    with pytest.raises(so.UsageError):
+        so.parse_ref("org/..#7", None)
+    with pytest.raises(so.UsageError):
+        so.parse_ref("../repo#7", None)
+    with pytest.raises(so.UsageError):
+        so.answers_path("org/..", 7)
+
+
+def test_load_manifest_rejects_empty_duplicate_or_malformed_entries(tmp_path: Path) -> None:
+    snap = legacy()
+    (tmp_path / "signoff.html").write_text(so.render_page([snap]), encoding="utf-8")
+    valid = so.build_manifest([snap])
+
+    bad_manifests: list[dict[str, Any]] = [
+        {"schema": "wrong", "issues": valid["issues"]},
+        {"schema": valid["schema"], "issues": []},
+        {"schema": valid["schema"], "issues": [valid["issues"][0], valid["issues"][0]]},
+        {"schema": valid["schema"], "issues": [{**valid["issues"][0], "issue": True}]},
+        {"schema": valid["schema"], "issues": [{**valid["issues"][0], "repo": "org/.."}]},
+        {"schema": valid["schema"], "issues": [{**valid["issues"][0], "snapshot_source": "unknown"}]},
+        {"schema": valid["schema"], "issues": [{**valid["issues"][0], "items": []}]},
+    ]
+    for bad in bad_manifests:
+        (tmp_path / "signoff-manifest.json").write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(so.SignoffError):
+            so.load_manifest(tmp_path)
+
+
+def test_post_envelope_limits_headers_and_storage_failure(tmp_path: Path, server: Any) -> None:
+    # Security response headers on GET and POST
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    conn.request("GET", "/?token=tok-123")
+    resp = conn.getresponse()
+    resp.read()
+    for name, expected in (
+        ("Cache-Control", "no-store"),
+        ("Referrer-Policy", "no-referrer"),
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+    ):
+        assert resp.getheader(name) == expected
+    conn.close()
+
+    # > BODY_MAX -> 413
+    assert request(server, "POST", "/answers", b"x" * (so.BODY_MAX + 1))[0] == 413
+    # Duplicate JSON keys -> 400
+    assert request(server, "POST", "/answers", b'{"repo":"a/b","repo":"c/d"}')[0] == 400
+
+    # OSError during store -> 500 and all_done stays unset
+    def failing_resolve(repo: str, issue: int) -> Path:
+        raise OSError("disk full")
+
+    srv = so.SignoffServer(
+        so.render_page([server.snap]).encode(),
+        so.build_manifest([server.snap]),
+        "tok-123",
+        resolve_path=failing_resolve,
+    )
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = request(srv, "POST", "/answers", all_confirm(server.snap))
+        assert status == 500 and body["ok"] is False and "OSError" in body["error"]
+        assert not srv.all_done.is_set()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_cmd_serve_prints_two_json_lines_and_handles_completion_and_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    out = tmp_path / "out"
+    assert so.main(["render", "--repo", REPO, "7", "--body", f"7={FIXTURE}", "--out-dir", str(out)]) == 0
+
+    # Timeout path via CLI subprocess
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "serve", "--dir", str(out), "--timeout", "0.1"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    lines = [json.loads(line) for line in proc.stdout.strip().splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["issues"] == 1 and lines[0]["url"].startswith("http://127.0.0.1:")
+    assert lines[1] == {"stopped": "timeout", "received": []}
+
+    # Completion path via CLI subprocess
+    snap = legacy()
+    proc2 = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "serve", "--dir", str(out), "--timeout", "10"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert proc2.stdout is not None
+        first = json.loads(proc2.stdout.readline())
+        token = first["url"].split("token=")[1]
+        conn = http.client.HTTPConnection("127.0.0.1", first["port"], timeout=5)
+        conn.request(
+            "POST",
+            "/answers",
+            body=json.dumps(all_confirm(snap)).encode(),
+            headers={"Content-Type": "application/json", "X-Signoff-Token": token},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        assert resp.status == 200
+        rest_out, stderr = proc2.communicate(timeout=10)
+        assert proc2.returncode == 0, stderr
+        second = json.loads(rest_out.strip())
+        assert second == {"stopped": "complete", "received": [f"{REPO}#7"]}
+    finally:
+        if proc2.poll() is None:
+            proc2.kill()
+            proc2.wait(timeout=5)
+
+
+def test_page_js_bulkable_submit_lock_sent_invalidation_and_file_mode() -> None:
+    snap = legacy()
+    html_page = so.render_page([snap])
+    match = re.search(r'<script[^>]*id="signoff-data"[^>]*>(.*?)</script>', html_page, re.S)
+    assert match is not None
+    data = match.group(1)
+    probe = r"""
+const vm = require('node:vm');
+const fs = require('node:fs');
+const data = process.argv[1];
+const mode = process.argv[2];
+
+function makeEl(tag) {
+  const el = {
+    tagName: tag.toUpperCase(), className: '', textContent: '', value: '',
+    type: '', name: '', checked: false, disabled: false, hidden: false,
+    children: [], listeners: {}, attrs: {},
+    classList: { toggle() {} },
+    appendChild(c) { this.children.push(c); return c; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); },
+    fire(ev) { (this.listeners[ev] || []).forEach(fn => fn()); },
+  };
+  return el;
+}
+function walk(n, out = []) {
+  out.push(n);
+  (n.children || []).forEach(c => walk(c, out));
+  return out;
+}
+
+const root = makeEl('main');
+const document = {
+  getElementById: id => id === 'signoff-data' ? { textContent: data } : root,
+  createElement: makeEl,
+  createTextNode: t => ({ nodeType: 3, textContent: String(t) }),
+};
+let pendingResolve = null;
+const fetches = [];
+const fetchStub = (url, opts) => {
+  fetches.push({ url, body: opts.body });
+  return new Promise(resolve => { pendingResolve = resolve; });
+};
+const loc = mode === 'served'
+  ? new URL('http://127.0.0.1:4321/?token=tok-123')
+  : new URL('file:///tmp/signoff.html');
+
+vm.runInNewContext(fs.readFileSync(0, 'utf8'), {
+  document, URLSearchParams, location: loc, fetch: fetchStub,
+  localStorage: { getItem: () => null, setItem: () => {} },
+});
+
+const all = walk(root);
+const buttons = all.filter(n => n.tagName === 'BUTTON');
+const tab = buttons[0];
+const bulk = buttons.find(b => b.textContent.startsWith('Accept all remaining'));
+const submit = buttons.find(b => b.textContent === 'Submit answers for this issue' || b.textContent === 'Show answer block');
+const status = all.find(n => n.className && n.className.startsWith('status'));
+const pre = all.find(n => n.tagName === 'PRE');
+
+// Bulk should confirm P1, P2, P4, P5, A1, A2 (6 items) and leave R1 and P3 unanswered.
+bulk.fire('click');
+const afterBulkProgress = all.find(n => n.textContent && n.textContent.includes(' of 8 answered')).textContent;
+
+// Answer R1 (decide + note) and P3 (choose a)
+const cards = all.filter(n => n.className === 'card');
+for (const c of cards) {
+  const id = walk(c).find(n => n.className === 'id').textContent;
+  if (id === 'R1') {
+    const r = walk(c).find(n => n.tagName === 'INPUT' && n.type === 'radio');
+    r.checked = true; r.fire('change');
+    const ta = walk(c).find(n => n.tagName === 'TEXTAREA');
+    ta.value = 'key by tenant'; ta.fire('input');
+  } else if (id === 'P3') {
+    const r = walk(c).find(n => n.tagName === 'INPUT' && n.type === 'radio');
+    r.checked = true; r.fire('change');
+  }
+}
+
+if (mode === 'file') {
+  submit.fire('click');
+  process.stdout.write(JSON.stringify({
+    afterBulkProgress,
+    fetches: fetches.length,
+    copyVisible: !pre.textContent ? false : pre.textContent.includes('hgrill-signoff:v1'),
+  }));
+} else {
+  submit.fire('click');
+  // Edit while fetch is in flight: submit must remain disabled (no concurrent POST).
+  const firstTa = all.find(n => n.tagName === 'TEXTAREA');
+  firstTa.value = 'edited while sending'; firstTa.fire('input');
+  const disabledWhileSending = submit.disabled;
+  submit.fire('click');
+  const fetchesDuringFlight = fetches.length;
+
+  pendingResolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+  setImmediate(() => {
+    const tabAfterSend = tab.textContent;
+    // Now edit a note after send: checkmark must clear and status must prompt resubmit.
+    firstTa.value = 'changed after send'; firstTa.fire('input');
+    process.stdout.write(JSON.stringify({
+      afterBulkProgress,
+      disabledWhileSending,
+      fetchesDuringFlight,
+      sentBody: JSON.parse(fetches[0].body),
+      tabAfterSend,
+      tabAfterEdit: tab.textContent,
+      statusAfterEdit: status.textContent,
+    }));
+  });
+}
+"""
+    served = subprocess.run(
+        ["node", "-e", probe, data, "served"], input=so.PAGE_JS, text=True, capture_output=True, check=True
+    )
+    res = json.loads(served.stdout)
+    assert res["afterBulkProgress"] == "6 of 8 answered"
+    assert res["disabledWhileSending"] is True
+    assert res["fetchesDuringFlight"] == 1
+    assert "✓" not in res["tabAfterSend"]  # edited during flight, so payload differs from sentBody
+    assert "✓" not in res["tabAfterEdit"]
+    assert res["statusAfterEdit"] == "Changed since it was sent: submit again."
+    # Sent payload from PAGE_JS must pass Python validate_submission
+    entry = so.build_manifest([snap])["issues"][0]
+    normalized = so.validate_submission(res["sentBody"], entry)
+    assert normalized["issue"] == 7 and len(normalized["answers"]) == 8
+
+    file_run = subprocess.run(
+        ["node", "-e", probe, data, "file"], input=so.PAGE_JS, text=True, capture_output=True, check=True
+    )
+    fres = json.loads(file_run.stdout)
+    assert fres["afterBulkProgress"] == "6 of 8 answered"
+    assert fres["fetches"] == 0
+    assert fres["copyVisible"] is True

@@ -16,8 +16,9 @@ Commands:
       against its issue's manifest entry and written to
       `<state>/signoff-answers.json`, where <state> is the hgrill state
       directory for `issue-<n>` (herd-config.py `paths`). Prints one JSON line
-      with the URL, then exits once every issue has an answer set (unless
-      --keep-open), on timeout, or on SIGINT.
+      with the URL on startup, then exits once every issue has an answer set
+      (unless --keep-open), on timeout, or on SIGINT, printing a second JSON
+      line with the stop reason and received issues.
 
 This script never edits an issue, a label or a comment. Exit codes: 0 ok, 1
 invalid input or block, 2 usage or `gh` error.
@@ -70,7 +71,7 @@ SIGNOFF_SCHEMA = "hgrill-signoff:v1"
 ANSWERS_SCHEMA = "hgrill-signoff-answers:v1"
 SOURCE_LEGACY = "legacy-prose-sha256"
 SOURCE_JSON = "v1-json"
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 REF_RE = re.compile(r"^(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#)?(?P<n>[1-9][0-9]*)$")
 ITEM_ID_RE = re.compile(r"^[PAR][1-9][0-9]*$")
 OPTION_KEY_RE = re.compile(r"^[a-z]$")
@@ -178,9 +179,15 @@ def _strip_sentence(text: str) -> str:
     return text.strip().strip("—–").strip().rstrip(".").strip()
 
 
+def _valid_repo(repo: Any) -> bool:
+    return isinstance(repo, str) and bool(REPO_RE.match(repo)) and ".." not in repo.split("/")
+
+
 def _parse_options(text: str) -> list[dict[str, str]]:
     parts = OPTION_SPLIT_RE.split(text.strip())
     # parts = [prefix, key, body, key, body, ...]
+    if len(parts) > 1 and parts[0].strip():
+        raise SignoffError(f"unparsed option prefix in: {text.strip()[:80]}")
     options = []
     for key, body in zip(parts[1::2], parts[2::2]):
         body = body.strip().rstrip(";").rstrip(".").strip()
@@ -332,7 +339,7 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
             raise SignoffError(f"duplicate item id {iid}")
         seen.add(iid)
         kind = item.get("kind")
-        if kind not in KINDS or iid[0] != {"product": "P", "assumption": "A", "refuted": "R"}[kind]:
+        if not isinstance(kind, str) or kind not in KINDS or iid[0] != {"product": "P", "assumption": "A", "refuted": "R"}[kind]:
             raise SignoffError(f"{iid}: kind {kind!r} does not match its id")
         if not isinstance(item.get("title"), str) or not item["title"].strip():
             raise SignoffError(f"{iid}: title required")
@@ -492,7 +499,7 @@ def validate_submission(payload: Any, entry: dict[str, Any]) -> dict[str, Any]:
         if extra:
             raise SignoffError(f"unknown answer keys: {', '.join(sorted(extra))}")
         iid = raw.get("id")
-        if iid not in rules:
+        if not isinstance(iid, str) or iid not in rules:
             raise SignoffError(f"unknown item id {iid!r}")
         if iid in seen:
             raise SignoffError(f"duplicate answer for {iid}")
@@ -505,10 +512,10 @@ def validate_submission(payload: Any, entry: dict[str, Any]) -> dict[str, Any]:
         note = note.strip()
         if answer == "choose" and option is not None and option == rule["applied"]:
             answer, option = "confirm", None  # choosing the applied option confirms it
-        if answer not in allowed_answers(rule):
+        if not isinstance(answer, str) or answer not in allowed_answers(rule):
             raise SignoffError(f"{iid}: answer {answer!r} is not allowed here")
         if answer == "choose":
-            if option not in rules[iid]["options"]:
+            if not isinstance(option, str) or option not in rules[iid]["options"]:
                 raise SignoffError(f"{iid}: choose needs one of the options")
         elif option is not None:
             raise SignoffError(f"{iid}: option is only valid with choose")
@@ -605,14 +612,14 @@ DATA.issues.forEach(function(iss,ix){
   function showCopy(){pre.textContent='```hgrill-signoff:v1\n'+JSON.stringify(payload(iss),null,2)+'\n```';copyWrap.hidden=false;}
   bulk.addEventListener('click',function(){bulkable(iss).forEach(function(it){var s=iss.state[it.id]||{};s.answer='confirm';s.option=null;iss.state[it.id]=s;cards[it.id].sync();});refresh();});
   submit.addEventListener('click',function(){
-    if(count(iss)!==iss.items.length)return;
+    if(iss.sending||count(iss)!==iss.items.length)return;
     if(!SERVED){showCopy();return;}
-    submit.disabled=true;status.textContent='Sending…';status.className='status';
+    iss.sending=true;submit.disabled=true;status.textContent='Sending…';status.className='status';
     var body=JSON.stringify(payload(iss));
     fetch('/answers',{method:'POST',headers:{'Content-Type':'application/json','X-Signoff-Token':TOKEN},body:body})
       .then(function(r){return r.json().catch(function(){return{ok:false,error:'HTTP '+r.status};}).then(function(b){if(!r.ok||!b.ok)throw new Error(b.error||('HTTP '+r.status));});})
-      .then(function(){status.textContent='Sent to the agent at '+new Date().toLocaleTimeString()+'.';status.className='status ok';iss.sent=body;refresh();})
-      .catch(function(e){status.textContent='Not sent: '+e.message+'. Copy the block below instead.';status.className='status err';showCopy();refresh();});
+      .then(function(){iss.sending=false;status.textContent='Sent to the agent at '+new Date().toLocaleTimeString()+'.';status.className='status ok';iss.sent=body;refresh();})
+      .catch(function(e){iss.sending=false;status.textContent='Not sent: '+e.message+'. Copy the block below instead.';status.className='status err';showCopy();refresh();});
   });
   function refresh(){
     saveDraft(iss);
@@ -622,7 +629,7 @@ DATA.issues.forEach(function(iss,ix){
     bulk.textContent='Accept all remaining ('+rem+')';bulk.disabled=rem===0;
     progress.textContent=n+' of '+total+' answered';
     tab.textContent=iss.repo.split('/')[1]+'#'+iss.issue+' · '+n+'/'+total+(sent?' ✓':'');
-    submit.disabled=n!==total;
+    submit.disabled=!!iss.sending||n!==total;
     iss.items.forEach(function(it){cards[it.id].sync();});
     if(!copyWrap.hidden)showCopy();
   }
@@ -748,9 +755,9 @@ def parse_ref(ref: str, default_repo: str | None) -> tuple[str, int]:
     if not m:
         raise UsageError(f"issue reference must be <n> or <owner/name>#<n>, got {ref!r}")
     repo = m.group("repo") or default_repo
-    if not repo or not REPO_RE.match(repo):
+    if not _valid_repo(repo):
         raise UsageError(f"{ref}: pass --repo <owner/name> or use <owner/name>#<n>")
-    return repo, int(m.group("n"))
+    return str(repo), int(m.group("n"))
 
 
 def fetch_issue(repo: str, issue: int) -> tuple[str, str]:
@@ -830,7 +837,11 @@ def _load_herd_config() -> Any:
 
 def answers_path(repo: str, issue: int) -> Path:
     """`<hgrill state for issue-<n>>/signoff-answers.json`, as herd-config.py resolves it."""
-    paths = _load_herd_config().state_paths(repo, "hgrill", f"issue-{issue}")
+    mod = _load_herd_config()
+    try:
+        paths = mod.state_paths(repo, "hgrill", f"issue-{issue}")
+    except mod.UsageError as exc:
+        raise UsageError(str(exc)) from None
     return Path(paths["state"]) / "signoff-answers.json"
 
 
@@ -839,9 +850,44 @@ def load_manifest(directory: Path) -> tuple[bytes, dict[str, Any]]:
     manifest = loads_strict((directory / "signoff-manifest.json").read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or manifest.get("schema") != "hgrill-signoff-manifest:v1":
         raise SignoffError("not a signoff manifest")
-    for entry in manifest.get("issues", []):
-        if not REPO_RE.match(str(entry.get("repo"))) or not HASH_RE.match(str(entry.get("snapshot_hash"))):
+    issues = manifest.get("issues")
+    if not isinstance(issues, list) or not issues:
+        raise SignoffError("manifest must list at least one issue")
+    seen: set[tuple[str, int]] = set()
+    for entry in issues:
+        if not isinstance(entry, dict):
             raise SignoffError("manifest entry is malformed")
+        repo, issue = entry.get("repo"), entry.get("issue")
+        if (
+            not _valid_repo(repo)
+            or isinstance(issue, bool)
+            or not isinstance(issue, int)
+            or issue <= 0
+            or entry.get("snapshot_source") not in {SOURCE_LEGACY, SOURCE_JSON}
+            or not isinstance(entry.get("snapshot_hash"), str)
+            or not HASH_RE.match(entry["snapshot_hash"])
+        ):
+            raise SignoffError("manifest entry is malformed")
+        key = (str(repo), issue)
+        if key in seen:
+            raise SignoffError(f"duplicate manifest entry for {repo}#{issue}")
+        seen.add(key)
+        items = entry.get("items")
+        if not isinstance(items, list) or not items:
+            raise SignoffError("manifest entry must list at least one item")
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("id"), str)
+                or not ITEM_ID_RE.match(item["id"])
+                or not isinstance(item.get("kind"), str)
+                or item["kind"] not in KINDS
+                or not isinstance(item.get("options"), list)
+                or not all(isinstance(k, str) and OPTION_KEY_RE.match(k) for k in item["options"])
+                or (item.get("applied") is not None and item.get("applied") not in item["options"])
+                or not isinstance(item.get("has_if_reversed"), bool)
+            ):
+                raise SignoffError("manifest item is malformed")
     return page, manifest
 
 
@@ -950,7 +996,10 @@ class SignoffHandler(BaseHTTPRequestHandler):
             payload = loads_strict(raw.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise SignoffError("payload must be an object")
-            entry = self.server.entries.get((payload.get("repo"), payload.get("issue")))
+            repo, issue = payload.get("repo"), payload.get("issue")
+            if not isinstance(repo, str) or isinstance(issue, bool) or not isinstance(issue, int):
+                raise SignoffError("payload repo must be a string and issue must be an integer")
+            entry = self.server.entries.get((repo, issue))
             if entry is None:
                 return self._json(404, {"ok": False, "error": "issue is not on this page"})
             normalized = validate_submission(payload, entry)
