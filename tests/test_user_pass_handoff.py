@@ -86,6 +86,7 @@ def args(path: Path, **fields: Any) -> SimpleNamespace:
         "model": "example-model",
         "effort": "high",
         "launch_arg": None,
+        "env": None,
         "context_file": None,
     }
     values.update(fields)
@@ -171,6 +172,38 @@ def test_lean_first_pass_names_refactorpass_and_inherit_omits_the_model(
     assert launch_line(block)[3:] == ["codex", "-c", 'model_reasoning_effort="medium"']
     assert "Use .codex/skills/refactorpass/SKILL.md for 7" in block
     assert "Use .codex/skills/critique/SKILL.md for 7" in block
+
+
+def test_pane_env_entries_reach_the_launch_line(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    worktree: Path,
+) -> None:
+    wire(controller, monkeypatch, [])
+    block = render(
+        controller,
+        capsys,
+        args(worktree, env=["LOOM_REVIEW_TELEMETRY_STORE=issue", "EXTRA=a b"]),
+    )
+    assert launch_line(block)[3:] == [
+        "env", "LOOM_REVIEW_TELEMETRY_STORE=issue", "EXTRA=a b",
+        "claude", "--model", "example-model", "--effort", "high",
+    ]
+
+
+@pytest.mark.parametrize("entry", ["NOEQUALS", "1BAD=x", "KEY=line\nbreak", "-x=y"])
+def test_malformed_pane_env_entry_is_refused(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    worktree: Path,
+    entry: str,
+) -> None:
+    wire(controller, monkeypatch, [])
+    with pytest.raises(controller.HandoffError, match="not KEY=VALUE"):
+        controller._user_handoff(args(worktree, env=[entry]))
+    assert not capsys.readouterr().out
 
 
 def test_gemini_requires_an_explicit_model(
@@ -284,7 +317,9 @@ def test_cli_parses_flag_shaped_launch_arguments(
             "user-handoff", "--repo", "example/repo", "--pr", "7", "--head", HEAD,
             "--worktree", "/tmp/x", "--model", "m", "--effort", "high",
             "--launch-arg=--settings", "--launch-arg=/tmp/settings.json",
+            "--env=LOOM_REVIEW_TELEMETRY_STORE=issue",
         ]
     )
     assert namespace.handler is controller._user_handoff
     assert namespace.launch_arg == ["--settings", "/tmp/settings.json"]
+    assert namespace.env == ["LOOM_REVIEW_TELEMETRY_STORE=issue"]

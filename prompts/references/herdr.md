@@ -105,7 +105,7 @@ In session mode the user launches a review pass in their own terminal, and the h
 
 The block comes from the run controller, never from hand-written text: `local-review-handoff.py user-handoff` reads the active run, refuses when no pass is due, the run has ended or the head moved, and prints for the next pass:
 
-- the launch line, `cd <review-worktree> && <cli> <pinned model and effort> <user args>`, in the engine's form from the table above (`claude --model … --effort …`, `codex -m … -c 'model_reasoning_effort="…"'`, `agy --model … --effort …`), using the pair this run launched that engine with and every resolved `user-args` entry;
+- the launch line, `cd <review-worktree> && [env <pane-env entries>] <cli> <pinned model and effort> <user args>`, in the engine's form from the table above (`claude --model … --effort …`, `codex -m … -c 'model_reasoning_effort="…"'`, `agy --model … --effort …`), using the pair this run launched that engine with, every resolved `user-args` entry, and every `pane-env` entry, which a user terminal would otherwise lack;
 - the in-session preflight: `git rev-parse HEAD` equal to the run's exact head, and that engine root's `review-ledger.js --version` equal to its `review-ledger.version` pin;
 - the skill invocation and pass prompt, addressed the way that engine expects.
 

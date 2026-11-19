@@ -1780,10 +1780,19 @@ USER_LAUNCH = {
 INHERIT_MODEL = "inherit"
 
 
+ENV_ENTRY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\r\n]*")
+
+
 def _user_launch_line(
-    engine: str, worktree: str, model: str, effort: str, extra: list[str]
+    engine: str, worktree: str, model: str, effort: str, extra: list[str],
+    env: list[str],
 ) -> str:
-    argv = [USER_LAUNCH[engine]["cli"]]
+    for entry in env:
+        if not ENV_ENTRY.fullmatch(entry):
+            _fail(f"--env entry {entry!r} is not KEY=VALUE")
+    # The repository's pane-env entries, which every herd session carries.
+    argv = ["env", *env] if env else []
+    argv.append(USER_LAUNCH[engine]["cli"])
     if engine == "codex":
         if model != INHERIT_MODEL:
             argv += ["-m", model]
@@ -1862,7 +1871,10 @@ def _user_handoff(args: argparse.Namespace) -> None:
         "",
         "1. Launch in your own terminal (a bare CLI without these pins will not do):",
         "",
-        "   " + _user_launch_line(engine, str(worktree), args.model, args.effort, args.launch_arg or []),
+        "   " + _user_launch_line(
+            engine, str(worktree), args.model, args.effort, args.launch_arg or [],
+            args.env or [],
+        ),
         "",
         "2. In that session, check the exact head and the ledger helper pin first:",
         "",
@@ -2078,6 +2090,10 @@ def _parser() -> argparse.ArgumentParser:
     user.add_argument(
         "--launch-arg", action="append", metavar="ARG",
         help="one resolved user launch argument (repeat; use --launch-arg=-x for flags)",
+    )
+    user.add_argument(
+        "--env", action="append", metavar="KEY=VALUE",
+        help="one pane-env entry the launched session must carry (repeat)",
     )
     user.add_argument("--context-file", help="extra prompt text, such as carried findings")
     user.set_defaults(handler=_user_handoff)
