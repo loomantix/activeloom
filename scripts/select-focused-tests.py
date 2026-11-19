@@ -40,6 +40,10 @@ GROUPS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "tests/test_review_push.py",
         ),
     ),
+    "bound_reviewer": (
+        (*_skill("hreview"), "prompts/partials/review/reviewer-environment-preflight.hbs"),
+        ("tests/test_bound_reviewer_entry.py",),
+    ),
     "review_runner": (
         (
             *_skill("critique"),

@@ -36,7 +36,7 @@ Everything else is the herder's call. Once invoked, carry each chain to ready or
 Run from the repository the PRs belong to.
 
 - `H` = `.agents/skills/critique/scripts/local-review-handoff.py` (run controller: `start-run`, `next-pass`, `recover-pass`, `finish-run`)
-- `L` = `.agents/skills/critique/scripts/review-ledger.js` (`classify-changeset`, `read-roster`, `post-roster`, `verify-coverage`)
+- `L` = `.agents/skills/critique/scripts/review-ledger.js` (`read-roster`, `post-roster`, `verify-coverage`)
 - `P` = `.agents/skills/review-setup/scripts/review-profile.py`
 - `C` = `.agents/skills/hreview/scripts/herd-config.py`
 - State and scratch: `python3 -I $C paths --repo $repo --skill hreview --key pr-<n>`.
@@ -53,14 +53,53 @@ Git/helper preflight. Say that a bare `agy` will not work. A reviewer reporting
 a preflight failure or controller refusal is blocked; do not ask it to retry
 the same transition or improvise ledger writes, worktrees or launchers.
 
+## Bind the review inputs
+
+Resolve absolute helper paths from the trusted controller installation before entering
+any candidate. For each chain keep a clean dedicated tooling checkout at that
+installation's full trusted commit. `E` is its absolute
+`.agents/skills/hreview/scripts/reviewer-entry.py`. Use its adjacent H, L, P and C
+throughout (run Python with `-IB` to keep these inputs clean).
+
+At step 5, pin the live target branch tip with
+`git ls-remote --exit-code origin refs/heads/<baseRefName>`, fetch that SHA, and
+create a separate clean detached worktree at it in private scratch outside the
+candidate. Verify origin belongs to the PR repository. Keep the policy and tooling
+SHAs and paths in private run state. On resume use the saved pins and supply `--receipt <saved receipt>` on check and context; an active run
+whose original policy cannot be established is blocked. The target tip governs policy;
+the merge base remains the ledger's review-range base. For each command below,
+`<binding>` means `--policy-tree <detached path> --policy-revision <target SHA>
+--tool-revision <trusted tool SHA> --repo <repo> --pr <n> --head <exact head>
+--engine <engine>`. Run it in the candidate root.
+
+Before classification, run `python3 -IB "$E" check <binding>` for the herder engine.
+Set `classifier` to the returned absolute path. Use the reported base classification and the detached base's workflow, review skills,
+addendum and gate definitions for every policy decision in steps 2, 6–9 and the
+pass. Use the base classifier for any repeated classification. Apply routing rules
+only when the pinned base defines them; the candidate's changes to these rules
+are review subjects. The current controller supplies lifecycle, authorization and
+evidence transport. A disagreement with a required base gate, budget or capability
+blocks the chain. Never use the old ledger for evidence or substitute a different
+tool after a refusal.
+
+After resolving the order, check each assigned engine's binding before step 9
+and before any restart reservation, approval claim, roster write or round.
+For an active run read its order from the verified lifecycle with the bound controller; keep its original review base and budget. Only after all checks pass, apply any
+requested silent pin. Run `python3 -IB "$E" context <binding>` for each engine;
+require all receipts and destinations to agree, and require silent for an explicit
+silent request. Save the receipt privately with the run pins. Run these checks with the effective reviewer environment (including actor, profile and silent store); if pane visibility is uncertain, preflight it in the pane before startup. A missing command,
+unreadable owner or destination, unsupported base, or different receipt blocks
+before startup. Never infer ordinary mode from an error. Keep all lifecycle,
+foreign-owner, restart and round guards below.
+
 ## Preflight (per PR)
 
 1. `test "${HERDR_ENV:-}" = 1`, or say this session is not inside herdr and stop. Then the permissions preflight and its Claude auto-mode check (herdr.md) for every engine in the review order.
-2. Read `.agents/REVIEW_WORKFLOW.md` and `.agents/references/local-review-ledger.md` if not already in context this session. They govern tier, rounds, roster, recovery and telemetry; this skill adds only the herding.
+2. Read the pinned target's workflow and the bound tooling's ledger protocol after resolving the checkouts in step 5. They govern tier, rounds, roster, recovery and telemetry; this skill adds only the herding.
 3. `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; `gh pr view <n> --json headRefName,headRefOid,baseRefName,isDraft,state,author`. The PR must be open. Full SHAs only.
 4. Config: `python3 -I $C repo` and `python3 -I $C user`. Either failing is a block.
 5. Worktree: reuse the one already on the PR branch (`git worktree list --porcelain`); otherwise `git worktree add <worktree_root>/<name>-pr<n> <branch>`. Defer bootstrap until after step 6. Never switch a primary checkout. Require it clean with local HEAD = PR head = remote head.
-6. Tier extensions first: before tier or glance routing, apply the workflow's **Verified zero-file comparison** at the fresh head and base, including its common PR-wide `run-state` inventory. Only `none` permits this route; active, foreign, ended and transitioned runs retain step 9's lifecycle restrictions and cannot be bypassed. Failed or incomplete classification, Git or remote reads block; `skip` alone is insufficient. An empty merge-base diff with lifecycle `none` that does not verify, such as one whose candidate merge tree differs from the target tree, blocks this PR's path: notify the block and start no chain or auto-glance. When verified, print the workflow's no-content line, report the exact head and base, and return for this PR without a chain or auto-glance, bootstrap, roster, review artifacts or ready flip. Continue independent/companion ordering. Otherwise, for a nonempty diff or an empty one whose lifecycle is not `none`: if `.review/addendum.local.md` has a `## Review tier extensions` section and the diff touches a surface it lists as always-Deep, skip the glance gate and resolve Deep under trigger 6 (the standing request recorded there), naming the extension in the trigger. Otherwise apply the workflow's human-glance gate, unless the PR already carries a tier marker, a `local-review-run:v1` marker, or the invocation explicitly asked for this change to be reviewed anyway. Classify the current head with `node $L classify-changeset --base <merge-base sha> --head <head>`. On `dependencyUpdate`, resolve the workflow's durable dependency review override first: direct human requests, current or previously applied `review: full` labels from the complete label-event history, and matching always-Deep tier extensions. A matching extension takes precedence and selects Deep under trigger 6. Label removal alone does not revoke the override; incomplete history blocks the path. Under the override, classify again with `--force-review` and continue as a mixed range whose dependency files the chain also reviews. Otherwise run `dep-analysis <n>` yourself in this herder session, following that skill in full, report its verdict, and end this PR's path there. When it opens a fix PR, notify `<repo>#<fix>` with `--sound request` and end this PR's final report with its `DEP-FIX-PR` line. Start no chain for the fix PR in this invocation: the orchestrator, or the user, starts one. On a non-empty `dependencyPaths` without `dependencyUpdate`, continue for the code, and run `dep-analysis <n>` once the chain converges. On `skip` or `smallChange`:
+6. Tier extensions first: before tier or glance routing, apply the workflow's **Verified zero-file comparison** at the fresh head and base, including its common PR-wide `run-state` inventory. Only `none` permits this route; active, foreign, ended and transitioned runs retain step 9's lifecycle restrictions and cannot be bypassed. Failed or incomplete classification, Git or remote reads block; `skip` alone is insufficient. An empty merge-base diff with lifecycle `none` that does not verify, such as one whose candidate merge tree differs from the target tree, blocks this PR's path: notify the block and start no chain or auto-glance. When verified, print the workflow's no-content line, report the exact head and base, and return for this PR without a chain or auto-glance, bootstrap, roster, review artifacts or ready flip. Continue independent/companion ordering. Otherwise, for a nonempty diff or an empty one whose lifecycle is not `none`: if `.review/addendum.local.md` has a `## Review tier extensions` section and the diff touches a surface it lists as always-Deep, skip the glance gate and resolve Deep under trigger 6 (the standing request recorded there), naming the extension in the trigger. Otherwise apply the workflow's human-glance gate, unless the PR already carries a tier marker, a `local-review-run:v1` marker, or the invocation explicitly asked for this change to be reviewed anyway. Classify the current head with `node "$classifier" classify-changeset --base <merge-base sha> --head <head>`. On `dependencyUpdate`, resolve the workflow's durable dependency review override first: direct human requests, current or previously applied `review: full` labels from the complete label-event history, and matching always-Deep tier extensions. A matching extension takes precedence and selects Deep under trigger 6. Label removal alone does not revoke the override; incomplete history blocks the path. Under the override, classify again with `--force-review` and continue as a mixed range whose dependency files the chain also reviews. Otherwise run `dep-analysis <n>` yourself in this herder session, following that skill in full, report its verdict, and end this PR's path there. When it opens a fix PR, notify `<repo>#<fix>` with `--sound request` and end this PR's final report with its `DEP-FIX-PR` line. Start no chain for the fix PR in this invocation: the orchestrator, or the user, starts one. On a non-empty `dependencyPaths` without `dependencyUpdate`, continue for the code, and run `dep-analysis <n>` once the chain converges. On `skip` or `smallChange`:
    - **`glance.auto` is `false`** in `herd-config.py repo`: print the workflow's line, notify, and stop that PR for a human glance.
    - **`glance.auto` is `true`**: resolve the author as in step 8 (`--author` wins over commit trailers; missing or ambiguous authorship blocks). Run `auto-glance <n> --author <author>` yourself in this herder session, following that skill in full, and wait for its result. Do not wait for `horch` to route it. The auto-glance skill owns the reviewer pane, exact-head result and ready flip; it rechecks eligibility and configuration. Report its clean, findings, or blocked outcome, then end this PR's path here without creating a chain run or roster or falling through to step 7. Continue other PRs under the invocation's independent/companion ordering. A declined or blocked glance is not permission to start a chain.
 
@@ -136,15 +175,15 @@ One tab: this herder pane, plus one row per PR and one pane per engine in the or
 
 Repeat until the PR reaches an end state.
 
-1. `head=$(gh pr view <n> --json headRefOid -q .headRefOid)`; `python3 -I $H next-pass --repo $repo --pr <n> --head $head`.
+1. Run `context <binding> --receipt <saved receipt>` at the fresh exact head before opening the round. A mismatch blocks. `head=$(gh pr view <n> --json headRefOid -q .headRefOid)`; `python3 -I $H next-pass --repo $repo --pr <n> --head $head`.
    - `status: converged` → **Converged**.
    - `status: exhausted` → **Exhausted**.
    - `status: next` → take `engine` and `round`.
    - A non-zero exit is a block, with the controller's message.
 2. **Start a fresh session** in the engine's pane, named `pr<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
 3. **Prompt.**
-   - Skill: Lean uses `critique`; Deep uses `deepcritique`. On this engine's first pass in the PR at Lean, run `refactorpass` first; its ledger latch decides whether it runs. Address the skill the way the target engine expects (herdr.md, Engines).
-   - Text: the skill line, then `Review pass for <repo> PR #<n>, run <run_id>, round <round>, pinned base <base>, exact head <head>. Post verified findings inline before edits; validate, commit, push, reply and resolve; publish the normal review result.<for a silent PR: This PR is silent: pass `silent` to the skill and keep the ledger local per the protocol's Silent mode.><with carried findings: This PR carries partition <partition> of #<original_pr>, which was split with these findings unresolved: <thread URLs>. Read each; any that still applies at this head is a finding of this pass.> This session owns exactly this one pass: do not launch another engine, start or finish the run, mark the PR ready, merge, or force-push.`
+   - Skill: Lean uses `critique`; Deep uses `deepcritique`. On this engine's first pass in the PR at Lean, run `refactorpass` first; its ledger latch decides whether it runs. For each named skill, including nested lanes, enter the verified skill explicitly with the command below.
+   - Text: first give the literal command `python3 -IB "<absolute E>" enter <binding> --receipt <saved receipt> --skill <skill> --base <run base> --run-id <run id> --round <round>` with all values filled in. For a nested lane following an authorized fix, refresh its exact head and keep the original base, run, round and receipt. Tell the reviewer to execute it in the candidate and follow the emitted skill, including its absolute helper paths, then give `Review pass for <repo> PR #<n>, run <run_id>, round <round>, pinned base <base>, exact head <head>. Post verified findings inline before edits; validate, commit, push, reply and resolve; publish the normal review result.<for a silent PR: This PR is silent: pass `silent` to the skill and keep the ledger local per the protocol's Silent mode.><with carried findings: This PR carries partition <partition> of #<original_pr>, which was split with these findings unresolved: <thread URLs>. Read each; any that still applies at this head is a finding of this pass.> This session owns exactly this one pass: do not launch another engine, start or finish the run, mark the PR ready, merge, or force-push.`
    - `herdr agent prompt <name> "<text>" --wait --timeout 600000`.
 4. **Drive until the pass lands.** Loop on `herdr agent wait <name> --timeout 600000`:
    - `blocked`: read the pane and answer with `send-keys` or `prompt`. Choose the answer that continues the pass within its skill's contract. Accept a tier recommendation. Never pick an option that dismisses, downgrades or overrides a finding; if that is the only way forward, it is a block.
@@ -169,7 +208,7 @@ A pass that returns blocked only because the local gate is red on code the PR do
 3. Fix it in a **separate** PR: `git worktree add <worktree_root>/<name>-<topic> -b fix/<topic> origin/<PR base>`, bootstrap, fix, prove the failing check passes and that the new or changed test fails against the old code, format and lint, commit (conventional, closing keyword in the message), push, `gh pr create --draft --base <PR base>`. Never put the fix on the PR under review.
 4. **Eligibility (fail closed).** Every condition must hold, or it is a block: open nothing, notify with the cause and the proposed fix, and stop that PR.
    - `python3 -I $C gate-fix-paths --base <fix base> --head <fix head>` reports `eligible: true`. The repository's globs are the only source of what a gate fix may touch.
-   - `node $L classify-changeset` over the fix range reports `smallChange: true`.
+   - `node "$classifier" classify-changeset` over the fix range reports `smallChange: true`.
    - Nothing the ActiveLoom sync delivers; fix that upstream instead.
    - The script's contract is unchanged: exit codes, refusals, assertions and outputs stay the same, and the PR body says so.
    - The gate is not weakened: never skip, delete, loosen or `.todo` a failing test, add an environment guard that skips it, or widen a timeout to get green.
