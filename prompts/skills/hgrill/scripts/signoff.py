@@ -71,11 +71,11 @@ SIGNOFF_SCHEMA = "hgrill-signoff:v1"
 ANSWERS_SCHEMA = "hgrill-signoff-answers:v1"
 SOURCE_LEGACY = "legacy-prose-sha256"
 SOURCE_JSON = "v1-json"
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
-REF_RE = re.compile(r"^(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#)?(?P<n>[1-9][0-9]*)$")
-ITEM_ID_RE = re.compile(r"^[PAR][1-9][0-9]*$")
-OPTION_KEY_RE = re.compile(r"^[a-z]$")
-HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\Z")
+REF_RE = re.compile(r"^(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#)?(?P<n>[1-9][0-9]*)\Z")
+ITEM_ID_RE = re.compile(r"^[PAR][1-9][0-9]*\Z")
+OPTION_KEY_RE = re.compile(r"^[a-z]\Z")
+HASH_RE = re.compile(r"^[0-9a-f]{64}\Z")
 KINDS = {"product", "assumption", "refuted"}
 NOTE_MAX = 4000
 BODY_MAX = 256 * 1024
@@ -161,6 +161,8 @@ LABELS = {
     "If wrong": "if_wrong",
     "Reconciled": "reconciled",
 }
+# The block template's label order; a repeat or a reversal means a label sat inside text.
+LABEL_ORDER = ("Options", "Applied now", "Recommended", "Evidence", "If reversed", "Reconciled", "If wrong")
 LABEL_RE = re.compile(r"(?:^|(?<=[\s.;)]))(" + "|".join(map(re.escape, LABELS)) + r"):\s*")
 OPTION_SPLIT_RE = re.compile(r"(?:^|;\s*)\(([a-z])\)\s*")
 ENGINES_TAIL_RE = re.compile(r"\s+[—–]\s+([^—–]+?)\s*$")
@@ -222,6 +224,11 @@ def _parse_item(item_id: str, kind: str, text: str) -> dict[str, Any]:
     }
     pieces = LABEL_RE.split(rest)
     lead, labelled = pieces[0], list(zip(pieces[1::2], pieces[2::2]))
+    ranks = [LABEL_ORDER.index(label) for label, _ in labelled]
+    if any(a >= b for a, b in zip(ranks, ranks[1:])):
+        # Fail closed: a split field would drop or misfile text, such as a later option.
+        order = ", ".join(label for label, _ in labelled)
+        raise SignoffError(f"{item_id}: field labels repeat or are out of order ({order}); is a label inside text?")
     lead = _strip_sentence(lead)
     if kind == "refuted":
         item["detail"] = lead
@@ -1010,10 +1017,12 @@ class SignoffHandler(BaseHTTPRequestHandler):
             done = self.server.store(normalized)
         except (OSError, UsageError) as exc:
             return self._json(500, {"ok": False, "error": f"could not store answers: {exc.__class__.__name__}"})
-        self._json(200, {"ok": True, "repo": normalized["repo"], "issue": normalized["issue"]})
-        if done:
-            # Only after the 200 is written: `serve` exits on this event.
-            self.server.all_done.set()
+        try:
+            self._json(200, {"ok": True, "repo": normalized["repo"], "issue": normalized["issue"]})
+        finally:
+            if done:
+                # After the 200 is written, or its write failed: `serve` exits on this event.
+                self.server.all_done.set()
 
 
 def cmd_serve(args: argparse.Namespace) -> dict[str, Any]:

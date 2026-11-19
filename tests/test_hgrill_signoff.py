@@ -195,6 +195,21 @@ def test_legacy_option_structure_fails_closed(tail: str, message: str) -> None:
         so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}")
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        # A label inside option text would end the options there and drop (b).
+        "Options: (a) keep the old path. If wrong: revert — alpha; (b) two — beta. Applied now: (a).",
+        # A repeated label would keep only its last value.
+        "Evidence: one. Evidence: two.",
+    ],
+)
+def test_legacy_field_labels_out_of_template_order_fail_closed(tail: str) -> None:
+    inner = f"**Product calls — yours to confirm:**\n1. ⚠ **Q** — the passes disagreed. {tail}"
+    with pytest.raises(so.SignoffError, match="field labels repeat or are out of order"):
+        so.load_snapshot(REPO, 1, "t", f"{so.START}\n{inner}\n{so.END}")
+
+
 def test_malformed_v1_copy_does_not_fall_back_to_prose() -> None:
     body = f'{so.START}\n<!-- hgrill-assumptions:v1 {{"schema": "x" -->\n**Assumptions:**\n1. **A** — alpha.\n{so.END}'
     with pytest.raises(so.SignoffError, match="no parseable copy"):
@@ -273,6 +288,8 @@ def test_v1_json_takes_precedence_and_hash_is_canonical() -> None:
         (lambda s: s["items"][0].update(applied="z"), "not an option"),
         (lambda s: s["items"][1].update(options=[{"key": "a"}]), "only product calls"),
         (lambda s: s["items"][0].update(id="X1"), "invalid item id"),
+        (lambda s: s["items"].append({**s["items"][1], "id": "A1\n"}), "invalid item id"),
+        (lambda s: s["items"][0]["options"].append({"key": "a\n"}), "invalid option"),
     ],
 )
 def test_v1_json_validation(mutate: Any, message: str) -> None:
@@ -552,6 +569,22 @@ def test_completion_is_signalled_only_after_the_last_response(server: Any, monke
     assert request(server, "POST", "/answers", all_confirm(server.snap))[0] == 200
     assert server.all_done.wait(5)
     assert done_at_send == [False]
+
+
+def test_completion_is_signalled_when_the_last_response_write_fails(server: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The page may be gone (tab closed while sending); the stored answers still complete the run.
+    def broken(self: Any, status: int, value: dict[str, Any]) -> None:
+        raise BrokenPipeError("client went away")
+
+    monkeypatch.setattr(so.SignoffHandler, "_json", broken)
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    headers = {"Content-Type": "application/json", "X-Signoff-Token": "tok-123"}
+    conn.request("POST", "/answers", body=json.dumps(all_confirm(server.snap)).encode(), headers=headers)
+    with pytest.raises((http.client.HTTPException, OSError)):
+        conn.getresponse()
+    conn.close()
+    assert server.all_done.wait(5)
+    assert server.stored[(REPO, 7)].is_file()
 
 
 @pytest.mark.parametrize(
