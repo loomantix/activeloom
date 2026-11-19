@@ -22,6 +22,7 @@
 .agents/skills/grill/SKILL.md
 .agents/skills/handoff/SKILL.md
 .agents/skills/hgrill/SKILL.md
+.agents/skills/hgrill/scripts/signoff.py
 .agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
 .agents/skills/hpromote/SKILL.md
@@ -81,6 +82,7 @@
 .claude/skills/grill/SKILL.md
 .claude/skills/handoff/SKILL.md
 .claude/skills/hgrill/SKILL.md
+.claude/skills/hgrill/scripts/signoff.py
 .claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
 .claude/skills/hpromote/SKILL.md
@@ -138,6 +140,7 @@
 .codex/skills/grill/SKILL.md
 .codex/skills/handoff/SKILL.md
 .codex/skills/hgrill/SKILL.md
+.codex/skills/hgrill/scripts/signoff.py
 .codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md
 .codex/skills/hpromote/SKILL.md

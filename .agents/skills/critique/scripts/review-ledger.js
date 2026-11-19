@@ -22,11 +22,29 @@ THE SOFTWARE.
 */
 
 // src/cli.ts
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
+
+// src/errors.ts
+var LedgerError = class extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "LedgerError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function fail(message) {
+  throw new LedgerError(message);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/hash.ts
+import { createHash } from "crypto";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.16.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.18.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -131,19 +149,24 @@ var CANONICAL_TOKEN_BUCKETS = [
   "reasoning"
 ];
 
-// src/errors.ts
-var LedgerError = class extends Error {
-  constructor(message, options) {
-    super(message, options);
-    this.name = "LedgerError";
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-};
-function fail(message) {
-  throw new LedgerError(message);
+// src/hash.ts
+function sha256Text(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+function requireToken(value, label) {
+  if (!TOKEN_RE.test(value)) {
+    fail(`${label} must match [A-Za-z0-9._:/-]+`);
+  }
+  return value;
+}
+function requireSha(value, name) {
+  if (!SHA_RE.test(value)) {
+    fail(`--${name} must be a full 40-character lowercase commit SHA`);
+  }
+  return value;
 }
 
 // src/github.ts
@@ -173,29 +196,6 @@ function parseJsonOrFail(raw, message) {
 
 // src/protocol.ts
 import { readFileSync } from "fs";
-
-// src/hash.ts
-import { createHash } from "crypto";
-function sha256Text(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-function sha256Bytes(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-function requireToken(value, label) {
-  if (!TOKEN_RE.test(value)) {
-    fail(`${label} must match [A-Za-z0-9._:/-]+`);
-  }
-  return value;
-}
-function requireSha(value, name) {
-  if (!SHA_RE.test(value)) {
-    fail(`--${name} must be a full 40-character lowercase commit SHA`);
-  }
-  return value;
-}
-
-// src/protocol.ts
 function readLegacyBody(path, marker, bodyText) {
   let body;
   if (bodyText !== void 0) {
@@ -1454,6 +1454,9 @@ function reviewThreads(repo, pr, threadsFile, expectedDigest) {
   return threads;
 }
 function fetchReviewThreads(repo, pr) {
+  return parseReviewThreadPages(fetchReviewThreadPages(repo, pr));
+}
+function fetchReviewThreadPages(repo, pr) {
   const parts = repo.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     fail("--repo must be OWNER/REPO");
@@ -1494,7 +1497,8 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     "-F",
     `number=${pr}`
   ]);
-  return parseReviewThreadPages(pages);
+  parseReviewThreadPages(pages);
+  return pages;
 }
 function findRootThread(repo, pr, rootCommentId) {
   const parts = repo.split("/");
@@ -1655,7 +1659,525 @@ function rowsHaveHistoricalMarkers(rows) {
   });
 }
 
-// ../../node_modules/.pnpm/@babel+parser@8.1.0/node_modules/@babel/parser/lib/index.js
+// src/revalidation.ts
+var PREFIX = "<!-- local-review-revalidation:v1 ";
+function canonical(record) {
+  return JSON.stringify(record, Object.keys(record).sort());
+}
+function matchRevalidation(body) {
+  if (!body.includes("<!-- local-review-revalidation:")) return null;
+  const line = body.split("\n")[0];
+  if (!line.startsWith(PREFIX) || !line.endsWith(" -->"))
+    fail("malformed revalidation marker");
+  let record;
+  try {
+    record = JSON.parse(line.slice(PREFIX.length, -4));
+  } catch {
+    fail("malformed revalidation JSON");
+  }
+  const keys = [
+    "contentSha",
+    "engine",
+    "fingerprint",
+    "fromEngine",
+    "fromHead",
+    "fromRound",
+    "head",
+    "maxRounds",
+    "occurrence",
+    "round",
+    "runCommentId",
+    "runId"
+  ];
+  if (!record || JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(keys))
+    fail("revalidation fields differ");
+  if (line !== `${PREFIX}${canonical(record)} -->`)
+    fail("noncanonical revalidation marker");
+  const engines = ["codex", "claude", "gemini", "antigravity"];
+  if (!engines.includes(record.engine) || !engines.includes(record.fromEngine))
+    fail("invalid revalidation engine");
+  for (const number of [
+    record.round,
+    record.fromRound,
+    record.occurrence,
+    record.runCommentId,
+    record.maxRounds
+  ])
+    if (!Number.isSafeInteger(number) || number < 1)
+      fail("invalid revalidation integer");
+  requireSha(record.head, "head");
+  requireSha(record.fromHead, "fromHead");
+  requireToken(record.fingerprint, "fingerprint");
+  if (!/^[0-9a-f]{64}$/.test(record.runId)) fail("invalid revalidation run");
+  const content = body.slice(line.length + 1);
+  validateContentString(content);
+  if (sha256Text(content) !== record.contentSha)
+    fail("invalid revalidation content hash");
+  return record;
+}
+function postedBefore(row, startedAt) {
+  const created = row["createdAt"] ?? row["created_at"];
+  if (typeof created !== "string" || startedAt === void 0) return false;
+  const posted = Date.parse(created);
+  const started = Date.parse(startedAt);
+  return Number.isFinite(posted) && Number.isFinite(started) && posted < started;
+}
+function revalidatedComments(input, repo, pr, sameThread = false) {
+  const actor = currentActor();
+  const owned = (row) => (row.author ?? row.user)?.login === actor;
+  if (!input.some(
+    (row) => owned(row) && String(row.body ?? "").includes("<!-- local-review-revalidation:")
+  ))
+    return input;
+  const rows = input.map((row) => ({ ...row }));
+  const originalRows = input;
+  const runs = reviewRuns(getIssueComments(repo, pr));
+  const carriedRuns = /* @__PURE__ */ new Map();
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!owned(row)) continue;
+    const record = matchRevalidation(String(row.body ?? ""));
+    if (!record) continue;
+    const runIndex = runs.findIndex(
+      (run2) => run2.id === record.runId && run2.commentId === record.runCommentId
+    );
+    const run = runs[runIndex];
+    if (!run || run.maxRounds !== record.maxRounds || record.round > run.maxRounds)
+      fail("revalidation run identity or round cap differs");
+    const occurrenceKey = `${record.fingerprint}#${record.occurrence}`;
+    const previousRunIndex = carriedRuns.get(occurrenceKey);
+    const findings = rows.map((r, i) => ({
+      row: r,
+      index: i,
+      finding: owned(r) ? matchFinding(String(r.body ?? "")) : null
+    })).filter((entry) => entry.finding?.fingerprint === record.fingerprint);
+    const roots = findings.filter((entry) => entry.finding.occurrence === 1);
+    if (roots.length !== 1)
+      fail("revalidation requires exactly one fingerprint root thread");
+    if (findings.some((entry, i) => entry.finding.occurrence !== i + 1))
+      fail("revalidation finding occurrence sequence is invalid");
+    const rootId = roots[0].row.databaseId ?? roots[0].row.id;
+    if ((!sameThread || row["in_reply_to_id"] !== void 0) && row["in_reply_to_id"] !== rootId)
+      fail("revalidation reply belongs to a different root thread");
+    const targets = findings.filter(
+      (entry) => entry.index < index && entry.finding.engine === record.fromEngine && entry.finding.round === record.fromRound && entry.finding.head === record.fromHead && entry.finding.occurrence === record.occurrence
+    );
+    if (targets.length !== 1 || findings.some(
+      (entry) => entry.index < index && entry.finding.occurrence > record.occurrence
+    ))
+      fail("revalidation does not identify the latest earlier finding");
+    if (rows.slice(0, index).some((r) => {
+      if (!owned(r)) return false;
+      const disposition = matchDisposition(String(r.body ?? ""));
+      return disposition?.fingerprint === record.fingerprint && disposition.occurrence === record.occurrence;
+    }))
+      fail("cannot revalidate a disposed occurrence or fabricated disposition");
+    const target = targets[0];
+    const finding = target.finding;
+    const restartedAtSameHead = record.fromHead === record.head && (previousRunIndex !== void 0 ? previousRunIndex < runIndex : postedBefore(target.row, run.startedAt));
+    if (!restartedAtSameHead && (record.fromHead === record.head || !compareIsForward(repo, record.fromHead, record.head)))
+      fail("revalidation requires a forward head transition");
+    const content = String(target.row.body).slice(
+      String(target.row.body).indexOf("\n") + 1
+    );
+    target.row.body = buildFindingBody({
+      ...finding,
+      engine: record.engine,
+      round: record.round,
+      head: record.head,
+      content
+    }).body;
+    target.row["createdAt"] = row["createdAt"] ?? row["created_at"];
+    target.row["created_at"] = row["created_at"] ?? row["createdAt"];
+    let severity = finding.severity;
+    for (const prior of rows.slice(target.index + 1, index)) {
+      if (!owned(prior)) continue;
+      const correction = matchSeverityCorrection(String(prior.body ?? ""));
+      if (correction?.fingerprint !== record.fingerprint || correction.occurrence !== record.occurrence)
+        continue;
+      if (correction.engine !== finding.engine || correction.round !== finding.round || correction.head !== finding.head || correction.from !== severity || !sameThread && prior["in_reply_to_id"] !== rootId)
+        fail("revalidation has a mismatched severity correction");
+      severity = correction.to;
+      prior.body = buildSeverityCorrectionBody({
+        ...correction,
+        engine: record.engine,
+        round: record.round,
+        head: record.head,
+        content: String(prior.body).slice(String(prior.body).indexOf("\n") + 1)
+      }).body;
+    }
+    row.body = "Verified revalidation evidence.\n";
+    carriedRuns.set(occurrenceKey, runIndex);
+  }
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!owned(row)) continue;
+    const disposition = matchDisposition(String(row.body ?? ""));
+    if (!disposition) continue;
+    const carried = originalRows.some((r) => {
+      if (!owned(r)) return false;
+      const record = matchRevalidation(String(r.body ?? ""));
+      return record?.fingerprint === disposition.fingerprint && record.occurrence === disposition.occurrence;
+    });
+    if (!carried) continue;
+    const finding = rows.slice(0, index).map((r) => owned(r) ? matchFinding(String(r.body ?? "")) : null).filter(
+      (f) => f?.fingerprint === disposition.fingerprint && f.occurrence === disposition.occurrence
+    );
+    if (finding.length !== 1 || finding[0].engine !== disposition.engine || finding[0].round !== disposition.round)
+      fail("revalidated occurrence has a fabricated disposition identity");
+  }
+  return rows;
+}
+function requireRevalidationRun(params) {
+  const state = readLifecycle(params.repo, params.pr);
+  if (state.state !== "active" || !state.run || state.run.actor !== currentActor())
+    fail("revalidation requires an active authenticated actor-owned run");
+  if (!Number.isSafeInteger(params.round) || params.round < 1 || params.round > state.run.maxRounds)
+    fail("revalidation round exceeds the unchanged run cap");
+  return state.run;
+}
+function revalidateOccurrence(params) {
+  const actor = assertLiveActor(assertActor());
+  verifyHead(params.repo, params.pr, params.head);
+  const run = requireRevalidationRun(params);
+  const content = resolveContent(params);
+  if (content === void 0)
+    fail("revalidate-occurrence requires exact-head reproduction evidence");
+  validateContentString(content);
+  const comments = getReviewComments(params.repo, params.pr);
+  const existing = comments.filter((row) => {
+    const record2 = matchRevalidation(String(row.body ?? ""));
+    return record2?.fingerprint === params.fingerprint && record2.occurrence === params.occurrence && record2.head === params.head && record2.engine === params.engine && record2.round === params.round && record2.runId === run.id;
+  });
+  if (existing.length > 1) fail("duplicate revalidation identity");
+  const prior = existing[0];
+  const view = revalidatedComments(
+    prior ? comments.filter((row) => row !== prior) : comments,
+    params.repo,
+    params.pr
+  );
+  const findings = view.map((row) => ({ row, finding: matchFinding(String(row.body ?? "")) })).filter((entry) => entry.finding?.fingerprint === params.fingerprint);
+  const roots = findings.filter((entry) => entry.finding.occurrence === 1);
+  if (roots.length !== 1 || (roots[0].row.databaseId ?? roots[0].row.id) !== params.commentId)
+    fail("revalidation requires the original fingerprint root comment");
+  const target = findings.filter(
+    (entry) => entry.finding.occurrence === params.occurrence
+  );
+  if (target.length !== 1)
+    fail("revalidation requires an authenticated original occurrence");
+  if (getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  }))
+    fail("cannot revalidate a resolved thread");
+  const record = {
+    engine: params.engine,
+    round: params.round,
+    head: params.head,
+    fingerprint: params.fingerprint,
+    occurrence: params.occurrence,
+    fromEngine: target[0].finding.engine,
+    fromRound: target[0].finding.round,
+    fromHead: target[0].finding.head,
+    runId: run.id,
+    runCommentId: run.commentId,
+    maxRounds: run.maxRounds,
+    contentSha: sha256Text(content)
+  };
+  const marker = `${PREFIX}${canonical(record)} -->`;
+  const body = `${marker}
+${content}`;
+  if (prior && prior.body !== body)
+    fail("revalidation identity has conflicting evidence");
+  const candidate = {
+    id: -1,
+    user: { login: actor },
+    body,
+    in_reply_to_id: params.commentId
+  };
+  revalidatedComments(
+    [...comments.filter((row) => row !== prior), candidate],
+    params.repo,
+    params.pr
+  );
+  assertLiveActor(actor);
+  const posted = postReviewComment(
+    params.repo,
+    params.pr,
+    params.head,
+    marker,
+    body,
+    { replyTo: params.commentId }
+  );
+  revalidatedComments(
+    getReviewComments(params.repo, params.pr),
+    params.repo,
+    params.pr
+  );
+  if (getThreadState(params.threadId, params.commentId, {
+    repo: params.repo,
+    pr: params.pr
+  }))
+    fail("revalidation thread was resolved during publication");
+  verifyHead(params.repo, params.pr, params.head);
+  if (requireRevalidationRun(params).id !== run.id)
+    fail("active run changed during revalidation");
+  assertLiveActor(actor);
+  return {
+    comment_id: posted.commentId,
+    replayed: posted.replayed,
+    verified: true
+  };
+}
+
+// src/usage.ts
+var UsageError = class extends LedgerError {
+  constructor(message) {
+    super(message);
+    this.name = "LedgerError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function failUsage(message) {
+  throw new UsageError(message);
+}
+var oneOf = (values) => values.join("|");
+var ENGINE = `<${oneOf(SUPPORTED_ENGINES)}>`;
+var SHA = "<full-sha>";
+var SCOPE = "--repo <owner/repo> --pr <number>";
+var PASS = `--engine ${ENGINE} --round <n>`;
+var RESULT_IDENTITY = `--head ${SHA} ${PASS} --base ${SHA} --before ${SHA}`;
+var THREAD_SNAPSHOT = "[--threads-file <file> --expected-threads-sha256 <sha256>]";
+var HISTORY = "[--historical-comment-ids-file <file>]";
+var COMMANDS = {
+  "lifecycle-state": {
+    summary: "Print the PR-wide review-run lifecycle.",
+    synopsis: SCOPE
+  },
+  "preflight-anchor": {
+    summary: "Check that a finding can anchor on the PR diff.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>]`
+  },
+  "post-finding": {
+    summary: "Post one verified finding inline, before any fix.",
+    synopsis: `${SCOPE} --head ${SHA} --path <file> (--line <n> | --file-level) [--side <${oneOf(SUPPORTED_SIDES)}>] ${PASS} --fingerprint <stable-id> [--occurrence <n>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --content-file <file>`,
+    notes: [
+      "--content-file holds the finding prose only; the helper writes the marker and its content-sha256. There is no hash flag."
+    ]
+  },
+  "reopen-occurrence": {
+    summary: "Reopen a disposed finding as a new occurrence on its thread.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --severity <${oneOf(SUPPORTED_SEVERITIES)}> --lens <lens> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "revalidate-occurrence": {
+    summary: "Carry an undisposed occurrence, reproduced at the current head, into this pass's run.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      "--content-file holds the current-head reproduction only; the helper writes the revalidation marker and its content hash."
+    ]
+  },
+  "correct-severity": {
+    summary: "Record a corrected severity for a posted finding.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n> [--from-severity <${oneOf(SUPPORTED_SEVERITIES)}>] --severity <${oneOf(SUPPORTED_SEVERITIES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`
+  },
+  "preflight-fix": {
+    summary: "Authorize a fix for a posted finding before editing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> --occurrence <n>`
+  },
+  "preflight-publish": {
+    summary: "Check a publish-fixes manifest before pushing.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --findings-file <file>`
+  },
+  dispose: {
+    summary: "Reply with a finding disposition and resolve its thread; resumable, so retry the identical command.",
+    synopsis: `${SCOPE} --head ${SHA} ${PASS} --fingerprint <stable-id> [--occurrence <n>] --outcome <${oneOf(SUPPORTED_OUTCOMES)}> --comment-id <root-comment-id> --thread-id <thread-node-id> --content-file <file>`,
+    notes: [
+      "Run it once per finding. The helper refuses a second disposition for the same occurrence."
+    ]
+  },
+  reply: {
+    summary: "Reply on a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --comment-id <root-comment-id> (--content-file <file> | --body-file <file>) [${PASS}] [--fingerprint <stable-id>] [--outcome <${oneOf(SUPPORTED_OUTCOMES)}>]`
+  },
+  resolve: {
+    summary: "Resolve a review thread.",
+    synopsis: `${SCOPE} --head ${SHA} --thread-id <thread-node-id>`
+  },
+  reconcile: {
+    summary: "Show the occurrences, dispositions and next action for one fingerprint.",
+    synopsis: `${SCOPE} --head ${SHA} --fingerprint <stable-id>`
+  },
+  "post-pr-comment": {
+    summary: "Post a PR conversation comment.",
+    synopsis: `${SCOPE} --head ${SHA} --body-file <file>`
+  },
+  "classify-effect": {
+    summary: "Classify the effect of a commit range.",
+    synopsis: `--base ${SHA} --head ${SHA}`
+  },
+  "classify-changeset": {
+    summary: "Classify a range for the human-glance gate and tier.",
+    synopsis: `(--base ${SHA} --head ${SHA} | --diff-file <file>) [--prompt-surface <glob>]... [--force-review]`
+  },
+  "write-result": {
+    summary: "Write this pass's canonical v3 result file for a clean or changed pass.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> [--classification <${oneOf(SUPPORTED_CLASSIFICATIONS)}>] [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`,
+    notes: [
+      "--before is the PR head this pass started from; --head is the head it ends on.",
+      "--classification is required only when the head moved, and only takes minor or material.",
+      "Outside agent-loop, publish the written result with validate-result and then attest."
+    ]
+  },
+  "recover-result": {
+    summary: "Recover a saved result candidate after a finalization failure.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-recovery-sha256 <sha256> [--allowed-heads-file <file>] [--actor <login>] ${HISTORY}`
+  },
+  "write-blocked-result": {
+    summary: "Write a blocked v3 result naming one blocker.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> --blocker-file <file>`
+  },
+  "validate-result": {
+    summary: "Validate a result file and print its resultSha256.",
+    synopsis: `${RESULT_IDENTITY} --result-file <file> [--result-head ${SHA}]`
+  },
+  "export-threads": {
+    summary: "Write the PR's complete review-thread snapshot for attest and print its sha256.",
+    synopsis: `${SCOPE} --threads-file <new-file>`,
+    notes: [
+      "Pass the printed path and sha256 to attest as --threads-file and --expected-threads-sha256."
+    ]
+  },
+  attest: {
+    summary: "Verify the ledger and publish the pass/completion attestation.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} --result-file <file> --expected-result-sha256 <sha256> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`,
+    notes: [
+      "--expected-result-sha256 is the resultSha256 validate-result printed."
+    ]
+  },
+  finalize: {
+    summary: "Finish an interrupted pass from its saved result file.",
+    synopsis: `${SCOPE} --result-file <file> ${THREAD_SNAPSHOT} [--allowed-heads-file <file>] [--actor <login>] ${HISTORY} [--content-file <file>]`
+  },
+  "check-blocked-round": {
+    summary: "Check a blocked round for the controller recovery path.",
+    synopsis: `${SCOPE} ${RESULT_IDENTITY} [--allowed-heads-file <file>] ${HISTORY}`
+  },
+  "verify-ledger": {
+    summary: "Verify every finding's disposition, optionally against a result.",
+    synopsis: `${SCOPE} --head ${SHA} ${THREAD_SNAPSHOT} [--actor <login>] ${HISTORY} [${PASS} --base ${SHA} --before ${SHA} --result-file <file> [--result-head ${SHA}] [--allowed-heads-file <file>]]`
+  },
+  "post-roster": {
+    summary: "Declare the review roster.",
+    synopsis: `${SCOPE} --head ${SHA} --author ${ENGINE} --reviewers <engine[,engine]|none> --content-file <file> [--actor <login>]`
+  },
+  "read-roster": {
+    summary: "Print the effective review roster.",
+    synopsis: `${SCOPE} [--actor <login>]`
+  },
+  coverage: {
+    summary: "Report attestation coverage at a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "verify-coverage": {
+    summary: "Require every declared reviewer to have attested a head.",
+    synopsis: `${SCOPE} --head ${SHA} [--actor <login>]`
+  },
+  "emit-telemetry": {
+    summary: "Record this pass's telemetry; always exits 0.",
+    synopsis: `${SCOPE} --engine <engine> --pass-type <${oneOf(TELEMETRY_PASS_TYPES)}> --trigger <${oneOf(TELEMETRY_TRIGGERS)}> --stance <${oneOf(TELEMETRY_STANCES)}> --status <${oneOf(TELEMETRY_STATUSES)}> --token-source <${oneOf(TELEMETRY_TOKEN_SOURCES)}> --round <n> --base ${SHA} --head ${SHA} --findings-file <file> [--review-tier <${oneOf(TELEMETRY_REVIEW_TIERS)}>] [--idempotency-key <key>] [--telemetry-run-id <id>] [--engine-version <v>] [--tokens-file <file>] [--lanes-file <file>] [--changeset-file <file> | --diff-file <file>] [--prompt-surface <glob>]... [--duration-seconds <n>] [--emitted-at <iso>] [--prompt-stack-sha256 <sha256>] [--prompt-stack-version <v>] [--repo-instructions-sha256 <sha256>] [--truncated] [--dry-run] [--actor <login>]`
+  },
+  "enrich-telemetry-duration": {
+    summary: "Add a measured duration to an emitted telemetry record.",
+    synopsis: `${SCOPE} --idempotency-key <key> --engine <engine> --round <n> --base ${SHA} --head ${SHA} --duration-seconds <n> [--actor <login>]`
+  },
+  "replay-telemetry": {
+    summary: "Re-emit a saved telemetry recovery record.",
+    synopsis: "--repo <owner/repo> --file <file> [--dry-run] [--actor <login>]"
+  },
+  "telemetry-recorded": {
+    summary: "Report whether a telemetry record exists.",
+    synopsis: `${SCOPE} --idempotency-key <key> [--actor <login>]`
+  },
+  "metrics-setup": {
+    summary: "Create the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  "metrics-rotate": {
+    summary: "Rotate the review metrics store.",
+    synopsis: "--repo <owner/repo>"
+  },
+  export: {
+    summary: "Export telemetry records as JSON lines.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  report: {
+    summary: "Summarize telemetry records.",
+    synopsis: "--repo <owner/repo> (--pr <number> | --prs <n,n> | [--since <date>] [--until <date>]) [--allowed-logins <login,login>]"
+  },
+  "read-result": {
+    summary: "Print a result file.",
+    synopsis: "(--result-file <file> | --file <file>)"
+  },
+  "format-findings": {
+    summary: "Format a findings JSON array for a report.",
+    synopsis: "(--json-file <file> | --file <file>)"
+  },
+  "silent-pin": { summary: "Pin a PR to silent mode.", synopsis: SCOPE },
+  "silent-status": {
+    summary: "Report whether a PR is silent.",
+    synopsis: SCOPE
+  },
+  summary: {
+    summary: "Render a silent PR's end-of-loop summary.",
+    synopsis: SCOPE
+  },
+  "post-summary": {
+    summary: "Post a silent PR's approved summary.",
+    synopsis: `${SCOPE} --confirmed --expected-summary-sha256 <sha256>`
+  },
+  "read-ledger": {
+    summary: "Print the PR ledger comments and threads.",
+    synopsis: SCOPE
+  }
+};
+var COMMAND_NAMES = Object.keys(COMMANDS);
+function commandSynopsis(command) {
+  return Object.hasOwn(COMMANDS, command) ? COMMANDS[command].synopsis : void 0;
+}
+function commandHelp(command) {
+  const entry = COMMANDS[command];
+  const lines = [
+    `usage: review-ledger ${command} ${entry.synopsis}`,
+    "",
+    entry.summary
+  ];
+  for (const note of entry.notes ?? []) lines.push(`- ${note}`);
+  return lines.join("\n") + "\n";
+}
+function overviewHelp() {
+  const width = Math.max(...COMMAND_NAMES.map((name) => name.length));
+  const lines = [
+    "usage: review-ledger <subcommand> [flags]",
+    "       review-ledger <subcommand> --help",
+    "       review-ledger --version | --protocol-version",
+    "",
+    "Subcommands:",
+    ...COMMAND_NAMES.map(
+      (name) => `  ${name.padEnd(width)}  ${COMMANDS[name].summary}`
+    )
+  ];
+  return lines.join("\n") + "\n";
+}
+function usageHint(command) {
+  if (command !== void 0 && Object.hasOwn(COMMANDS, command)) {
+    return `usage: review-ledger ${command} ${COMMANDS[command].synopsis}
+Run \`review-ledger ${command} --help\` for details; use only the flags it lists.`;
+  }
+  return `subcommands: ${COMMAND_NAMES.join(", ")}
+Run \`review-ledger <subcommand> --help\` for its flags.`;
+}
+
+// ../../node_modules/.pnpm/@babel+parser@8.1.2/node_modules/@babel/parser/lib/index.js
 var Position = class {
   constructor(line, col, index) {
     this.line = void 0;
@@ -1763,9 +2285,10 @@ var StandardErrors = {
   EscapedCharNotAnIdentifier: "Invalid Unicode escape.",
   ExportBindingIsString: ({
     localName,
-    exportName
+    exportName,
+    typeModifierIn
   }) => `A string literal cannot be used as an exported binding without \`from\`.
-- Did you mean \`export { '${localName}' as '${exportName}' } from 'some-module'\`?`,
+- Did you mean \`export ${typeModifierIn === "declaration" ? "type " : ""}{ ${typeModifierIn === "specifier" ? "type " : ""}'${localName}' as '${exportName}' } from 'some-module'\`?`,
   ExportDefaultFromAsIdentifier: "'from' is not allowed as an identifier after 'export default'.",
   FilteredNamespaceDuplicateName: ({
     name
@@ -4574,7 +5097,6 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     }
     this.expect(13);
     const state = this.state.clone();
-    const originalNoArrowAt = this.state.noArrowAt;
     const node = this.startNodeAt(startLoc);
     let {
       consequent,
@@ -4584,12 +5106,10 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     let valid = result[0];
     const invalid = result[1];
     if (failed || invalid.length > 0) {
-      const noArrowAt = [...originalNoArrowAt];
       if (invalid.length > 0) {
         this.state = state;
-        this.state.noArrowAt = noArrowAt;
         for (let i = 0; i < invalid.length; i++) {
-          noArrowAt.push(invalid[i].start);
+          this.noArrowAt.add(this.offsetToSourcePos(invalid[i].start));
         }
         ({
           consequent,
@@ -4602,15 +5122,13 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       }
       if (failed && valid.length === 1) {
         this.state = state;
-        noArrowAt.push(valid[0].start);
-        this.state.noArrowAt = noArrowAt;
+        this.noArrowAt.add(this.offsetToSourcePos(valid[0].start));
         ({
           consequent
         } = this.tryParseConditionalConsequent());
       }
     }
     this.getArrowLikeExpressions(consequent, true);
-    this.state.noArrowAt = originalNoArrowAt;
     this.expect(10);
     node.test = expr;
     node.consequent = consequent;
@@ -5095,8 +5613,8 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     }
     return super.parseAsyncArrowFromCallExpression(node, call);
   }
-  shouldParseAsyncArrow() {
-    return this.match(10) || super.shouldParseAsyncArrow();
+  parseAsyncArrowHead(startLoc) {
+    return this.match(10) ? this.startNodeAt(startLoc) : super.parseAsyncArrowHead(startLoc);
   }
   parseMaybeAssign(refExpressionErrors, isParenItem) {
     let state = null;
@@ -5194,10 +5712,10 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     super.checkParams(node, allowDuplicates, isArrowFunction, strictModeChanged);
   }
   parseParenAndDistinguishExpression(canStartArrow) {
-    return super.parseParenAndDistinguishExpression(canStartArrow && !this.state.noArrowAt.includes(this.sourceToOffsetPos(this.state.start)));
+    return super.parseParenAndDistinguishExpression(canStartArrow && !this.noArrowAt.has(this.state.start));
   }
   parseSubscripts(base, startLoc, noCalls) {
-    if (base.type === "Identifier" && base.name === "async" && this.state.noArrowAt.includes(startLoc.index)) {
+    if (base.type === "Identifier" && base.name === "async" && this.noArrowAt.has(this.offsetToSourcePos(startLoc.index))) {
       this.next();
       const node = this.startNodeAt(startLoc);
       node.callee = base;
@@ -6449,6 +6967,7 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
     return false;
   }
   declareName(name, bindingType, loc) {
+    const scope = this.currentScope();
     if (bindingType & 4096) {
       if (this.hasImport(name, true)) {
         this.parser.raise(Errors.VarRedeclaration, loc, {
@@ -6456,9 +6975,9 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
         });
       }
       this.importsStack[this.importsStack.length - 1].add(name);
+      this.maybeExportDefined(scope, name);
       return;
     }
-    const scope = this.currentScope();
     let type = scope.tsNames.get(name) || 0;
     if (bindingType & 1024) {
       this.maybeExportDefined(scope, name);
@@ -6525,6 +7044,7 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
 var BaseParser = class {
   sawUnambiguousESM = false;
   ambiguousScriptDifferentAst = false;
+  noArrowAt = /* @__PURE__ */ new Set();
   sourceToOffsetPos(sourcePos) {
     return sourcePos + this.startIndex;
   }
@@ -6739,7 +7259,7 @@ var CommentsParser = class extends BaseParser {
   }
 };
 var State = class _State {
-  flags = 2048;
+  flags = 1024;
   get strict() {
     return (this.flags & 1) > 0;
   }
@@ -6766,8 +7286,8 @@ var State = class _State {
     this.startLoc = this.endLoc = new Position(startLine, startColumn, startIndex);
   }
   errors = [];
-  noArrowAt = [];
   noArrowParamsConversionAt = [];
+  tsArrowReturnTypeRestrictionAt = -1;
   regExpAllowedAt = -1;
   get canStartArrow() {
     return (this.flags & 2) > 0;
@@ -6818,26 +7338,19 @@ var State = class _State {
     if (v) this.flags |= 128;
     else this.flags &= -129;
   }
-  get inConditionalConsequent() {
+  get inHackPipelineBody() {
     return (this.flags & 256) > 0;
   }
-  set inConditionalConsequent(v) {
+  set inHackPipelineBody(v) {
     if (v) this.flags |= 256;
     else this.flags &= -257;
   }
-  get inHackPipelineBody() {
+  get seenTopicReference() {
     return (this.flags & 512) > 0;
   }
-  set inHackPipelineBody(v) {
+  set seenTopicReference(v) {
     if (v) this.flags |= 512;
     else this.flags &= -513;
-  }
-  get seenTopicReference() {
-    return (this.flags & 1024) > 0;
-  }
-  set seenTopicReference(v) {
-    if (v) this.flags |= 1024;
-    else this.flags &= -1025;
   }
   labels = [];
   commentsLen = 0;
@@ -6851,26 +7364,40 @@ var State = class _State {
   lastTokStartLoc = null;
   context = [types.brace];
   get canStartJSXElement() {
-    return (this.flags & 2048) > 0;
+    return (this.flags & 1024) > 0;
   }
   set canStartJSXElement(v) {
+    if (v) this.flags |= 1024;
+    else this.flags &= -1025;
+  }
+  get containsEsc() {
+    return (this.flags & 2048) > 0;
+  }
+  set containsEsc(v) {
     if (v) this.flags |= 2048;
     else this.flags &= -2049;
   }
-  get containsEsc() {
+  firstInvalidTemplateEscapePos = null;
+  get hasTopLevelAwait() {
     return (this.flags & 4096) > 0;
   }
-  set containsEsc(v) {
+  set hasTopLevelAwait(v) {
     if (v) this.flags |= 4096;
     else this.flags &= -4097;
   }
-  firstInvalidTemplateEscapePos = null;
-  get hasTopLevelAwait() {
+  get tsArrowReturnTypeAllowed() {
     return (this.flags & 8192) > 0;
   }
-  set hasTopLevelAwait(v) {
+  set tsArrowReturnTypeAllowed(v) {
     if (v) this.flags |= 8192;
     else this.flags &= -8193;
+  }
+  get tsGenericArrowParams() {
+    return (this.flags & 16384) > 0;
+  }
+  set tsGenericArrowParams(v) {
+    if (v) this.flags |= 16384;
+    else this.flags &= -16385;
   }
   strictErrors = /* @__PURE__ */ new Map();
   tokensLength = 0;
@@ -6886,8 +7413,8 @@ var State = class _State {
     state.startLoc = this.startLoc;
     state.endLoc = this.endLoc;
     state.errors = this.errors.slice();
-    state.noArrowAt = this.noArrowAt.slice();
     state.noArrowParamsConversionAt = this.noArrowParamsConversionAt.slice();
+    state.tsArrowReturnTypeRestrictionAt = this.tsArrowReturnTypeRestrictionAt;
     state.regExpAllowedAt = this.regExpAllowedAt;
     state.labels = this.labels.slice();
     state.commentsLen = this.commentsLen;
@@ -7170,12 +7697,11 @@ function readCodePoint(input, pos, lineStart, curLine, throwOnInvalid, errors) {
     if (code2 !== null && code2 > 1114111) {
       if (throwOnInvalid) {
         errors.invalidCodePoint(pos, lineStart, curLine);
-      } else {
-        return {
-          code: null,
-          pos
-        };
       }
+      return {
+        code: null,
+        pos
+      };
     }
   } else {
     ({
@@ -7203,6 +7729,30 @@ var Token = class {
   }
 };
 var locDataCache;
+var asciiIdentifierChar = new Uint8Array(128);
+for (let i = 0; i < 128; i++) {
+  asciiIdentifierChar[i] = isIdentifierChar(i) ? 1 : 0;
+}
+var keywordBuckets = [];
+var maxKeywordLength = 0;
+keywords$1.forEach((type, word) => {
+  const index = word.length << 7 | word.charCodeAt(0);
+  (keywordBuckets[index] ??= []).push(word, type);
+  if (word.length > maxKeywordLength) maxKeywordLength = word.length;
+});
+function lookupKeyword(word, firstCode) {
+  const {
+    length
+  } = word;
+  if (length > maxKeywordLength || firstCode >= 128) return void 0;
+  const bucket = keywordBuckets[length << 7 | firstCode];
+  if (bucket !== void 0) {
+    for (let i = 0; i < bucket.length; i += 2) {
+      if (bucket[i] === word) return bucket[i + 1];
+    }
+  }
+  return void 0;
+}
 var Tokenizer = class extends CommentsParser {
   isLookahead;
   tokens = [];
@@ -7387,29 +7937,36 @@ var Tokenizer = class extends CommentsParser {
     const spaceStart = this.state.pos;
     const attachComment = (this.optionFlags & 8192) > 0;
     let comments;
-    loop: while (this.state.pos < this.length) {
-      const ch = this.input.charCodeAt(this.state.pos);
+    const {
+      input,
+      length
+    } = this;
+    let pos = spaceStart;
+    loop: while (pos < length) {
+      const ch = input.charCodeAt(pos);
       switch (ch) {
         case 32:
         case 160:
         case 9:
-          ++this.state.pos;
+          ++pos;
           break;
         case 13:
-          if (this.input.charCodeAt(this.state.pos + 1) === 10) {
-            ++this.state.pos;
+          if (input.charCodeAt(pos + 1) === 10) {
+            ++pos;
           }
         case 10:
         case 8232:
         case 8233:
-          ++this.state.pos;
+          ++pos;
           ++this.state.curLine;
-          this.state.lineStart = this.state.pos;
+          this.state.lineStart = pos;
           break;
         case 47:
-          switch (this.input.charCodeAt(this.state.pos + 1)) {
+          switch (input.charCodeAt(pos + 1)) {
             case 42: {
+              this.state.pos = pos;
               const comment = this.skipBlockComment("*/");
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7419,7 +7976,9 @@ var Tokenizer = class extends CommentsParser {
               break;
             }
             case 47: {
+              this.state.pos = pos;
               const comment = this.skipLineComment(2);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7434,11 +7993,12 @@ var Tokenizer = class extends CommentsParser {
           break;
         default:
           if (isWhitespace(ch)) {
-            ++this.state.pos;
+            ++pos;
           } else if (ch === 45 && !this.inModule && this.optionFlags & 16384) {
-            const pos = this.state.pos;
-            if (this.input.charCodeAt(pos + 1) === 45 && this.input.charCodeAt(pos + 2) === 62 && (spaceStart === 0 || this.state.lineStart > spaceStart)) {
+            if (input.charCodeAt(pos + 1) === 45 && input.charCodeAt(pos + 2) === 62 && (spaceStart === 0 || this.state.lineStart > spaceStart)) {
+              this.state.pos = pos;
               const comment = this.skipLineComment(3);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7449,9 +8009,10 @@ var Tokenizer = class extends CommentsParser {
               break loop;
             }
           } else if (ch === 60 && !this.inModule && this.optionFlags & 16384) {
-            const pos = this.state.pos;
-            if (this.input.charCodeAt(pos + 1) === 33 && this.input.charCodeAt(pos + 2) === 45 && this.input.charCodeAt(pos + 3) === 45) {
+            if (input.charCodeAt(pos + 1) === 33 && input.charCodeAt(pos + 2) === 45 && input.charCodeAt(pos + 3) === 45) {
+              this.state.pos = pos;
               const comment = this.skipLineComment(4);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7466,6 +8027,7 @@ var Tokenizer = class extends CommentsParser {
           }
       }
     }
+    this.state.pos = pos;
     if (comments?.length) {
       const end = this.state.pos;
       const commentWhitespace = {
@@ -8071,22 +8633,32 @@ var Tokenizer = class extends CommentsParser {
     this.state.containsEsc = false;
     let word = "";
     const start = this.state.pos;
-    let chunkStart = this.state.pos;
+    let chunkStart = start;
+    const {
+      input,
+      length
+    } = this;
+    let pos = start;
     if (firstCode !== void 0) {
-      this.state.pos += firstCode <= 65535 ? 1 : 2;
+      pos += firstCode <= 65535 ? 1 : 2;
     }
-    while (this.state.pos < this.length) {
-      const ch = this.codePointAtPos(this.state.pos);
-      if (isIdentifierChar(ch)) {
-        this.state.pos += ch <= 65535 ? 1 : 2;
-      } else if (ch === 92) {
+    while (pos < length) {
+      let ch = input.charCodeAt(pos);
+      if (ch < 128) {
+        if (asciiIdentifierChar[ch] === 1) {
+          ++pos;
+          continue;
+        }
+        if (ch !== 92) break;
         this.state.containsEsc = true;
-        word += this.input.slice(chunkStart, this.state.pos);
+        word += input.slice(chunkStart, pos);
+        this.state.pos = pos;
         const escStart = this.state.curPosition();
-        const identifierCheck = this.state.pos === start ? isIdentifierStart : isIdentifierChar;
-        if (this.input.charCodeAt(++this.state.pos) !== 117) {
+        const identifierCheck = pos === start ? isIdentifierStart : isIdentifierChar;
+        if (input.charCodeAt(++this.state.pos) !== 117) {
           this.raise(Errors.MissingUnicodeEscape, this.state.curPosition());
           chunkStart = this.state.pos - 1;
+          pos = this.state.pos;
           continue;
         }
         ++this.state.pos;
@@ -8097,16 +8669,27 @@ var Tokenizer = class extends CommentsParser {
           }
           word += String.fromCodePoint(esc);
         }
-        chunkStart = this.state.pos;
+        chunkStart = pos = this.state.pos;
       } else {
-        break;
+        if ((ch & 64512) === 55296 && pos + 1 < length) {
+          const trail = input.charCodeAt(pos + 1);
+          if ((trail & 64512) === 56320) {
+            ch = 65536 + ((ch & 1023) << 10) + (trail & 1023);
+          }
+        }
+        if (isIdentifierChar(ch)) {
+          pos += ch <= 65535 ? 1 : 2;
+        } else {
+          break;
+        }
       }
     }
-    return word + this.input.slice(chunkStart, this.state.pos);
+    this.state.pos = pos;
+    return word + input.slice(chunkStart, pos);
   }
   readWord(firstCode) {
     const word = this.readWord1(firstCode);
-    const type = keywords$1.get(word);
+    const type = lookupKeyword(word, firstCode === void 0 ? word.charCodeAt(0) : firstCode);
     if (type !== void 0) {
       this.finishToken(type, tokenLabelName(type));
     } else {
@@ -9304,10 +9887,14 @@ var ExpressionParser = class extends LValParser {
     return expr;
   }
   parseExpression(disallowIn, refExpressionErrors) {
-    if (disallowIn) {
-      return this.disallowInAnd(() => this.parseExpressionBase(refExpressionErrors));
+    if (disallowIn ? this.enterDisallowIn() : this.enterAllowIn()) {
+      try {
+        return this.parseExpressionBase(refExpressionErrors);
+      } finally {
+        this.prodParam.exit();
+      }
     }
-    return this.allowInAnd(() => this.parseExpressionBase(refExpressionErrors));
+    return this.parseExpressionBase(refExpressionErrors);
   }
   parseExpressionBase(refExpressionErrors) {
     const startLoc = this.state.startLoc;
@@ -9324,10 +9911,24 @@ var ExpressionParser = class extends LValParser {
     return expr;
   }
   parseMaybeAssignDisallowIn(refExpressionErrors) {
-    return this.disallowInAnd(() => this.parseMaybeAssign(refExpressionErrors));
+    if (this.enterDisallowIn()) {
+      try {
+        return this.parseMaybeAssign(refExpressionErrors);
+      } finally {
+        this.prodParam.exit();
+      }
+    }
+    return this.parseMaybeAssign(refExpressionErrors);
   }
   parseMaybeAssignAllowIn(refExpressionErrors, isParenItem) {
-    return this.allowInAnd(() => this.parseMaybeAssign(refExpressionErrors, isParenItem));
+    if (this.enterAllowIn()) {
+      try {
+        return this.parseMaybeAssign(refExpressionErrors, isParenItem);
+      } finally {
+        this.prodParam.exit();
+      }
+    }
+    return this.parseMaybeAssign(refExpressionErrors, isParenItem);
   }
   setOptionalParametersError(refExpressionErrors) {
     refExpressionErrors.optionalParametersLoc = this.state.startLoc;
@@ -9435,7 +10036,6 @@ var ExpressionParser = class extends LValParser {
     if (this.shouldExitDescending(expr)) {
       return expr;
     }
-    this.state.canStartArrow = false;
     return this.parseExprOp(expr, startLoc, -1);
   }
   isEscapedKeywordOperatorAfterLineBreak() {
@@ -9502,6 +10102,7 @@ var ExpressionParser = class extends LValParser {
   }
   parseExprOpBaseRightExpr(op, prec) {
     const startLoc = this.state.startLoc;
+    this.state.canStartArrow = false;
     return this.parseExprOp(this.parseMaybeUnaryOrPrivate(), startLoc, tokenIsRightAssociative(op) ? prec - 1 : prec);
   }
   parseHackPipeBody() {
@@ -9534,9 +10135,9 @@ var ExpressionParser = class extends LValParser {
       if (!sawUnary) this.checkExponentialAfterUnary(expr2);
       return expr2;
     }
-    const update = this.match(30);
-    const node = this.startNode();
     if (tokenIsPrefix(this.state.type)) {
+      const update = this.match(30);
+      const node = this.startNode();
       node.operator = this.state.value;
       node.prefix = true;
       this.state.canStartArrow = false;
@@ -9561,8 +10162,11 @@ var ExpressionParser = class extends LValParser {
         }
         return this.finishNode(node, "UnaryExpression");
       }
+      const result = this.finishNode(node, "UpdateExpression");
+      this.checkLVal(result.argument, result);
+      return result;
     }
-    const expr = this.parseUpdate(node, update, refExpressionErrors);
+    const expr = this.parseUpdate(refExpressionErrors);
     if (isAwait) {
       const {
         type
@@ -9575,22 +10179,17 @@ var ExpressionParser = class extends LValParser {
     }
     return expr;
   }
-  parseUpdate(node, update, refExpressionErrors) {
-    if (update) {
-      const result = this.finishNode(node, "UpdateExpression");
-      this.checkLVal(result.argument, result);
-      return result;
-    }
+  parseUpdate(refExpressionErrors) {
     const startLoc = this.state.startLoc;
     let expr = this.parseExprSubscripts(refExpressionErrors);
     if (this.checkExpressionErrors(refExpressionErrors, false)) return expr;
     while (tokenIsPostfix(this.state.type) && !this.canInsertSemicolon()) {
-      const node2 = this.startNodeAt(startLoc);
-      node2.operator = this.state.value;
-      node2.prefix = false;
-      node2.argument = expr;
+      const node = this.startNodeAt(startLoc);
+      node.operator = this.state.value;
+      node.prefix = false;
+      node.argument = expr;
       this.next();
-      this.checkLVal(expr, expr = this.finishNode(node2, "UpdateExpression"));
+      this.checkLVal(expr, expr = this.finishNode(node, "UpdateExpression"));
     }
     return expr;
   }
@@ -9722,20 +10321,25 @@ var ExpressionParser = class extends LValParser {
     } else {
       node.arguments = this.parseCallExpressionArguments(base.type !== "Super", node, refExpressionErrors);
     }
-    let finishedNode = this.finishCallExpression(node, optionalChainMember);
-    if (maybeAsyncArrow && this.shouldParseAsyncArrow() && !optional) {
-      state.stop = true;
-      this.checkDestructuringPrivate(refExpressionErrors);
-      this.expressionScope.validateAsPattern();
-      this.expressionScope.exit();
-      finishedNode = this.parseAsyncArrowFromCallExpression(this.startNodeAt(startLoc), finishedNode);
-    } else {
-      if (maybeAsyncArrow) {
-        this.checkExpressionErrors(refExpressionErrors, true);
+    const finishedNode = this.finishCallExpression(node, optionalChainMember);
+    if (maybeAsyncArrow && !optional) {
+      const errorsLength = this.state.errors.length;
+      const asyncArrowHead = this.parseAsyncArrowHead(startLoc);
+      if (asyncArrowHead) {
+        const returnTypeErrors = this.state.errors.length > errorsLength ? this.state.errors.splice(errorsLength) : void 0;
+        state.stop = true;
+        this.checkDestructuringPrivate(refExpressionErrors);
+        this.expressionScope.validateAsPattern();
         this.expressionScope.exit();
+        if (returnTypeErrors) this.state.errors.push(...returnTypeErrors);
+        return this.parseAsyncArrowFromCallExpression(asyncArrowHead, finishedNode);
       }
-      this.toReferencedList(node.arguments);
     }
+    if (maybeAsyncArrow) {
+      this.checkExpressionErrors(refExpressionErrors, true);
+      this.expressionScope.exit();
+    }
+    this.toReferencedList(node.arguments);
     return finishedNode;
   }
   parseTaggedTemplateExpression(base, startLoc, state) {
@@ -9784,8 +10388,8 @@ var ExpressionParser = class extends LValParser {
     }
     return elts;
   }
-  shouldParseAsyncArrow() {
-    return this.match(15) && !this.canInsertSemicolon();
+  parseAsyncArrowHead(startLoc) {
+    return this.match(15) && !this.canInsertSemicolon() ? this.startNodeAt(startLoc) : void 0;
   }
   parseAsyncArrowFromCallExpression(node, call) {
     this.resetPreviousNodeTrailingComments(call);
@@ -10025,9 +10629,11 @@ var ExpressionParser = class extends LValParser {
     const oldLabels = this.state.labels;
     this.state.labels = [];
     if (isAsync) {
+      this.expressionScope.enter(sharedExpressionScope);
       this.prodParam.enter(2);
       node.body = this.parseBlock();
       this.prodParam.exit();
+      this.expressionScope.exit();
     } else {
       node.body = this.parseBlock();
     }
@@ -10085,7 +10691,7 @@ var ExpressionParser = class extends LValParser {
   parseImportMetaPropertyOrPhaseCallOrSyncCall(node) {
     this.next();
     if (this.isContextual(102) || this.isContextual(94)) {
-      const isSource = this.isContextual(102);
+      const isSource = this.match(102);
       this.expectPlugin(isSource ? "sourcePhaseImports" : "deferredImportEvaluation");
       this.next();
       node.phase = isSource ? "source" : "defer";
@@ -10186,8 +10792,8 @@ var ExpressionParser = class extends LValParser {
     }
     const innerEndLoc = this.state.lastTokEndLoc;
     this.expect(7);
-    let arrowNode = this.startNodeAt(startLoc);
-    if (canStartArrow && this.shouldParseArrow(exprList) && (arrowNode = this.parseArrow(arrowNode))) {
+    let arrowNode;
+    if (canStartArrow && this.shouldParseArrow(exprList) && (arrowNode = this.parseArrow(this.startNodeAt(startLoc)))) {
       this.checkDestructuringPrivate(refExpressionErrors);
       this.expressionScope.validateAsPattern();
       this.expressionScope.exit();
@@ -10353,22 +10959,23 @@ var ExpressionParser = class extends LValParser {
   }
   parsePropertyDefinition(refExpressionErrors) {
     const decorators = [];
+    const decoratorsStartLoc = this.state.startLoc;
     if (this.match(22)) {
       if (this.hasPlugin("decorators")) {
-        this.raise(Errors.UnsupportedPropertyDecorator, this.state.startLoc);
+        this.raise(Errors.UnsupportedPropertyDecorator, decoratorsStartLoc);
       }
       while (this.match(22)) {
         decorators.push(this.parseDecorator());
       }
     }
-    const prop = this.startNode();
-    let isAsync = false;
-    let isAccessor = false;
-    let startLoc;
     if (this.match(17)) {
       if (decorators.length) this.unexpected();
       return this.parseSpread();
     }
+    const prop = this.startNodeAt(decoratorsStartLoc);
+    let isAsync = false;
+    let isAccessor = false;
+    let startLoc;
     if (decorators.length) {
       prop.decorators = decorators;
     }
@@ -10693,6 +11300,7 @@ var ExpressionParser = class extends LValParser {
         this.replaceToken(131);
       }
     } else {
+      this.setLoc(this.state.startLoc);
       this.checkReservedWord(name, this.sourceToOffsetPos(start), tokenIsKeyword2, false);
     }
     this.next();
@@ -10804,7 +11412,7 @@ var ExpressionParser = class extends LValParser {
     return this.finishNode(node, "YieldExpression");
   }
   parseImportCall(node) {
-    this.next();
+    this.expect(6);
     const args = this.parseCallExpressionArguments();
     if (args.length === 0 || args.length > 2) {
       this.raise(Errors.ImportCallArity, node, node);
@@ -10831,32 +11439,24 @@ var ExpressionParser = class extends LValParser {
       this.state.seenTopicReference = oldSeenTopicReference;
     }
   }
-  allowInAnd(callback) {
+  enterAllowIn() {
     const flags = this.prodParam.currentFlags();
     const prodParamToSet = (8 | 16) & ~flags;
     if (prodParamToSet) {
       this.prodParam.enter(flags | 8 | 16);
-      try {
-        return callback();
-      } finally {
-        this.prodParam.exit();
-      }
+      return true;
     }
-    return callback();
+    return false;
   }
-  disallowInAnd(callback) {
+  enterDisallowIn() {
     const flags = this.prodParam.currentFlags();
     const prodParamToClear = 8 & flags;
     const prodParamToSet = 16 & ~flags;
     if (prodParamToClear || prodParamToSet) {
       this.prodParam.enter(flags & -9 | 16);
-      try {
-        return callback();
-      } finally {
-        this.prodParam.exit();
-      }
+      return true;
     }
-    return callback();
+    return false;
   }
   registerTopicReference() {
     this.state.seenTopicReference = true;
@@ -11830,7 +12430,7 @@ var StatementParser = class extends ExpressionParser {
     return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
   }
   isClassProperty() {
-    return this.match(25) || this.match(9) || this.match(4);
+    return this.match(25) || this.match(9) || this.match(4) || this.match(22) && this.hasPrecedingLineBreak();
   }
   isClassMethod() {
     return this.match(6);
@@ -12419,7 +13019,8 @@ var StatementParser = class extends ExpressionParser {
           if (local.type !== "Identifier") {
             this.raise(Errors.ExportBindingIsString, specifier, {
               localName: local.value,
-              exportName
+              exportName,
+              typeModifierIn: node.exportKind === "type" ? "declaration" : specifier.exportKind === "type" ? "specifier" : void 0
             });
           } else {
             this.checkReservedWord(local.name, local.start, true, false);
@@ -12982,6 +13583,39 @@ function tsIsTypeCast(node) {
     case "TSNonNullExpression":
     case "TSTypeAssertion":
       return true;
+    default:
+      return false;
+  }
+}
+function tsIsInvalidArrowParamsError(error, returnTypeStart) {
+  if (error.pos >= returnTypeStart) return false;
+  switch (error.reasonCode) {
+    case "AwaitBindingIdentifier":
+    case "AwaitExpressionFormalParameter":
+    case "IllegalLanguageModeDirective":
+    case "ParamDupe":
+    case "StrictEvalArgumentsBinding":
+    case "VarRedeclaration":
+    case "YieldInParameter":
+      return false;
+    default:
+      return true;
+  }
+}
+function tsHasUnambiguousArrowParams(params) {
+  if (!params?.length) return true;
+  let first = params[0];
+  if (first?.type === "AssignmentPattern" || first?.type === "AssignmentExpression") {
+    first = first.left;
+  }
+  switch (first?.type) {
+    case "RestElement":
+    case "SpreadElement":
+      return true;
+    case "TSTypeCastExpression":
+      return first.expression.type === "Identifier" || first.expression.type === "ThisExpression";
+    case "Identifier":
+      return !!first.typeAnnotation || !!first.optional;
     default:
       return false;
   }
@@ -13792,15 +14426,15 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return isTypeOperator ? this.tsParseTypeOperator() : this.isContextual(114) ? this.tsParseInferType() : this.tsInAllowConditionalTypesContext(() => this.tsParseArrayTypeOrHigher());
   }
   tsParseUnionOrIntersectionType(kind, parseConstituentType, operator) {
-    const node = this.startNode();
+    const startLoc = this.state.startLoc;
     const hasLeadingOperator = this.eat(operator);
-    const types2 = [];
-    do {
-      types2.push(parseConstituentType());
-    } while (this.eat(operator));
-    if (types2.length === 1 && !hasLeadingOperator) {
-      return types2[0];
+    const first = parseConstituentType();
+    if (!hasLeadingOperator && !this.match(operator)) {
+      return first;
     }
+    const node = this.startNodeAt(startLoc);
+    const types2 = [first];
+    while (this.eat(operator)) types2.push(parseConstituentType());
     node.types = types2;
     return this.finishNode(node, kind);
   }
@@ -13865,17 +14499,18 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.tsInType(() => {
       const t = this.startNode();
       this.expect(returnToken);
-      const node = this.startNode();
-      const asserts = !!this.tsTryParse(this.tsParseTypePredicateAsserts.bind(this));
+      const startLoc = this.state.startLoc;
+      const asserts = this.match(108) && !!this.tsTryParse(this.tsParseTypePredicateAsserts.bind(this));
       if (asserts && this.match(74)) {
+        const node2 = this.startNodeAt(startLoc);
         let thisTypePredicate = this.tsParseThisTypeOrThisTypePredicate();
         if (thisTypePredicate.type === "TSThisType") {
-          node.parameterName = thisTypePredicate;
-          node.asserts = true;
-          node.typeAnnotation = null;
-          thisTypePredicate = this.finishNode(node, "TSTypePredicate");
+          node2.parameterName = thisTypePredicate;
+          node2.asserts = true;
+          node2.typeAnnotation = null;
+          thisTypePredicate = this.finishNode(node2, "TSTypePredicate");
         } else {
-          this.resetStartLocationFromNode(thisTypePredicate, node);
+          this.resetStartLocationFromNode(thisTypePredicate, node2);
           thisTypePredicate.asserts = true;
         }
         t.typeAnnotation = thisTypePredicate;
@@ -13886,12 +14521,14 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         if (!asserts) {
           return this.tsParseTypeAnnotation(false, t);
         }
-        node.parameterName = this.parseIdentifier();
-        node.asserts = asserts;
-        node.typeAnnotation = null;
-        t.typeAnnotation = this.finishNode(node, "TSTypePredicate");
+        const node2 = this.startNodeAt(startLoc);
+        node2.parameterName = this.parseIdentifier();
+        node2.asserts = asserts;
+        node2.typeAnnotation = null;
+        t.typeAnnotation = this.finishNode(node2, "TSTypePredicate");
         return this.finishNode(t, "TSTypeAnnotation");
       }
+      const node = this.startNodeAt(startLoc);
       const type = this.tsParseTypeAnnotation(false);
       node.parameterName = typePredicateVariable;
       node.typeAnnotation = type;
@@ -14348,11 +14985,17 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       node.typeParameters = this.tsParseTypeParameters(this.tsParseConstModifier);
       super.parseFunctionParams(node);
       node.returnType = this.tsTryParseTypeOrTypePredicateAnnotation();
+      const arrowStartPos = this.offsetToSourcePos(startLoc.index);
+      if (node.returnType && this.match(15) && this.tsIsArrowReturnTypeRestrictedAt(arrowStartPos)) {
+        this.tsArrowReturnTypeAt.set(arrowStartPos, node.returnType.start);
+      }
       this.expect(15);
       return node;
     });
     if (!res) return;
-    return super.parseArrowExpression(res, null, true);
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    const parse2 = () => res.returnType && this.tsIsArrowReturnTypeRestrictedAt(startPos) ? this.tsParseWithDeferredArrowErrors(() => super.parseArrowExpression(res, null, true)) : super.parseArrowExpression(res, null, true);
+    return this.tsIsArrowReturnTypeRestrictedAt(startPos) ? this.tsParseWithRestrictedArrowReturnType(parse2, this.hasPlugin("jsx") || this.state.tsArrowReturnTypeAllowed) : parse2();
   }
   tsParseTypeArgumentsInExpression() {
     if (this.reScan_lt() !== 43) return;
@@ -14504,7 +15147,8 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     if (this.match(43) || this.match(47)) {
       let missingParenErrorLoc;
-      const result = this.tsTryParseAndCatch(() => {
+      let parsingAsyncArrow = true;
+      const parseAttempt = () => {
         if (!noCalls && this.atPossibleAsyncArrow(base)) {
           const asyncArrowFn = this.tsTryParseGenericAsyncArrowFunction(startLoc);
           if (asyncArrowFn) {
@@ -14512,6 +15156,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
             return asyncArrowFn;
           }
         }
+        parsingAsyncArrow = false;
         const typeArguments = this.tsParseTypeArgumentsInExpression();
         if (!typeArguments) return;
         if (isOptionalCall && !this.match(6)) {
@@ -14542,7 +15187,13 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         node.expression = base;
         node.typeArguments = typeArguments;
         return this.finishNode(node, "TSInstantiationExpression");
-      });
+      };
+      const attempt = this.tryParse((abort) => parseAttempt() || abort());
+      if (attempt.thrown && parsingAsyncArrow && this.tsShouldKeepArrowErrorAt(attempt.error, this.offsetToSourcePos(startLoc.index))) {
+        throw attempt.error;
+      }
+      const result = attempt.node;
+      if (result && attempt.error) this.state = attempt.failState;
       if (missingParenErrorLoc) {
         this.unexpected(missingParenErrorLoc, 6);
       }
@@ -14932,16 +15583,35 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         return expr;
       }
     }
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    const isRestricted = this.tsIsArrowReturnTypeRestrictedAt(startPos);
+    const allowsReturnType = isRestricted && this.state.tsArrowReturnTypeAllowed;
     this.next();
     const node = this.startNodeAt(startLoc);
     node.test = expr;
-    const oldInConditionalConsequent = this.state.inConditionalConsequent;
-    this.state.inConditionalConsequent = true;
-    node.consequent = this.parseMaybeAssignAllowIn();
-    this.state.inConditionalConsequent = oldInConditionalConsequent;
+    node.consequent = this.tsParseWithRestrictedArrowReturnType(() => this.parseMaybeAssignAllowIn());
     this.expect(10);
-    node.alternate = this.parseMaybeAssign();
+    node.alternate = isRestricted ? this.tsParseWithRestrictedArrowReturnType(() => this.parseMaybeAssign(), allowsReturnType) : this.parseMaybeAssign();
     return this.finishNode(node, "ConditionalExpression");
+  }
+  tsIsArrowReturnTypeRestrictedAt(sourcePos) {
+    return this.state.tsArrowReturnTypeRestrictionAt === sourcePos;
+  }
+  tsRestrictArrowReturnTypeAt(sourcePos, allowsReturnType, genericParams = false) {
+    this.state.tsArrowReturnTypeRestrictionAt = sourcePos;
+    this.state.tsArrowReturnTypeAllowed = allowsReturnType;
+    this.state.tsGenericArrowParams = genericParams;
+  }
+  tsParseWithRestrictedArrowReturnType(parse2, allowsReturnType = false, genericParams = false) {
+    const oldAllowed = this.state.tsArrowReturnTypeAllowed;
+    const oldGeneric = this.state.tsGenericArrowParams;
+    const oldStart = this.state.tsArrowReturnTypeRestrictionAt;
+    this.tsRestrictArrowReturnTypeAt(this.state.start, allowsReturnType, genericParams);
+    const result = parse2();
+    this.state.tsArrowReturnTypeRestrictionAt = oldStart;
+    this.state.tsArrowReturnTypeAllowed = oldAllowed;
+    this.state.tsGenericArrowParams = oldGeneric;
+    return result;
   }
   parseParenItem(node, startLoc) {
     const newNode = super.parseParenItem(node, startLoc);
@@ -15108,13 +15778,82 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       this.resetEndLocation(decl.id);
     }
   }
-  parseAsyncArrowFromCallExpression(node, call) {
-    if (this.match(10)) {
-      node.returnType = this.tsParseTypeAnnotation();
-    }
-    return super.parseAsyncArrowFromCallExpression(node, call);
-  }
   parseMaybeAssign(refExpressionErrors, isParenItem) {
+    const startPos = this.state.start;
+    if (!this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      return this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+    }
+    const oldStart = this.state.tsArrowReturnTypeRestrictionAt;
+    const oldAllowed = this.state.tsArrowReturnTypeAllowed;
+    const oldGeneric = this.state.tsGenericArrowParams;
+    const node = this.match(6) || this.match(43) || this.isContextual(92) ? this.tsParseMaybeArrowWithRestrictedReturnType(startPos, refExpressionErrors, isParenItem) : this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+    this.state.tsArrowReturnTypeRestrictionAt = oldStart;
+    this.state.tsArrowReturnTypeAllowed = oldAllowed;
+    this.state.tsGenericArrowParams = oldGeneric;
+    return node;
+  }
+  tsParseWithDeferredArrowErrors(parse2) {
+    if (this.optionFlags & 4096) return parse2();
+    this.optionFlags |= 4096;
+    try {
+      return parse2();
+    } finally {
+      this.optionFlags &= -4097;
+    }
+  }
+  tsShouldKeepArrowErrorAt(error, startPos) {
+    if (!this.tsIsArrowReturnTypeRestrictedAt(startPos)) return false;
+    const returnTypeStart = this.tsArrowReturnTypeAt.get(startPos);
+    return returnTypeStart !== void 0 && !tsIsInvalidArrowParamsError(error, returnTypeStart);
+  }
+  tsArrowReturnTypeAt = /* @__PURE__ */ new Map();
+  tsParseMaybeArrowWithRestrictedReturnType(startPos, refExpressionErrors, isParenItem) {
+    if (!this.noArrowAt.has(startPos)) {
+      const allowsReturnType = this.state.tsArrowReturnTypeAllowed;
+      const parse2 = () => this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+      let state = this.state.clone();
+      const {
+        tokensLength
+      } = state;
+      this.tsArrowReturnTypeAt.delete(startPos);
+      let result = this.tryParse(parse2, state);
+      const returnTypeStart = this.tsArrowReturnTypeAt.get(startPos);
+      if (result.thrown && returnTypeStart !== void 0 && !tsIsInvalidArrowParamsError(result.error, returnTypeStart) && !(this.optionFlags & 4096)) {
+        state = this.state.clone();
+        this.optionFlags |= 4096;
+        try {
+          result = this.tryParse(parse2, state);
+        } finally {
+          this.optionFlags &= -4097;
+        }
+      }
+      if (result.thrown) {
+        if (!this.tsArrowReturnTypeAt.has(startPos)) throw result.error;
+      } else {
+        if (result.error) this.state = result.failState;
+        const node = result.node;
+        if (node.type !== "ArrowFunctionExpression" || !node.returnType || node.extra?.parenthesized) {
+          return node;
+        }
+        const {
+          start
+        } = node.returnType;
+        const hasInvalidParams = result.error != null && this.state.errors.slice(state.errors.length).some((error) => tsIsInvalidArrowParamsError(error, start));
+        const isUnambiguous = node.typeParameters ? this.hasPlugin("jsx") : tsHasUnambiguousArrowParams(node.params);
+        if (!hasInvalidParams && (allowsReturnType || this.match(10)) || isUnambiguous && !(hasInvalidParams && node.async)) {
+          if (result.error && !(this.optionFlags & 4096)) {
+            throw result.error;
+          }
+          return node;
+        }
+      }
+      this.noArrowAt.add(startPos);
+      this.state = state;
+      this.state.tokensLength = tokensLength;
+    }
+    return this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+  }
+  tsParseMaybeAssign(refExpressionErrors, isParenItem) {
     let state;
     let jsx2;
     let typeCast;
@@ -15136,8 +15875,26 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     if (!state || state === this.state) state = this.state.clone();
     let typeParameters;
     const arrow = this.tryParse((abort) => {
+      const startPos = this.state.start;
+      if (this.noArrowAt.has(startPos)) abort();
+      const allowsReturnType = !this.match(43) || this.state.tsArrowReturnTypeAllowed;
+      const isRestricted = this.tsIsArrowReturnTypeRestrictedAt(startPos);
       typeParameters = this.tsParseTypeParameters(this.tsParseConstModifier);
-      const expr = super.parseMaybeAssign(refExpressionErrors, isParenItem);
+      let expr;
+      if (isRestricted) {
+        const paramsStartPos = this.state.start;
+        this.tsArrowReturnTypeAt.delete(paramsStartPos);
+        try {
+          expr = this.tsParseWithRestrictedArrowReturnType(() => super.parseMaybeAssign(refExpressionErrors, isParenItem), allowsReturnType, true);
+        } finally {
+          const returnTypeStart = this.tsArrowReturnTypeAt.get(paramsStartPos);
+          if (returnTypeStart !== void 0) {
+            this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
+          }
+        }
+      } else {
+        expr = super.parseMaybeAssign(refExpressionErrors, isParenItem);
+      }
       if (expr.type !== "ArrowFunctionExpression" || expr.extra?.parenthesized) {
         abort();
       }
@@ -15155,6 +15912,15 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       }
       return expr;
     }, state);
+    if (jsx2 && arrow.node && arrow.error && !(this.optionFlags & 4096)) {
+      throw arrow.error;
+    }
+    if (arrow.error && this.tsShouldKeepArrowErrorAt(arrow.error, state.start)) {
+      if (!arrow.node) throw arrow.error;
+      this.state = arrow.failState;
+      if (typeParameters) this.reportReservedArrowTypeParam(typeParameters);
+      return arrow.node;
+    }
     if (!arrow.error && !arrow.aborted) {
       if (typeParameters) this.reportReservedArrowTypeParam(typeParameters);
       return arrow.node;
@@ -15192,6 +15958,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   parseArrow(node) {
     if (this.match(10)) {
+      const startPos = this.offsetToSourcePos(node.start);
+      if (this.noArrowAt.has(startPos)) return;
+      const returnTypeStart = this.sourceToOffsetPos(this.state.start);
       const result = this.tryParse((abort) => {
         const returnType = this.tsParseTypeOrTypePredicateAnnotation(10);
         if (this.canInsertSemicolon() || !this.match(15)) abort();
@@ -15201,6 +15970,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       if (!result.thrown) {
         if (result.error) this.state = result.failState;
         node.returnType = result.node;
+        if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+          this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
+        }
       }
     }
     return super.parseArrow(node);
@@ -15368,19 +16140,46 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     return super.shouldParseArrow(params);
   }
-  shouldParseAsyncArrow() {
-    if (this.match(10)) {
-      if (this.state.inConditionalConsequent) return false;
-      return true;
+  parseAsyncArrowHead(startLoc) {
+    if (!this.match(10)) return super.parseAsyncArrowHead(startLoc);
+    const returnTypeStart = this.sourceToOffsetPos(this.state.start);
+    const result = this.tryParse((abort) => {
+      const returnType = this.tsParseTypeAnnotation();
+      if (!this.match(15)) abort();
+      return returnType;
+    });
+    if (result.aborted || result.thrown) return void 0;
+    if (result.error) this.state = result.failState;
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
     }
-    return super.shouldParseAsyncArrow();
+    const node = this.startNodeAt(startLoc);
+    node.returnType = result.node;
+    return node;
   }
-  parseParenAndDistinguishExpression(canStartArrow) {
-    const oldInConditionalConsequent = this.state.inConditionalConsequent;
-    this.state.inConditionalConsequent = false;
-    const result = super.parseParenAndDistinguishExpression(canStartArrow);
-    this.state.inConditionalConsequent = oldInConditionalConsequent;
-    return result;
+  atPossibleAsyncArrow(base) {
+    return super.atPossibleAsyncArrow(base) && !this.noArrowAt.has(this.offsetToSourcePos(base.start));
+  }
+  parseMaybeConditional(refExpressionErrors) {
+    if (!this.tsIsArrowReturnTypeRestrictedAt(this.state.start)) {
+      return super.parseMaybeConditional(refExpressionErrors);
+    }
+    const allowsReturnType = this.state.tsArrowReturnTypeAllowed;
+    const expr = super.parseMaybeConditional(refExpressionErrors);
+    if (tokenIsAssignment(this.state.type)) {
+      this.tsRestrictArrowReturnTypeAt(this.nextTokenStart(), allowsReturnType);
+    }
+    return expr;
+  }
+  parseArrowExpression(node, params, isAsync, trailingCommaLoc) {
+    const startPos = this.offsetToSourcePos(node.start);
+    if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      const genericParams = this.state.tsGenericArrowParams;
+      const parse2 = () => super.parseArrowExpression(node, params, isAsync, trailingCommaLoc);
+      return this.tsParseWithRestrictedArrowReturnType(genericParams && node.returnType ? () => this.tsParseWithDeferredArrowErrors(parse2) : parse2, this.state.tsArrowReturnTypeAllowed || !genericParams && tsHasUnambiguousArrowParams(params));
+    }
+    return super.parseArrowExpression(node, params, isAsync, trailingCommaLoc);
   }
   canHaveLeadingDecorator() {
     return super.canHaveLeadingDecorator() || this.isAbstractClass();
@@ -15525,9 +16324,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         hasTypeSpecifier = true;
         leftOfAs = firstAs;
       }
-    } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+    } else if (this.tsIsStartOfModuleExportName()) {
       hasTypeSpecifier = true;
-      leftOfAs = this.parseIdentifier(true);
+      leftOfAs = this.parseModuleExportName();
     }
     node.imported = leftOfAs;
     node.importKind = hasTypeSpecifier ? "type" : "value";
@@ -15540,20 +16339,20 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       const firstAs = this.parseIdentifier();
       if (this.isContextual(90)) {
         const secondAs = this.parseIdentifier();
-        if (tokenIsKeywordOrIdentifier(this.state.type)) {
+        if (this.tsIsStartOfModuleExportName()) {
           hasTypeSpecifier = true;
           node.local = firstAs;
           node.exported = this.parseModuleExportName();
         } else {
           node.exported = secondAs;
         }
-      } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+      } else if (this.tsIsStartOfModuleExportName()) {
         node.exported = this.parseModuleExportName();
       } else {
         hasTypeSpecifier = true;
         node.local = firstAs;
       }
-    } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+    } else if (this.tsIsStartOfModuleExportName()) {
       hasTypeSpecifier = true;
       node.local = this.parseModuleExportName();
     }
@@ -15561,7 +16360,10 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       this.raise(TSErrors.TypeModifierIsUsedInTypeExports, local);
     }
     node.exportKind = hasTypeSpecifier ? "type" : "value";
-    node.exported ??= this.eatContextual(90) ? this.parseModuleExportName() : this.cloneIdentifier(node.local);
+    node.exported ??= this.eatContextual(90) ? this.parseModuleExportName() : this.isStringModuleExportName(node.local) ? this.cloneStringLiteral(node.local) : this.cloneIdentifier(node.local);
+  }
+  tsIsStartOfModuleExportName() {
+    return tokenIsKeywordOrIdentifier(this.state.type) || this.match(133);
   }
   fillOptionalPropertiesForTSESLint(node) {
     switch (node.type) {
@@ -16946,9 +17748,35 @@ function readResultRecovery(params, actor) {
 }
 
 // src/ledger.ts
+function ledgerComments(repo, pr) {
+  return revalidatedComments(getReviewComments(repo, pr), repo, pr);
+}
+function requireCarriedFixRun(params) {
+  const records = getReviewComments(params.repo, params.pr).map((row) => matchRevalidation(String(row.body ?? ""))).filter(
+    (record) => record?.fingerprint === params.fingerprint && record.occurrence === params.occurrence
+  );
+  const latest = records.at(-1);
+  if (latest) {
+    const run = requireRevalidationRun(params);
+    if (run.id !== latest.runId || run.commentId !== latest.runCommentId || run.maxRounds !== latest.maxRounds || latest.engine !== params.engine || latest.round !== params.round)
+      fail("carried finding belongs to a different active run or pass");
+  }
+  return latest;
+}
 function threadProtocolRecords(thread, historicalCommentIds) {
   verifyPseudoV3History([thread], historicalCommentIds);
-  const comments = thread.comments.nodes;
+  const rawComments = thread.comments.nodes;
+  const hasRevalidation = rawComments.some(
+    (row) => String(row.body ?? "").includes("<!-- local-review-revalidation:")
+  );
+  if (hasRevalidation && (!thread.repository?.nameWithOwner || thread.pullRequest?.number === void 0))
+    fail("revalidation thread requires repository and PR scope");
+  const comments = hasRevalidation ? revalidatedComments(
+    rawComments,
+    thread.repository.nameWithOwner,
+    thread.pullRequest.number,
+    true
+  ) : rawComments;
   const actor = currentActor();
   const findingsV3 = [];
   const dispositionsV3 = [];
@@ -17561,8 +18389,9 @@ function preflightAnchor(params) {
   };
 }
 function preflightFix(params) {
+  requireCarriedFixRun(params);
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
   const severity = fixableFindingSeverity(comments, params, stance);
   verifyHead(params.repo, params.pr, params.head);
@@ -17581,8 +18410,10 @@ function preflightPublish(params) {
     fail("preflight-publish findings must not repeat");
   }
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
+  for (const finding of params.findings)
+    requireCarriedFixRun({ ...params, ...finding });
   const findings = params.findings.map((finding) => ({
     ...finding,
     severity: fixableFindingSeverity(
@@ -17728,7 +18559,7 @@ function postFinding(params) {
   let commentId;
   let replayed = false;
   if (isV3) {
-    const comments = getReviewComments(params.repo, params.pr);
+    const comments = ledgerComments(params.repo, params.pr);
     if (rowsHaveHistoricalMarkers(comments)) {
       verifyHistoricalThreads(params.repo, params.pr);
     }
@@ -17801,7 +18632,7 @@ function reopenOccurrence(params) {
     content
   });
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -17857,6 +18688,22 @@ function reopenOccurrence(params) {
   };
 }
 function dispose(params) {
+  const carried = requireCarriedFixRun({
+    ...params,
+    occurrence: params.occurrence ?? 1
+  });
+  if (carried && params.outcome === "fixed") {
+    if (carried.head === params.head)
+      fail(
+        "a carried finding requires a published forward fix head before a fixed disposition"
+      );
+    verifyForwardTransitionOrFail(
+      params.repo,
+      carried.head,
+      params.head,
+      "a carried finding requires a published forward fix head before a fixed disposition"
+    );
+  }
   const content = resolveContent(params);
   if (content === void 0) {
     fail("dispose requires content or content-file");
@@ -17872,7 +18719,7 @@ function dispose(params) {
     content
   });
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -17940,7 +18787,7 @@ function correctSeverity(params) {
   const actor = assertLiveActor(assertActor());
   verifyHead(params.repo, params.pr, params.head);
   assertLiveActor(actor);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -18296,7 +19143,7 @@ function assertThreadIdsInScope(repo, pr, threadIds) {
 }
 function reconcile(params) {
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -18391,6 +19238,10 @@ function reconcile(params) {
     findings: findingRows2,
     dispositions: dispositionRows,
     severityCorrections: severityCorrectionRows,
+    revalidations: getReviewComments(params.repo, params.pr).flatMap((row) => {
+      const record = matchRevalidation(String(row.body ?? ""));
+      return record?.fingerprint === params.fingerprint ? [{ id: row.databaseId ?? row.id, ...record }] : [];
+    }),
     sequenceValid,
     ledgerValid,
     nextOccurrence: sequenceValid ? occurrences.length + 1 : null,
@@ -20008,6 +20859,16 @@ function parseApi(args, payload) {
   method ??= hasFields || input ? "POST" : "GET";
   return { method, endpoint: endpoint.split("?")[0], slurp, fields };
 }
+function isReadOnlyGhCall(args, payload) {
+  const request = parseApi(args, payload);
+  if (request === null) return READ_ONLY_GH.has(args.slice(0, 2).join(" "));
+  if (request.endpoint !== "graphql") return request.method === "GET";
+  if (args.some((arg) => arg === "--input" || arg.startsWith("--input=")))
+    return false;
+  const body = payload ?? {};
+  const query = body.query ?? request.fields["query"];
+  return typeof query === "string" && !/^\s*mutation\b/.test(query);
+}
 function json(value) {
   return JSON.stringify(value);
 }
@@ -21495,13 +22356,13 @@ function reconcileConcurrentRoster(repo, pr, body, postedCommentId) {
     fail("local-review roster conflicts with concurrent evidence");
   }
   const ids = rows.map((row) => row["id"]).sort((a, b) => a - b);
-  const canonical = ids[0];
+  const canonical2 = ids[0];
   for (const duplicate of ids.slice(1)) {
     deleteIssueComment(repo, pr, duplicate);
   }
   return {
-    commentId: canonical,
-    usedPostedComment: canonical === postedCommentId
+    commentId: canonical2,
+    usedPostedComment: canonical2 === postedCommentId
   };
 }
 function postRoster(params) {
@@ -22276,7 +23137,9 @@ function resolveChangesetReport(args) {
     );
   }
   if (!args.base || !args.head) {
-    fail("changeset classification requires --diff-file or --base and --head");
+    failUsage(
+      "changeset classification requires --diff-file or --base and --head"
+    );
   }
   return classifyRange({ base: args.base, head: args.head, options });
 }
@@ -22305,17 +23168,17 @@ function nowUtcSecond() {
 }
 function parsePositiveInteger(value, name) {
   if (!/^[1-9]\d*$/.test(value)) {
-    fail(`${name} must be a positive integer`);
+    failUsage(`${name} must be a positive integer`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
-    fail(`${name} must be a positive safe integer`);
+    failUsage(`${name} must be a positive safe integer`);
   }
   return parsed;
 }
 function parseEnum(arg, value, allowed) {
   if (!allowed.includes(value)) {
-    fail(`${arg} must be one of: ${allowed.join(", ")}`);
+    failUsage(`${arg} must be one of: ${allowed.join(", ")}`);
   }
   return value;
 }
@@ -22367,7 +23230,7 @@ function parseCliArgs(argv) {
     const next = argv[i + 1];
     const parseVal = (name) => {
       if (next === void 0 || next.startsWith("--")) {
-        fail(`missing argument for ${name}`);
+        failUsage(`missing argument for ${name}`);
       }
       i += 2;
       return next;
@@ -22564,7 +23427,7 @@ function parseCliArgs(argv) {
         args.expectedSummarySha256 = parseVal(arg);
         break;
       default:
-        fail(`unknown argument: ${arg}`);
+        failUsage(`unknown argument: ${arg}`);
     }
   }
   return args;
@@ -22574,7 +23437,7 @@ function validateArgs(args) {
     return;
   }
   if (!args.command) {
-    fail("subcommand required");
+    failUsage("subcommand required");
   }
   if (args.engineRaw !== void 0 && ![
     "emit-telemetry",
@@ -22604,7 +23467,7 @@ function validateArgs(args) {
       const names = missing.map(
         (m) => `--${String(m).replace(/([A-Z])/g, "-$1").toLowerCase()}`
       );
-      fail(`v3 content mode requires ${names.join(", ")}`);
+      failUsage(`v3 content mode requires ${names.join(", ")}`);
     }
   }
   if (args.command === "verify-ledger") {
@@ -22617,7 +23480,7 @@ function validateArgs(args) {
     ];
     const present = resultFields.map((f) => args[f] !== void 0);
     if (present.some(Boolean) && !present.every(Boolean)) {
-      fail(
+      failUsage(
         "verify-ledger result evidence requires --engine, --round, --base, --before, and --result-file"
       );
     }
@@ -22648,13 +23511,13 @@ function runCliCommand(argv) {
   switch (args.command) {
     case "lifecycle-state": {
       if (!args.repo || args.pr === void 0)
-        fail("lifecycle-state requires --repo and --pr");
+        failUsage("lifecycle-state requires --repo and --pr");
       writeSortedJson(readLifecycle(args.repo, args.pr));
       break;
     }
     case "preflight-fix": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0) {
-        fail(
+        failUsage(
           "preflight-fix requires --repo, --pr, --head, --engine, --round, --fingerprint, and --occurrence"
         );
       }
@@ -22675,7 +23538,7 @@ function runCliCommand(argv) {
     }
     case "preflight-publish": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.findingsFile) {
-        fail(
+        failUsage(
           "preflight-publish requires --repo, --pr, --head, --engine, --round, and --findings-file"
         );
       }
@@ -22695,10 +23558,10 @@ function runCliCommand(argv) {
     }
     case "preflight-anchor": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("preflight-anchor requires --repo, --pr, --head, and --path");
+        failUsage("preflight-anchor requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("preflight-anchor requires --line or --file-level");
+        failUsage("preflight-anchor requires --line or --file-level");
       }
       const out = preflightAnchor({
         repo: args.repo,
@@ -22714,13 +23577,13 @@ function runCliCommand(argv) {
     }
     case "post-finding": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.path) {
-        fail("post-finding requires --repo, --pr, --head, and --path");
+        failUsage("post-finding requires --repo, --pr, --head, and --path");
       }
       if (args.line === void 0 && !args.fileLevel) {
-        fail("post-finding requires --line or --file-level");
+        failUsage("post-finding requires --line or --file-level");
       }
       if (!args.contentFile && !args.bodyFile) {
-        fail("post-finding requires --content-file or --body-file");
+        failUsage("post-finding requires --content-file or --body-file");
       }
       const out = postFinding({
         repo: args.repo,
@@ -22742,9 +23605,31 @@ function runCliCommand(argv) {
       process.stdout.write(JSON.stringify(out) + "\n");
       break;
     }
+    case "revalidate-occurrence": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || args.commentId === void 0 || !args.threadId || !args.contentFile) {
+        failUsage(
+          "revalidate-occurrence requires --repo, --pr, --head, --engine, --round, --fingerprint, --occurrence, --comment-id, --thread-id, and --content-file"
+        );
+      }
+      writeSortedJson(
+        revalidateOccurrence({
+          repo: args.repo,
+          pr: args.pr,
+          head: args.head,
+          engine: args.engine,
+          round: args.round,
+          fingerprint: args.fingerprint,
+          occurrence: args.occurrence,
+          commentId: args.commentId,
+          threadId: args.threadId,
+          contentFile: args.contentFile
+        })
+      );
+      break;
+    }
     case "reopen-occurrence": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || !args.lens || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("reopen-occurrence missing required parameters");
+        failUsage("reopen-occurrence missing required parameters");
       }
       const out = reopenOccurrence({
         repo: args.repo,
@@ -22765,7 +23650,7 @@ function runCliCommand(argv) {
     }
     case "correct-severity": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || args.occurrence === void 0 || !args.severity || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("correct-severity missing required parameters");
+        failUsage("correct-severity missing required parameters");
       }
       const out = correctSeverity({
         repo: args.repo,
@@ -22786,7 +23671,7 @@ function runCliCommand(argv) {
     }
     case "dispose": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.fingerprint || !args.outcome || args.commentId === void 0 || !args.threadId || !args.contentFile) {
-        fail("dispose missing required parameters");
+        failUsage("dispose missing required parameters");
       }
       const out = dispose({
         repo: args.repo,
@@ -22806,7 +23691,7 @@ function runCliCommand(argv) {
     }
     case "reply": {
       if (!args.repo || args.pr === void 0 || !args.head || args.commentId === void 0 || !args.bodyFile && !args.contentFile) {
-        fail(
+        failUsage(
           "reply requires --repo, --pr, --head, --comment-id, and --body-file or --content-file"
         );
       }
@@ -22827,7 +23712,9 @@ function runCliCommand(argv) {
     }
     case "post-pr-comment": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.bodyFile) {
-        fail("post-pr-comment requires --repo, --pr, --head, and --body-file");
+        failUsage(
+          "post-pr-comment requires --repo, --pr, --head, and --body-file"
+        );
       }
       const out = postPrComment({
         repo: args.repo,
@@ -22840,14 +23727,14 @@ function runCliCommand(argv) {
     }
     case "classify-effect": {
       if (!args.base || !args.head) {
-        fail("classify-effect requires --base and --head");
+        failUsage("classify-effect requires --base and --head");
       }
       writeSortedJson({ effect: classifyRangeEffect(args.base, args.head) });
       break;
     }
     case "validate-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile) {
-        fail("validate-result missing required arguments");
+        failUsage("validate-result missing required arguments");
       }
       const out = validateResult({
         head: args.head,
@@ -22864,7 +23751,7 @@ function runCliCommand(argv) {
     case "recover-result":
     case "write-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.repo || args.pr === void 0) {
-        fail("write-result missing required arguments");
+        failUsage("write-result missing required arguments");
       }
       const params = {
         head: args.head,
@@ -22881,7 +23768,7 @@ function runCliCommand(argv) {
         classification: args.classification
       };
       if (args.command === "recover-result" && (!args.expectedRecoverySha256 || args.classification !== void 0)) {
-        fail(
+        failUsage(
           "recover-result requires --expected-recovery-sha256 and reads classification from the saved candidate"
         );
       }
@@ -22894,7 +23781,7 @@ function runCliCommand(argv) {
     }
     case "check-blocked-round": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before) {
-        fail(
+        failUsage(
           "check-blocked-round requires --repo, --pr, --head, --engine, --round, --base, and --before"
         );
       }
@@ -22915,7 +23802,7 @@ function runCliCommand(argv) {
     }
     case "write-blocked-result": {
       if (!args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.blockerFile) {
-        fail("write-blocked-result missing required arguments");
+        failUsage("write-blocked-result missing required arguments");
       }
       const out = writeBlockedResult({
         head: args.head,
@@ -22931,12 +23818,12 @@ function runCliCommand(argv) {
     }
     case "finalize": {
       if (!args.repo || args.pr === void 0 || !args.resultFile) {
-        fail(
+        failUsage(
           "finalize requires --repo, --pr, and --result-file; reuse the original pre-pass historical-comment-ids file when present"
         );
       }
       if (args.head || args.base || args.before || args.engine || args.round !== void 0 || args.expectedResultSha256) {
-        fail(
+        failUsage(
           "finalize reads identity and digest from the saved result; use attest for explicit identity checks"
         );
       }
@@ -22956,7 +23843,7 @@ function runCliCommand(argv) {
     }
     case "attest": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.engine || args.round === void 0 || !args.base || !args.before || !args.resultFile || !args.expectedResultSha256) {
-        fail(
+        failUsage(
           "attest requires --repo, --pr, --head, --engine, --round, --base, --before, --result-file, and --expected-result-sha256"
         );
       }
@@ -22982,7 +23869,7 @@ function runCliCommand(argv) {
     }
     case "resolve": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.threadId) {
-        fail("resolve requires --repo, --pr, --head, and --thread-id");
+        failUsage("resolve requires --repo, --pr, --head, and --thread-id");
       }
       const out = resolve({
         repo: args.repo,
@@ -22995,7 +23882,7 @@ function runCliCommand(argv) {
     }
     case "reconcile": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.fingerprint) {
-        fail("reconcile requires --repo, --pr, --head, and --fingerprint");
+        failUsage("reconcile requires --repo, --pr, --head, and --fingerprint");
       }
       const out = reconcile({
         repo: args.repo,
@@ -23008,7 +23895,7 @@ function runCliCommand(argv) {
     }
     case "verify-ledger": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail("verify-ledger requires --repo, --pr, and --head");
+        failUsage("verify-ledger requires --repo, --pr, and --head");
       }
       const out = verifyLedger({
         repo: args.repo,
@@ -23031,7 +23918,7 @@ function runCliCommand(argv) {
     }
     case "post-roster": {
       if (!args.repo || args.pr === void 0 || !args.head || !args.author || args.reviewers === void 0 || !args.contentFile) {
-        fail(
+        failUsage(
           "post-roster requires --repo, --pr, --head, --author, --reviewers, and --content-file"
         );
       }
@@ -23049,7 +23936,7 @@ function runCliCommand(argv) {
     }
     case "read-roster": {
       if (!args.repo || args.pr === void 0) {
-        fail("read-roster requires --repo and --pr");
+        failUsage("read-roster requires --repo and --pr");
       }
       const out = readRoster({
         repo: args.repo,
@@ -23062,7 +23949,7 @@ function runCliCommand(argv) {
     case "coverage":
     case "verify-coverage": {
       if (!args.repo || args.pr === void 0 || !args.head) {
-        fail(`${args.command} requires --repo, --pr, and --head`);
+        failUsage(`${args.command} requires --repo, --pr, and --head`);
       }
       const run = args.command === "coverage" ? coverage : verifyCoverage;
       const out = run({
@@ -23092,10 +23979,10 @@ function runCliCommand(argv) {
     }
     case "enrich-telemetry-duration": {
       if (args.dryRun)
-        fail("enrich-telemetry-duration does not support --dry-run");
+        failUsage("enrich-telemetry-duration does not support --dry-run");
       const durationSeconds = parseDurationSeconds(args.durationSeconds);
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey || !args.engineRaw || args.round === void 0 || !args.base || !args.head || durationSeconds === null) {
-        fail(
+        failUsage(
           "enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds"
         );
       }
@@ -23116,7 +24003,7 @@ function runCliCommand(argv) {
     }
     case "replay-telemetry": {
       if (!args.repo || !args.file)
-        fail("replay-telemetry requires --repo and --file");
+        failUsage("replay-telemetry requires --repo and --file");
       const record = validateTelemetryRecord(
         readJsonFile(args.file, "metrics recovery record")
       );
@@ -23141,7 +24028,7 @@ function runCliCommand(argv) {
     case "metrics-setup":
     case "metrics-rotate": {
       if (!args.repo || args.dryRun)
-        fail(
+        failUsage(
           "metrics setup/rotation requires --repo and does not support --dry-run"
         );
       process.stderr.write(
@@ -23154,7 +24041,9 @@ function runCliCommand(argv) {
     }
     case "telemetry-recorded": {
       if (!args.repo || args.pr === void 0 || !args.idempotencyKey)
-        fail("telemetry-recorded requires --repo, --pr, and --idempotency-key");
+        failUsage(
+          "telemetry-recorded requires --repo, --pr, and --idempotency-key"
+        );
       writeSortedJson({
         recorded: telemetryRecorded({
           repo: args.repo,
@@ -23238,19 +24127,19 @@ function runCliCommand(argv) {
     case "report":
     case "export": {
       if (!args.repo) {
-        fail("export requires --repo");
+        failUsage("export requires --repo");
       }
       const byNumber = args.pr !== void 0 || args.prs !== void 0;
       const byDate = args.since !== void 0 || args.until !== void 0;
       if (byNumber === byDate || args.pr !== void 0 && args.prs !== void 0) {
-        fail(
+        failUsage(
           "export requires exactly one selection: --pr, --prs, or --since and/or --until"
         );
       }
       const since = args.since === void 0 ? void 0 : parseExportBound(args.since, "--since");
       const until = args.until === void 0 ? void 0 : parseExportBound(args.until, "--until");
       if (since !== void 0 && until !== void 0 && since > until) {
-        fail("export --since must not be later than --until");
+        failUsage("export --since must not be later than --until");
       }
       const selection = byNumber ? {
         numbers: args.pr !== void 0 ? [args.pr] : parsePullRequestNumbers(args.prs)
@@ -23288,7 +24177,7 @@ function runCliCommand(argv) {
     case "read-result": {
       const targetFile = args.file ?? args.resultFile;
       if (!targetFile) {
-        fail("read-result requires --file or --result-file");
+        failUsage("read-result requires --file or --result-file");
       }
       const out = readResult(targetFile);
       process.stdout.write(JSON.stringify(out, null, 2) + "\n");
@@ -23297,7 +24186,7 @@ function runCliCommand(argv) {
     case "format-findings": {
       const jsonPath = args.jsonFile ?? args.file;
       if (!jsonPath) {
-        fail("format-findings requires --json-file or --file");
+        failUsage("format-findings requires --json-file or --file");
       }
       assertRegularFile(
         jsonPath,
@@ -23321,13 +24210,30 @@ function runCliCommand(argv) {
     case "summary":
     case "post-summary": {
       if (!args.repo || args.pr === void 0)
-        fail(`${args.command} requires --repo and --pr`);
+        failUsage(`${args.command} requires --repo and --pr`);
       writeSortedJson(silentCommand(args.command, args.repo, args.pr, args));
+      break;
+    }
+    case "export-threads": {
+      if (!args.repo || args.pr === void 0 || !args.threadsFile)
+        failUsage("export-threads requires --repo, --pr, and --threads-file");
+      const bytes = Buffer.from(
+        JSON.stringify(fetchReviewThreadPages(args.repo, args.pr)) + "\n",
+        "utf8"
+      );
+      const sha256 = sha256Bytes(bytes);
+      writeFileSync2(args.threadsFile, bytes, { flag: "wx", mode: 384 });
+      const threads = loadReviewThreads(args.threadsFile, sha256);
+      writeSortedJson({
+        path: args.threadsFile,
+        sha256,
+        threads: threads.length
+      });
       break;
     }
     case "read-ledger": {
       if (!args.repo || args.pr === void 0)
-        fail("read-ledger requires --repo and --pr");
+        failUsage("read-ledger requires --repo and --pr");
       writeSortedJson({
         mode: silentRunner().storeFor(args.repo, args.pr) ? "silent" : "loud",
         review_comments: getReviewComments(args.repo, args.pr),
@@ -23337,7 +24243,7 @@ function runCliCommand(argv) {
       break;
     }
     default:
-      fail(`unknown command: ${args.command}`);
+      failUsage(`unknown command: ${args.command}`);
   }
   return 0;
 }
@@ -23388,7 +24294,14 @@ function localGh(argv) {
     );
     ghArgs = [...ghArgs.slice(0, input), ...ghArgs.slice(input + 2)];
   }
-  process.stdout.write(getGitHubRunner().runGh(ghArgs, payload));
+  const runner = getGitHubRunner();
+  const scope = scopeFromArgv(argv.slice(0, split));
+  const silent = scope !== void 0 && runner instanceof SilentRunner && runner.storeFor(scope.repo, scope.pr) !== null;
+  if (!silent && !isReadOnlyGhCall(ghArgs, payload))
+    fail(
+      "local-gh only reads on a PR whose ledger is hosted; record findings, replies, results and markers with the command the skill step names (post-finding, dispose, write-result, attest), never through local-gh"
+    );
+  process.stdout.write(runner.runGh(ghArgs, payload));
   return 0;
 }
 function commandFromArgv(argv) {
@@ -23399,7 +24312,9 @@ function commandFromArgv(argv) {
     "--truncated",
     "--dry-run",
     "--force-review",
-    "--confirmed"
+    "--confirmed",
+    "--help",
+    "-h"
   ]);
   for (let i = 0; i < argv.length; ) {
     const arg = argv[i];
@@ -23411,6 +24326,36 @@ function commandFromArgv(argv) {
   return void 0;
 }
 function runCli(argv = process.argv.slice(2)) {
+  const help = helpRequest(argv);
+  if (help !== void 0) {
+    process.stdout.write(help);
+    return 0;
+  }
+  try {
+    return dispatchCli(argv);
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw new UsageError(
+        `${error.message}
+${usageHint(commandFromArgv(argv))}`
+      );
+    }
+    throw error;
+  }
+}
+function helpRequest(argv) {
+  const own = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv;
+  const first = commandFromArgv(own);
+  const asked = own.includes("--help") || own.includes("-h") || first === "help";
+  if (!asked) return void 0;
+  const command = first === "help" ? commandFromArgv(own.slice(own.indexOf("help") + 1)) : first;
+  if (command === void 0) return overviewHelp();
+  if (commandSynopsis(command) === void 0)
+    return `unknown subcommand: ${command}
+${overviewHelp()}`;
+  return commandHelp(command);
+}
+function dispatchCli(argv) {
   resetGitHubRunner();
   setGitHubRunner(
     new SilentRunner(

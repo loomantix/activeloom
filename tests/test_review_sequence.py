@@ -144,16 +144,50 @@ def test_recovery_cannot_extend_round_budget(controller: ModuleType) -> None:
     assert controller._sequence_decision(rows, policy, HEAD)["status"] == "exhausted"
 
 
+def test_clean_first_cycle_converges(controller: ModuleType) -> None:
+    rows = [event(0), event(1)]
+    assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
+
+
+def test_material_fix_with_independent_clean_review_converges_at_cap(
+    controller: ModuleType,
+) -> None:
+    lean = {**run(), "tier": "lean", "max_rounds": 2}
+    updated = "e" * 40
+    rows = [event(0), event(1), event(2, head=updated, classification="material")]
+    assert controller._sequence_decision(rows, lean, updated)["status"] == "next"
+    rows.append(event(3, head=updated))
+    assert controller._sequence_decision(rows, lean, updated)["status"] == "converged"
+
+
+def test_unreviewed_material_fix_does_not_converge_at_cap(
+    controller: ModuleType,
+) -> None:
+    lean = {**run(), "tier": "lean", "max_rounds": 2}
+    updated = "e" * 40
+    rows = [event(0), event(1), event(2), event(3, head=updated, classification="material")]
+    assert controller._sequence_decision(rows, lean, updated)["status"] == "exhausted"
+
+
+def test_fixed_plan_cannot_self_review_a_material_fix(controller: ModuleType) -> None:
+    policy = {**run(), "plan_mode": "chain", "sequence": ["codex", "claude", "claude"]}
+    rows = [event(0), event(1, classification="material")]
+    followup = event(3)
+    followup["id"] = 23
+    rows.append(followup)
+    assert controller._sequence_decision(rows, policy, HEAD)["status"] == "plan-complete"
+
+
 @pytest.mark.parametrize(
     "count, status, engine, number",
     [
         (0, "next", "codex", 1),
         (1, "next", "claude", 1),
-        (2, "next", "codex", 2),
+        (2, "converged", None, None),
         (3, "converged", None, None),
     ],
 )
-def test_clean_chain_returns_to_initiator(
+def test_clean_chain_stops_after_complete_cycle(
     controller: ModuleType,
     count: int,
     status: str,
@@ -182,11 +216,12 @@ def test_solo_pass_cannot_replace_other_engine(
     controller._authorize_pass(args)
 
 
-def test_material_fix_requires_clean_followup(controller: ModuleType) -> None:
-    rows = [event(0), event(1, classification="material"), event(2)]
-    assert controller._sequence_decision(rows, run(), HEAD)["engine"] == "claude"
-    rows.extend([event(3), event(4)])
-    assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
+def test_material_fix_requires_independent_clean_followup(controller: ModuleType) -> None:
+    updated = "e" * 40
+    rows = [event(0), event(1, head=updated, classification="material")]
+    assert controller._sequence_decision(rows, run(), updated)["engine"] == "codex"
+    rows.append(event(2, head=updated))
+    assert controller._sequence_decision(rows, run(), updated)["status"] == "converged"
 
 
 def test_stale_heads_and_cap(controller: ModuleType) -> None:
@@ -197,7 +232,7 @@ def test_stale_heads_and_cap(controller: ModuleType) -> None:
 
 
 def test_stale_participant_head_blocks_convergence(controller: ModuleType) -> None:
-    """A full cycle plus a return leg is not convergence if a participant's
+    """A completed cycle is not convergence if a participant's
     latest attestation names a superseded commit."""
     rows = [event(0), event(1, head="e" * 40), event(2)]
     decision = controller._sequence_decision(rows, run(), HEAD)
@@ -209,8 +244,7 @@ def test_stale_participant_head_blocks_convergence(controller: ModuleType) -> No
 def test_completed_cycle_converges_without_a_trailing_initiator_leg(
     controller: ModuleType,
 ) -> None:
-    """Exact-head coverage by every participant is the return leg. Which engine
-    attested last adds no evidence over it."""
+    """An already-completed return leg does not require another full cycle."""
     rows = [event(i) for i in range(4)]
     assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
 
@@ -270,13 +304,13 @@ def test_invalid_evidence_fails_closed(
 def test_finish_checks_sequence_then_ledger_before_posting(
     controller: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    rows = [event(0), event(1)]
+    rows = [event(0)]
     posted = wire(controller, monkeypatch, rows)
     args = SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
     with pytest.raises(controller.HandoffError, match="has not converged"):
         controller._finish_run(args)
     assert not posted
-    rows.append(event(2))
+    rows.append(event(1))
     commands: list[str] = []
 
     def execute(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -395,7 +429,8 @@ def test_three_engine_chain(controller: ModuleType) -> None:
         {"id": 23, "body": event(1, engine="gemini")["body"]},
         {"id": 24, "body": event(2)["body"]},
     ]
-    assert controller._sequence_decision(rows[:3], policy, HEAD)["engine"] == "codex"
+    assert controller._sequence_decision(rows[:2], policy, HEAD)["engine"] == "gemini"
+    assert controller._sequence_decision(rows[:3], policy, HEAD)["status"] == "converged"
     assert controller._sequence_decision(rows, policy, HEAD)["status"] == "converged"
 
 

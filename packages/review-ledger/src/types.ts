@@ -409,6 +409,7 @@ export interface ReconcileResult {
   findings: Array<Record<string, unknown>>;
   dispositions: Array<Record<string, unknown>>;
   severityCorrections?: Array<Record<string, unknown>> | undefined;
+  revalidations?: Array<Record<string, unknown>> | undefined;
   sequenceValid: boolean;
   ledgerValid: boolean;
   nextOccurrence: number | null;

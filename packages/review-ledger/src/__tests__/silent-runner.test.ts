@@ -595,6 +595,89 @@ describe('silent summary', () => {
   });
 });
 
+describe('local-gh', () => {
+  const HOSTED = 8;
+  const hosted = ['--repo', REPO, '--pr', String(HOSTED), '--'];
+  let sent: string[];
+
+  beforeEach(() => {
+    // Only an explicit pin makes a PR silent here, so PR 8 stays hosted.
+    delete process.env[SILENT_FORCE_ENV];
+    sent = [];
+    vi.spyOn(DefaultGitHubRunner.prototype, 'runGh').mockImplementation(
+      (args) => {
+        sent.push(args.join(' '));
+        return args.join(' ') === 'api user'
+          ? JSON.stringify({ login: 'operator' })
+          : '[]';
+      },
+    );
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [['api', `repos/${REPO}/issues/${HOSTED}/comments`, '--paginate']],
+    [['api', 'graphql', '-f', 'query=query { viewer { login } }']],
+    [['pr', 'view', String(HOSTED)]],
+  ])('passes a read on a hosted PR: %j', (args) => {
+    expect(runCli(['local-gh', ...hosted, ...args])).toBe(0);
+    expect(sent).toContain(args.join(' '));
+  });
+
+  it.each([
+    [
+      [
+        'api',
+        '-X',
+        'POST',
+        `repos/${REPO}/issues/${HOSTED}/comments`,
+        '-f',
+        'body=<!-- local-review-pass:v3 engine=gemini round=1 -->',
+      ],
+    ],
+    [['api', `repos/${REPO}/issues/${HOSTED}/comments`, '-f', 'body=x']],
+    [['pr', 'comment', String(HOSTED), '--body', 'x']],
+    [['pr', 'review', String(HOSTED), '--comment', '--body', 'x']],
+    [['api', 'graphql', '-f', 'query=mutation { x }']],
+    [['api', 'graphql', '--input', '/tmp/query.json']],
+  ])('refuses a write on a hosted PR: %j', (args) => {
+    expect(() => runCli(['local-gh', ...hosted, ...args])).toThrowError(
+      /local-gh only reads on a PR whose ledger is hosted/,
+    );
+    expect(sent).not.toContain(args.join(' '));
+  });
+
+  it('refuses a write that names no PR scope', () => {
+    expect(() =>
+      runCli(['local-gh', '--', 'pr', 'comment', '1', '--body', 'x']),
+    ).toThrowError(/local-gh only reads/);
+  });
+
+  it('keeps a silent PR write local', () => {
+    runner.pin(REPO, PR, 'run-arg');
+    expect(
+      runCli([
+        'local-gh',
+        '--repo',
+        REPO,
+        '--pr',
+        String(PR),
+        '--',
+        'api',
+        `repos/${REPO}/issues/${PR}/comments`,
+        '-f',
+        'body=hello',
+      ]),
+    ).toBe(0);
+    expect(getAllIssueComments(REPO, PR).map((row) => row['body'])).toEqual([
+      'hello',
+    ]);
+    expect(sent.some((call) => call.includes('body=hello'))).toBe(false);
+  });
+});
+
 describe('silent pattern matching', () => {
   const vectors = JSON.parse(
     readFileSync(

@@ -29,7 +29,8 @@ At Lean, round 2 is already convergence; follow the tier-specific stance in `cri
 
 ## Step 0: Human-glance gate
 
-Classify the range before every other step in this skill — before the
+After the reviewer environment preflight, when present, classify the range
+before every other step in this skill — before the
 context-window check, the PR boundary, round and stance, the telemetry
 snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance".
 Apply that section's **Verified zero-file comparison** first: when
@@ -92,7 +93,9 @@ uses the ledger helper still runs exactly as written, and the helper keeps the
 post local. A step that posts with raw `gh` is not intercepted: write that text
 into the scratchpad that `silent-status` names instead. Where a step below
 replies to a hosted reviewer, write that reply into the scratchpad, then
-resolve the thread with `gh`.
+resolve the thread with `gh`. The helper's `local-gh` subcommand is internal
+to the run controller; never call it yourself, and on a PR that is not silent it
+refuses every write.
 
 ## Safety preconditions — verify before doing anything
 

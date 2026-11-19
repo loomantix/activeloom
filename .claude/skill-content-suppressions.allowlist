@@ -30,6 +30,8 @@
 #     where. "Reviewed and accepted" satisfies the mechanism and defeats it.
 
 # --- category errors: identifier constants the URL extractor reads as hosts ---
+4d6a342d1e73e91423d298b59094a5f883fbdd6a4a38a241207aa747a350a48d  prompts/skills/hgrill/scripts/signoff.py  off-allowlist-url  Prints the random-token URL of the signoff server bound to 127.0.0.1; no remote service is contacted.
+798b769a53340affe1fe313cf9b4fa40429f5181033367797b6a9e75c5865ab2  prompts/skills/hgrill/scripts/signoff.py  off-allowlist-url  Exact Origin identifiers for the local signoff server; compared against request headers, never fetched.
 # These are compared as strings against a provenance attestation. Nothing in
 # either script fetches them, and host-allowlisting them would be the wrong
 # fix: that permits *reaching* the host from every scanned prompt in every

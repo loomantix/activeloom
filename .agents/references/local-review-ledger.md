@@ -220,9 +220,9 @@ than a two-engine one; a whole-round restart would spend passes re-confirming a
 commit that had already been read cold.
 
 A round is complete when every declared reviewer holds an attestation at the
-current head. Convergence additionally requires that the round produced no
-material fix and that every local-review thread carries a disposition reply and
-is resolved.
+current head. Convergence additionally requires a later non-material pass by a
+different engine after the last material fix, if any, and that every
+local-review thread carries a disposition reply and is resolved.
 
 ## Establish the PR boundary
 
@@ -512,8 +512,9 @@ nothing to an already deep backlog.
 
 The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
 round 1 is adversarial, and round 2 runs only if round 1 made a material fix, in
-convergence mode. At both tiers, stop as soon as a complete round produces no
-material fix — the cap is a ceiling, not a target.
+convergence mode. At both tiers, stop as soon as every participant covers the
+current head and any material fix has a later independent non-material pass.
+A clean first cycle is enough — the cap is a ceiling, not a target.
 
 Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
@@ -635,6 +636,13 @@ so `./review-ledger.js` will not run. The bundle is ESM; the sibling
 `package.json` beside it declares `"type": "module"` so it resolves the same way
 regardless of what the surrounding repository's root manifest says.
 
+`node <ledger-helper> <subcommand> --help` prints that subcommand's flags, and
+every argument error prints them too. Take flags from that synopsis or from the
+invocations written out in this document. When the helper refuses an argument,
+read the synopsis it prints and correct the command to match; the helper has no
+other spelling of a flag, and no flag that takes the hash of a
+`--content-file`: the helper hashes the file itself.
+
 The file is a build artifact of ActiveLoom's `packages/review-ledger` package,
 vendored verbatim at the package version recorded in `review-ledger.version`,
 with the bundle's own sha512 in `review-ledger.integrity`. `node <ledger-helper> --version` reports the version
@@ -754,6 +762,52 @@ node <ledger-helper> reopen-occurrence \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
 ```
+
+If the latest occurrence is still undisposed at an earlier head, recurrence is
+the wrong transaction: `reopen-occurrence` requires every previous occurrence
+to have a disposition. After authorizing the current pass with `authorize-pass`
+and reproducing the defect at the exact current head, carry the existing
+occurrence into that actor's active run:
+
+```bash
+node <ledger-helper> revalidate-occurrence \
+  --repo <owner/repo> --pr <number> --head <current-pr-head> \
+  --engine <authorized-engine> --round <authorized-round> \
+  --fingerprint <stable-id> --occurrence <existing-number> \
+  --comment-id <original-root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file-with-current-head-reproduction>
+```
+
+The command appends a read-back-verified `local-review-revalidation:v1` reply
+to the existing unresolved root thread. Its first line seals canonical JSON
+with `engine`, `round`, `head`, `fingerprint`, `occurrence`, `fromEngine`,
+`fromRound`, `fromHead`, `runId`, `runCommentId`, `maxRounds`, and `contentSha`.
+The content hash covers the nonempty reproduction explanation after that line.
+The source identity must identify the latest undisposed occurrence. The head
+must advance, except that an occurrence may be rebound at the unchanged head to
+a later authenticated run after an authorized restart: an already-carried
+occurrence when its last carry named an earlier run, and an uncarried finding
+when it was posted before that run started. Missing timestamps refuse the
+unchanged-head rebind.
+The run binding must match an authenticated run and its
+unchanged cap. A cross-actor takeover, an ended or absent run, a duplicate root,
+a prior disposition (including one with a fabricated identity), a changed cap,
+or conflicting evidence is refused. Retry the identical command after an
+uncertain response; it reuses the same reply. `reconcile` reports these replies
+under `revalidations` alongside the effective finding identity.
+
+The fingerprint, occurrence number, original finding marker, severity, root
+thread, and full reply history remain intact. No roster, run declaration, cap,
+or round budget is changed. Readers derive the effective head, engine, and
+round from the verified reply; it is not a disposition or a second finding.
+Existing upward corrections remain effective; severity can only be raised
+through `correct-severity`. Then run `authorize-fix` as above, using the current
+run and head with the original occurrence number. Its `preflight-fix` check,
+`preflight-publish`, `dispose`, `verify-ledger`, `write-result`, and `reconcile`
+consume that same effective identity. A fixed disposition must still follow
+the revalidated head; no false `fixed`, `dismissed`, or `deferred` outcome is
+needed to carry an open defect forward. Run authorization, pass ordering,
+convergence eligibility, and final exact-head validation remain required.
 
 After the fix is pushed, use the resumable `dispose` transaction. It posts or
 reuses the exact disposition, verifies it, resolves the thread, and verifies
@@ -920,7 +974,10 @@ completion after minor or material fixes; it does not assert overall relay
 convergence, which `verify-coverage` and `verify-ledger` decide. A converged or
 exhausted run whose terminal names another head yields `start-run` with
 `reason=terminal_head_stale`: the run is closed, and the new head needs its own
-authorized run, started with `--restart` under a fresh user authorization. For
+authorized run, started with `--restart` under fresh restart authorization:
+the user's own words, a restart approval the user recorded, or a
+policy-sourced restart record from a protected full-auto autonomy policy,
+which the run controller stamps as `local-review-restart:v1` provenance. For
 an aborted run use `resume-run --repo ... --pr ... --base
 <original-base> --head <current-head>`; this appends a recovery record referencing
 the aborted terminal marker and preserves the run identity, completed passes,
@@ -1103,6 +1160,37 @@ Result ownership depends on the caller:
   returned by `validate-result` as `--expected-result-sha256`. Do not report the
   pass complete unless the helper returns `verified: true`.
 
+  The standalone sequence, with `<dir>` that private directory, `<before>` the
+  PR head the pass started from, and `<head>` the PR head it ends on:
+
+  ```bash
+  node <ledger-helper> write-result \
+    --repo <owner/repo> --pr <number> --head <head> \
+    --engine <engine> --round <n> --base <review-base-sha> --before <before> \
+    --classification <minor|material> --result-file <dir>/result.json
+
+  node <ledger-helper> validate-result \
+    --head <head> --engine <engine> --round <n> \
+    --base <review-base-sha> --before <before> --result-file <dir>/result.json
+
+  node <ledger-helper> export-threads \
+    --repo <owner/repo> --pr <number> --threads-file <dir>/threads.json
+
+  node <ledger-helper> attest \
+    --repo <owner/repo> --pr <number> --head <head> \
+    --engine <engine> --round <n> --base <review-base-sha> --before <before> \
+    --result-file <dir>/result.json --expected-result-sha256 <resultSha256> \
+    --threads-file <dir>/threads.json --expected-threads-sha256 <sha256> \
+    --allowed-heads-file <dir>/heads.json
+  ```
+
+  Omit `--classification` when `<head>` equals `<before>`. `validate-result`
+  prints `resultSha256`; `export-threads` writes a fresh owner-only snapshot and
+  prints its `sha256`; it refuses an existing file, so export to a new path
+  before every `attest` attempt. `<dir>/heads.json` is a JSON array of full
+  SHAs, from `<before>` through each head the pass pushed to `<head>`, in push
+  order, each SHA once: a pass that pushed nothing writes `["<before>"]`.
+
 ## Record what the pass cost
 
 Every pass attempts to emit one versioned `local-review-telemetry` marker: adversarial reviews,
@@ -1150,7 +1238,9 @@ Run the relay until all of the following hold, then mark the PR ready:
 
 1. `verify-coverage` passes at the exact current head — a roster is declared and
    every declared reviewer holds an attestation naming that head.
-2. The round that produced those attestations contained no material fix.
+2. After the last material fix, if any, a different engine completed a clean or
+   minor pass at the current head. The fixing engine's final-lane attestation
+   remains valid evidence for that head; its material outcome is preserved.
 3. `verify-ledger` passes at the same head: every actor-owned thread carries a
    structured disposition and is resolved.
 
@@ -1158,8 +1248,10 @@ Classify committed fixes as `material` or `minor` by effect, not by path or by
 finding severity. `material` covers substantive correctness, security/privacy,
 data-safety, compatibility, deployment/sync, or review-integrity changes,
 including tests or workflows needed to prevent a false green. `minor` is
-low-risk non-behavioral cleanup or polish. A material fix means the round did
-not converge; a minor fix is kept and does not by itself prevent convergence.
+low-risk non-behavioral cleanup or polish. A material fix requires a later
+independent non-material pass; it does not permanently disqualify the fixing
+engine's post-fix attestation. A minor fix is kept and does not by itself prevent
+convergence.
 
 Each engine pass remains evidence for the exact head it reviewed, and a later
 minor commit does not rewrite that historical fact. A round may converge on a
@@ -1222,7 +1314,11 @@ resolutions, rosters, tier markers and attestations exactly as the steps above
 say, and the helper keeps them local. The helper refuses any other PR write
 that passes through it. A raw `gh` command does not pass through it and is not
 refused, so on a silent PR never post with `gh pr comment`, `gh pr review` or a
-`gh api` write; put that text in the scratchpad instead.
+`gh api` write; put that text in the scratchpad instead. The helper's
+`local-gh` subcommand is internal to the run controller and the handoff script,
+not a posting route: never call it yourself. On a PR that is not silent it only
+reads and refuses every write, so a ledger marker can only come from the
+command that records it.
 
 **Hosted reviewers.** They keep posting their own reviews, and their threads
 are not in the local ledger. Read and resolve them with `gh` directly; a

@@ -1,5 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import {
+  revalidatedComments,
+  matchRevalidation,
+  requireRevalidationRun,
+} from './revalidation.js';
+import {
   DISPOSITION_V1,
   DISPOSITION_V1_RE,
   FINDING_V1,
@@ -113,6 +118,34 @@ import type {
   WriteResultParams,
 } from './types.js';
 
+/** Read the effective occurrence context while preserving the persisted ledger. */
+function ledgerComments(repo: string, pr: number): GitHubReviewCommentNode[] {
+  return revalidatedComments(getReviewComments(repo, pr), repo, pr);
+}
+
+function requireCarriedFixRun(params: PreflightFixParams) {
+  const records = getReviewComments(params.repo, params.pr)
+    .map((row) => matchRevalidation(String(row.body ?? '')))
+    .filter(
+      (record) =>
+        record?.fingerprint === params.fingerprint &&
+        record.occurrence === params.occurrence,
+    );
+  const latest = records.at(-1);
+  if (latest) {
+    const run = requireRevalidationRun(params);
+    if (
+      run.id !== latest.runId ||
+      run.commentId !== latest.runCommentId ||
+      run.maxRounds !== latest.maxRounds ||
+      latest.engine !== params.engine ||
+      latest.round !== params.round
+    )
+      fail('carried finding belongs to a different active run or pass');
+  }
+  return latest;
+}
+
 /**
  * Extract every actor-owned protocol record from a review thread.
  *
@@ -131,7 +164,24 @@ export function threadProtocolRecords(
   dispositionsV1: Array<[number, DispositionV1Match]>;
 } {
   verifyPseudoV3History([thread], historicalCommentIds);
-  const comments = thread.comments.nodes;
+  const rawComments = thread.comments.nodes;
+  const hasRevalidation = rawComments.some((row) =>
+    String(row.body ?? '').includes('<!-- local-review-revalidation:'),
+  );
+  if (
+    hasRevalidation &&
+    (!thread.repository?.nameWithOwner ||
+      thread.pullRequest?.number === undefined)
+  )
+    fail('revalidation thread requires repository and PR scope');
+  const comments = hasRevalidation
+    ? revalidatedComments(
+        rawComments,
+        thread.repository!.nameWithOwner!,
+        thread.pullRequest!.number!,
+        true,
+      )
+    : rawComments;
   const actor = currentActor();
 
   const findingsV3: Array<[number, FindingV3Match]> = [];
@@ -1130,8 +1180,9 @@ export function preflightAnchor(
  * Check the posted finding before a controller hands it to a fixer.
  */
 export function preflightFix(params: PreflightFixParams): PreflightFixResult {
+  requireCarriedFixRun(params);
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
   const severity = fixableFindingSeverity(comments, params, stance);
   verifyHead(params.repo, params.pr, params.head);
@@ -1158,8 +1209,10 @@ export function preflightPublish(
     fail('preflight-publish findings must not repeat');
   }
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   const stance = roundStance(params.repo, params.pr, params.round);
+  for (const finding of params.findings)
+    requireCarriedFixRun({ ...params, ...finding });
   const findings = params.findings.map((finding) => ({
     ...finding,
     severity: fixableFindingSeverity(
@@ -1406,7 +1459,7 @@ export function postFinding(params: PostFindingParams): PostFindingResult {
   let replayed = false;
 
   if (isV3) {
-    const comments = getReviewComments(params.repo, params.pr);
+    const comments = ledgerComments(params.repo, params.pr);
     if (rowsHaveHistoricalMarkers(comments)) {
       verifyHistoricalThreads(params.repo, params.pr);
     }
@@ -1490,7 +1543,7 @@ export function reopenOccurrence(
   });
 
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -1572,6 +1625,22 @@ export function reopenOccurrence(
  * Record the outcome of a finding and resolve its thread.
  */
 export function dispose(params: DisposeParams): DisposeResult {
+  const carried = requireCarriedFixRun({
+    ...params,
+    occurrence: params.occurrence ?? 1,
+  });
+  if (carried && params.outcome === 'fixed') {
+    if (carried.head === params.head)
+      fail(
+        'a carried finding requires a published forward fix head before a fixed disposition',
+      );
+    verifyForwardTransitionOrFail(
+      params.repo,
+      carried.head,
+      params.head,
+      'a carried finding requires a published forward fix head before a fixed disposition',
+    );
+  }
   const content = resolveContent(params);
   if (content === undefined) {
     fail('dispose requires content or content-file');
@@ -1589,7 +1658,7 @@ export function dispose(params: DisposeParams): DisposeResult {
   });
 
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -1689,7 +1758,7 @@ export function correctSeverity(
   verifyHead(params.repo, params.pr, params.head);
   assertLiveActor(actor);
 
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -2189,7 +2258,7 @@ function assertThreadIdsInScope(
  */
 export function reconcile(params: ReconcileParams): ReconcileResult {
   verifyHead(params.repo, params.pr, params.head);
-  const comments = getReviewComments(params.repo, params.pr);
+  const comments = ledgerComments(params.repo, params.pr);
   if (rowsHaveHistoricalMarkers(comments)) {
     verifyHistoricalThreads(params.repo, params.pr);
   }
@@ -2354,6 +2423,12 @@ export function reconcile(params: ReconcileParams): ReconcileResult {
     findings: findingRows,
     dispositions: dispositionRows,
     severityCorrections: severityCorrectionRows,
+    revalidations: getReviewComments(params.repo, params.pr).flatMap((row) => {
+      const record = matchRevalidation(String(row.body ?? ''));
+      return record?.fingerprint === params.fingerprint
+        ? [{ id: row.databaseId ?? row.id, ...record }]
+        : [];
+    }),
     sequenceValid,
     ledgerValid,
     nextOccurrence: sequenceValid ? occurrences.length + 1 : null,
