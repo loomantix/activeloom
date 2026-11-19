@@ -137,6 +137,8 @@ def resolve(
         )
     settings = json.loads(result.stdout)
     _require_settings(settings, f"resolved {_label(engine, role)} settings")
+    # Herd launch placement is not a launch setting; keep it out of run pins.
+    settings.pop("launch", None)
     return dict(settings)
 
 

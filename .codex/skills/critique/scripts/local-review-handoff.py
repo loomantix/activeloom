@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1768,6 +1769,143 @@ def _next_pass(args: argparse.Namespace) -> None:
     print(json.dumps(decision, sort_keys=True))
 
 
+# Session mode: the user launches a pass in their own terminal. Each engine's
+# CLI, how it takes the pinned model and effort, the skills root its sessions
+# load helpers from, and how it is asked to run a skill.
+USER_LAUNCH = {
+    "claude": {"cli": "claude", "root": ".claude"},
+    "codex": {"cli": "codex", "root": ".codex"},
+    "gemini": {"cli": "agy", "root": ".agents"},
+}
+INHERIT_MODEL = "inherit"
+
+
+ENV_ENTRY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\r\n]*")
+
+
+def _user_launch_line(
+    engine: str, worktree: str, model: str, effort: str, extra: list[str],
+    env: list[str],
+) -> str:
+    for entry in env:
+        if not ENV_ENTRY.fullmatch(entry):
+            _fail(f"--env entry {entry!r} is not KEY=VALUE")
+    # The repository's pane-env entries, which every herd session carries.
+    pins: list[str] = []
+    if engine == "claude":
+        # As on a Claude pane: an inherited CLAUDE_CODE_EFFORT_LEVEL takes
+        # precedence over --effort, so the pinned pair goes in the environment too.
+        if model != INHERIT_MODEL:
+            pins.append(f"ANTHROPIC_MODEL={model}")
+        pins.append(f"CLAUDE_CODE_EFFORT_LEVEL={effort}")
+    argv = ["env", *env, *pins] if env or pins else []
+    argv.append(USER_LAUNCH[engine]["cli"])
+    if engine == "codex":
+        if model != INHERIT_MODEL:
+            argv += ["-m", model]
+        argv += ["-c", f'model_reasoning_effort="{effort}"']
+    else:
+        if model == INHERIT_MODEL and engine == "gemini":
+            _fail("a gemini pass needs an explicit pinned model; inherit is not supported")
+        if model != INHERIT_MODEL:
+            argv += ["--model", model]
+        argv += ["--effort", effort]
+    argv += extra
+    return f"cd {shlex.quote(worktree)} && {shlex.join(argv)}"
+
+
+def _user_skill_line(engine: str, skill: str, target: str) -> str:
+    if engine == "codex":
+        return f"Use .codex/skills/{skill}/SKILL.md for {target}"
+    return f"/{skill} {target}"
+
+
+def _user_handoff(args: argparse.Namespace) -> None:
+    """Read-only: render the handoff for the run's next pass, launched by the user."""
+    rows = _issue_comments(args.repo, args.pr)
+    records = _run_records(rows)
+    if not records:
+        _fail("no authenticated local-review run exists; no pass is due")
+    run = records[-1]
+    if _run_end(rows, cast(str, run["run_id"])) is not None:
+        _fail("the current local-review run has ended; no pass is due")
+    decision = _sequence_decision(rows, run, args.head)
+    if decision["status"] != "next":
+        _fail(f"no pass is due: the run reports {decision['status']}")
+    _verify_head(args.repo, args.pr, args.head)
+    engine = cast(str, decision["engine"])
+    number = cast(int, decision["round"])
+    if args.engine is not None and args.engine != engine:
+        _fail(f"the next pass belongs to {engine}, not {args.engine}")
+    worktree = Path(args.worktree)
+    if not worktree.is_absolute():
+        _fail("--worktree must be an absolute path")
+    root = USER_LAUNCH[engine]["root"]
+    pin_path = worktree / root / "skills/critique/scripts/review-ledger.version"
+    try:
+        pin = pin_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        _fail(f"the review worktree has no ledger version pin at {pin_path}")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pin):
+        _fail(f"the ledger version pin at {pin_path} is malformed")
+    silent = SILENT_SCOPE is not None
+    skills = (
+        ["deepcritique"]
+        if run["tier"] == "deep"
+        else (["refactorpass", "critique"] if number == 1 else ["critique"])
+    )
+    context = _read_context(args.context_file).strip() if args.context_file else ""
+    target = f"{args.pr}{' silent' if silent else ''}"
+    prompt = (
+        f"Review pass for {args.repo} PR #{args.pr}, run {run['run_id']}, round "
+        f"{number}, pinned base {run['base']}, exact head {args.head}. Post verified "
+        "findings inline before edits; validate, commit, push, reply and resolve; "
+        "publish the normal review result."
+        + (
+            " This PR is silent: pass `silent` to the skill and keep the ledger "
+            "local per the protocol's Silent mode."
+            if silent else ""
+        )
+        + (f" {context}" if context else "")
+        + " This session owns exactly this one pass: do not launch another engine, "
+        "start or finish the run, mark the PR ready, merge, or force-push. If a "
+        "preflight check or a helper refuses, report the command and its exact "
+        "error, post nothing, and stop."
+    )
+    helper = f"{root}/skills/critique/scripts/review-ledger.js"
+    lines = [
+        f"USER PASS: {args.repo}#{args.pr} {engine} r{number} at {args.head[:12]}",
+        "",
+        "1. Launch in your own terminal (a bare CLI without these pins will not do):",
+        "",
+        "   " + _user_launch_line(
+            engine, str(worktree), args.model, args.effort, args.launch_arg or [],
+            args.env or [],
+        ),
+        "",
+        "2. In that session, check the exact head and the ledger helper pin first:",
+        "",
+        f'   test "$(git rev-parse HEAD)" = {args.head}',
+        f'   test "$(node {helper} --version)" = {pin}',
+        "",
+        "3. Then give it this prompt:",
+        "",
+    ]
+    if "refactorpass" in skills:
+        lines.append(
+            "   " + _user_skill_line(engine, "refactorpass", target)
+            + "   (its ledger latch decides whether it runs), then:"
+        )
+    lines.append("   " + _user_skill_line(engine, skills[-1], target))
+    lines.append("   " + prompt)
+    lines += [
+        "",
+        f"The herder waits for the {engine} round {number} pass record at this head and "
+        "continues on its own. It posts, attests and edits nothing for this pass.",
+    ]
+    print("\n".join(lines))
+
+
 def _recover_pass(args: argparse.Namespace) -> None:
     helper = Path(__file__).with_name("review-ledger.js")
     identity = [
@@ -1944,6 +2082,28 @@ def _parser() -> argparse.ArgumentParser:
     next_pass.add_argument("--pr", required=True, type=int)
     next_pass.add_argument("--head", required=True, type=_sha)
     next_pass.set_defaults(handler=_next_pass)
+
+    user = commands.add_parser(
+        "user-handoff",
+        help="read-only: print the handoff for the run's next pass, launched by the user",
+    )
+    user.add_argument("--repo", required=True)
+    user.add_argument("--pr", required=True, type=int)
+    user.add_argument("--head", required=True, type=_sha)
+    user.add_argument("--engine", choices=ENGINES, help="refuse unless the next pass is this engine's")
+    user.add_argument("--worktree", required=True, help="absolute path of the review worktree")
+    user.add_argument("--model", required=True, help="the run's pinned model for this engine")
+    user.add_argument("--effort", required=True, help="the run's pinned effort for this engine")
+    user.add_argument(
+        "--launch-arg", action="append", metavar="ARG",
+        help="one resolved user launch argument (repeat; use --launch-arg=-x for flags)",
+    )
+    user.add_argument(
+        "--env", action="append", metavar="KEY=VALUE",
+        help="one pane-env entry the launched session must carry (repeat)",
+    )
+    user.add_argument("--context-file", help="extra prompt text, such as carried findings")
+    user.set_defaults(handler=_user_handoff)
 
     recover = commands.add_parser("recover-pass")
     recover.add_argument("--repo", required=True)

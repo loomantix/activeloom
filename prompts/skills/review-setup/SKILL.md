@@ -76,6 +76,8 @@ Show the current values with `show` (add `--repo OWNER/REPO` for a repository-sp
 | "deep reviews go Codex, then Claude"    | `set order.deep=codex,claude`                                       |
 | "in this repo, add Gemini to lean runs" | `set --repo OWNER/REPO order.lean=claude,codex,gemini`              |
 | "drop this repo's Codex model override" | `unset --repo OWNER/REPO codex.model`                               |
+| "I'll launch Gemini reviews myself"     | `set gemini.reviewer.launch=user`                                   |
+| "in this repo, herd Codex in a pane"    | `set --repo OWNER/REPO codex.reviewer.launch=pane`                  |
 | "disable hosted review / reviewit"      | `set reviewit.availability=unavailable`                             |
 | "enable hosted review / reviewit"       | `set reviewit.availability=available`                               |
 | "keep reviews off this client's PRs"    | `silent --add OWNER/*` (or `OWNER/REPO`)                            |
@@ -88,6 +90,8 @@ Hosted review (`reviewit`) can be enabled or marked unavailable globally via `re
 `silent` lists the repositories whose reviews keep their ledger local: no finding, reply or marker reaches the PR, and at the end the user is asked whether to post one brief summary. `silent --repo OWNER/REPO` reports whether a repository is covered. A profile that lists any repository is stored with `min_reader_version` 5, so a checkout whose helper predates silent mode refuses the profile instead of posting; sync those checkouts. The behaviour is in the ledger protocol's Silent mode section.
 
 Codex's optional reviewer fallback is a complete, explicit model-and-effort pair. No fallback is enabled by default. Set both values together; a repository override replaces the whole pair. The automatic runner switches once after a recognized capacity rejection only when code and review evidence are unchanged, then keeps that fallback for the remaining Codex passes. It preserves the failed attempt and round budget and reports the actual model and effort. Standalone launchers do not retry. Every engine's worker settings take the same kind of optional pair (`ENGINE.worker.fallback.model` with `ENGINE.worker.fallback.effort`, or `ENGINE.worker.fallback=none`).
+
+`ENGINE.reviewer.launch` decides where a herd starts that engine's review passes: `pane` (the default when unset) in a herdr pane, or `user`, which hands each pass to the user to launch in their own terminal while the herder waits for its record (herdr.md, Session mode). It is placement only: model, effort, order and roster are unchanged. Any engine takes it, per repository too; `resolve --engine ENGINE` reports the effective value and `show` lists it per engine as `launch`. Storing it writes the profile at schema version 6; checkouts older than that read the profile, keep launching in a pane and refuse to write it until synced.
 
 `claude.worker.execution` decides where `horch` and `hloop` builds and a `backlog-refinement` `refine` run on Claude: `local` (the default when unset) or `cloud`, which starts each one in Claude Cloud (`claude --cloud`) with the worker model and effort. Only Claude takes it, and it can be set per repository. Review passes, fixes, auto-glance and shipping always run locally, and other callers of the worker settings ignore it. `resolve --engine claude --role worker` reports the effective value.
 
