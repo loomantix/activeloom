@@ -7,6 +7,10 @@ description: PR-first adversarial code review for Antigravity or Gemini CLI. Use
 
 ## Reviewer environment preflight — hard stop
 
+When hreview supplies a binding and you have not yet entered this pass, run the controller-supplied absolute `reviewer-entry.py enter`
+command first and follow its bound skill from the candidate cwd, including nested lanes.
+A failed entry ends the pass before any evidence operation.
+
 This preflight precedes all other entry gates, including instructions below to
 classify or check context first. Before profile setup, GitHub reads, telemetry,
 classification or any ledger write,
@@ -15,10 +19,11 @@ run these commands separately in the supplied review worktree:
 ```bash
 git rev-parse HEAD
 node .agents/skills/critique/scripts/review-ledger.js --version
+node .agents/skills/critique/scripts/review-ledger.js silent-status --help
 ```
 
-Compare the reported helper version with
-`.agents/skills/critique/scripts/review-ledger.version`. On either command's
+Require the last command to print the command-specific `usage: review-ledger silent-status --repo` synopsis; generic help or an unknown command blocks. Compare the reported helper version with
+`.agents/skills/critique/scripts/review-ledger.version`. On any command's
 nonzero exit, a missing pin or a version mismatch, stop and report the failing
 command, exit status and exact stdout/stderr (or both versions for a mismatch).
 Post nothing. Do not simulate a ledger write, hand-write markers, create a
@@ -108,7 +113,7 @@ from where it paused. Report any other exit verbatim and stop.
 
 A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
 helper's `silent-status --repo <owner/repo> --pr <number>` reports
-`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+`"silent": true`. A failed or malformed status read blocks every evidence write. For an argument-requested PR, run `silent-pin` before the
 first ledger read. A refused pin ends the pass: report the refusal to the user
 and never continue the review loud. A silent PR keeps its ledger local: follow
 [Silent mode](../../references/local-review-ledger.md#silent-mode) for every

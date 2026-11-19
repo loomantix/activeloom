@@ -113,14 +113,17 @@ If the owner chose a `--settings` override instead, print that exact argument
 in place of the bypass flag. Preserve an active run's pins; do not resolve new
 settings for it. A bare `agy` will not work for this handoff: it can select the
 default model and retain the user sandbox. Include the skill invocation and
-these in-session preflight commands, using the installed `.agents` helper:
+the exact bound `reviewer-entry.py enter` command from hreview for a bound pass.
+Its emitted skill and absolute helpers govern that handoff. For an unbound
+invocation, give these in-session preflight commands:
 
 ```bash
 git rev-parse HEAD
 node .agents/skills/critique/scripts/review-ledger.js --version
+node .agents/skills/critique/scripts/review-ledger.js silent-status --help
 ```
 
-Require the helper version to match its sibling `review-ledger.version` pin.
+Require a matching version pin and the command-specific silent-status synopsis.
 On failure, the reviewer reports the command and exact error, posts nothing and
 stops; the controller or user owns any relaunch.
 
