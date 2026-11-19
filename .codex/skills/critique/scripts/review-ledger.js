@@ -2177,7 +2177,7 @@ Run \`review-ledger ${command} --help\` for details; use only the flags it lists
 Run \`review-ledger <subcommand> --help\` for its flags.`;
 }
 
-// ../../node_modules/.pnpm/@babel+parser@8.1.0/node_modules/@babel/parser/lib/index.js
+// ../../node_modules/.pnpm/@babel+parser@8.1.2/node_modules/@babel/parser/lib/index.js
 var Position = class {
   constructor(line, col, index) {
     this.line = void 0;
@@ -2285,9 +2285,10 @@ var StandardErrors = {
   EscapedCharNotAnIdentifier: "Invalid Unicode escape.",
   ExportBindingIsString: ({
     localName,
-    exportName
+    exportName,
+    typeModifierIn
   }) => `A string literal cannot be used as an exported binding without \`from\`.
-- Did you mean \`export { '${localName}' as '${exportName}' } from 'some-module'\`?`,
+- Did you mean \`export ${typeModifierIn === "declaration" ? "type " : ""}{ ${typeModifierIn === "specifier" ? "type " : ""}'${localName}' as '${exportName}' } from 'some-module'\`?`,
   ExportDefaultFromAsIdentifier: "'from' is not allowed as an identifier after 'export default'.",
   FilteredNamespaceDuplicateName: ({
     name
@@ -5096,7 +5097,6 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     }
     this.expect(13);
     const state = this.state.clone();
-    const originalNoArrowAt = this.state.noArrowAt;
     const node = this.startNodeAt(startLoc);
     let {
       consequent,
@@ -5106,12 +5106,10 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     let valid = result[0];
     const invalid = result[1];
     if (failed || invalid.length > 0) {
-      const noArrowAt = [...originalNoArrowAt];
       if (invalid.length > 0) {
         this.state = state;
-        this.state.noArrowAt = noArrowAt;
         for (let i = 0; i < invalid.length; i++) {
-          noArrowAt.push(invalid[i].start);
+          this.noArrowAt.add(this.offsetToSourcePos(invalid[i].start));
         }
         ({
           consequent,
@@ -5124,15 +5122,13 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
       }
       if (failed && valid.length === 1) {
         this.state = state;
-        noArrowAt.push(valid[0].start);
-        this.state.noArrowAt = noArrowAt;
+        this.noArrowAt.add(this.offsetToSourcePos(valid[0].start));
         ({
           consequent
         } = this.tryParseConditionalConsequent());
       }
     }
     this.getArrowLikeExpressions(consequent, true);
-    this.state.noArrowAt = originalNoArrowAt;
     this.expect(10);
     node.test = expr;
     node.consequent = consequent;
@@ -5617,8 +5613,8 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     }
     return super.parseAsyncArrowFromCallExpression(node, call);
   }
-  shouldParseAsyncArrow() {
-    return this.match(10) || super.shouldParseAsyncArrow();
+  parseAsyncArrowHead(startLoc) {
+    return this.match(10) ? this.startNodeAt(startLoc) : super.parseAsyncArrowHead(startLoc);
   }
   parseMaybeAssign(refExpressionErrors, isParenItem) {
     let state = null;
@@ -5716,10 +5712,10 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     super.checkParams(node, allowDuplicates, isArrowFunction, strictModeChanged);
   }
   parseParenAndDistinguishExpression(canStartArrow) {
-    return super.parseParenAndDistinguishExpression(canStartArrow && !this.state.noArrowAt.includes(this.sourceToOffsetPos(this.state.start)));
+    return super.parseParenAndDistinguishExpression(canStartArrow && !this.noArrowAt.has(this.state.start));
   }
   parseSubscripts(base, startLoc, noCalls) {
-    if (base.type === "Identifier" && base.name === "async" && this.state.noArrowAt.includes(startLoc.index)) {
+    if (base.type === "Identifier" && base.name === "async" && this.noArrowAt.has(this.offsetToSourcePos(startLoc.index))) {
       this.next();
       const node = this.startNodeAt(startLoc);
       node.callee = base;
@@ -6971,6 +6967,7 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
     return false;
   }
   declareName(name, bindingType, loc) {
+    const scope = this.currentScope();
     if (bindingType & 4096) {
       if (this.hasImport(name, true)) {
         this.parser.raise(Errors.VarRedeclaration, loc, {
@@ -6978,9 +6975,9 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
         });
       }
       this.importsStack[this.importsStack.length - 1].add(name);
+      this.maybeExportDefined(scope, name);
       return;
     }
-    const scope = this.currentScope();
     let type = scope.tsNames.get(name) || 0;
     if (bindingType & 1024) {
       this.maybeExportDefined(scope, name);
@@ -7047,6 +7044,7 @@ var TypeScriptScopeHandler = class extends ScopeHandler {
 var BaseParser = class {
   sawUnambiguousESM = false;
   ambiguousScriptDifferentAst = false;
+  noArrowAt = /* @__PURE__ */ new Set();
   sourceToOffsetPos(sourcePos) {
     return sourcePos + this.startIndex;
   }
@@ -7261,7 +7259,7 @@ var CommentsParser = class extends BaseParser {
   }
 };
 var State = class _State {
-  flags = 2048;
+  flags = 1024;
   get strict() {
     return (this.flags & 1) > 0;
   }
@@ -7288,8 +7286,8 @@ var State = class _State {
     this.startLoc = this.endLoc = new Position(startLine, startColumn, startIndex);
   }
   errors = [];
-  noArrowAt = [];
   noArrowParamsConversionAt = [];
+  tsArrowReturnTypeRestrictionAt = -1;
   regExpAllowedAt = -1;
   get canStartArrow() {
     return (this.flags & 2) > 0;
@@ -7340,26 +7338,19 @@ var State = class _State {
     if (v) this.flags |= 128;
     else this.flags &= -129;
   }
-  get inConditionalConsequent() {
+  get inHackPipelineBody() {
     return (this.flags & 256) > 0;
   }
-  set inConditionalConsequent(v) {
+  set inHackPipelineBody(v) {
     if (v) this.flags |= 256;
     else this.flags &= -257;
   }
-  get inHackPipelineBody() {
+  get seenTopicReference() {
     return (this.flags & 512) > 0;
   }
-  set inHackPipelineBody(v) {
+  set seenTopicReference(v) {
     if (v) this.flags |= 512;
     else this.flags &= -513;
-  }
-  get seenTopicReference() {
-    return (this.flags & 1024) > 0;
-  }
-  set seenTopicReference(v) {
-    if (v) this.flags |= 1024;
-    else this.flags &= -1025;
   }
   labels = [];
   commentsLen = 0;
@@ -7373,26 +7364,40 @@ var State = class _State {
   lastTokStartLoc = null;
   context = [types.brace];
   get canStartJSXElement() {
-    return (this.flags & 2048) > 0;
+    return (this.flags & 1024) > 0;
   }
   set canStartJSXElement(v) {
+    if (v) this.flags |= 1024;
+    else this.flags &= -1025;
+  }
+  get containsEsc() {
+    return (this.flags & 2048) > 0;
+  }
+  set containsEsc(v) {
     if (v) this.flags |= 2048;
     else this.flags &= -2049;
   }
-  get containsEsc() {
+  firstInvalidTemplateEscapePos = null;
+  get hasTopLevelAwait() {
     return (this.flags & 4096) > 0;
   }
-  set containsEsc(v) {
+  set hasTopLevelAwait(v) {
     if (v) this.flags |= 4096;
     else this.flags &= -4097;
   }
-  firstInvalidTemplateEscapePos = null;
-  get hasTopLevelAwait() {
+  get tsArrowReturnTypeAllowed() {
     return (this.flags & 8192) > 0;
   }
-  set hasTopLevelAwait(v) {
+  set tsArrowReturnTypeAllowed(v) {
     if (v) this.flags |= 8192;
     else this.flags &= -8193;
+  }
+  get tsGenericArrowParams() {
+    return (this.flags & 16384) > 0;
+  }
+  set tsGenericArrowParams(v) {
+    if (v) this.flags |= 16384;
+    else this.flags &= -16385;
   }
   strictErrors = /* @__PURE__ */ new Map();
   tokensLength = 0;
@@ -7408,8 +7413,8 @@ var State = class _State {
     state.startLoc = this.startLoc;
     state.endLoc = this.endLoc;
     state.errors = this.errors.slice();
-    state.noArrowAt = this.noArrowAt.slice();
     state.noArrowParamsConversionAt = this.noArrowParamsConversionAt.slice();
+    state.tsArrowReturnTypeRestrictionAt = this.tsArrowReturnTypeRestrictionAt;
     state.regExpAllowedAt = this.regExpAllowedAt;
     state.labels = this.labels.slice();
     state.commentsLen = this.commentsLen;
@@ -7692,12 +7697,11 @@ function readCodePoint(input, pos, lineStart, curLine, throwOnInvalid, errors) {
     if (code2 !== null && code2 > 1114111) {
       if (throwOnInvalid) {
         errors.invalidCodePoint(pos, lineStart, curLine);
-      } else {
-        return {
-          code: null,
-          pos
-        };
       }
+      return {
+        code: null,
+        pos
+      };
     }
   } else {
     ({
@@ -7725,6 +7729,30 @@ var Token = class {
   }
 };
 var locDataCache;
+var asciiIdentifierChar = new Uint8Array(128);
+for (let i = 0; i < 128; i++) {
+  asciiIdentifierChar[i] = isIdentifierChar(i) ? 1 : 0;
+}
+var keywordBuckets = [];
+var maxKeywordLength = 0;
+keywords$1.forEach((type, word) => {
+  const index = word.length << 7 | word.charCodeAt(0);
+  (keywordBuckets[index] ??= []).push(word, type);
+  if (word.length > maxKeywordLength) maxKeywordLength = word.length;
+});
+function lookupKeyword(word, firstCode) {
+  const {
+    length
+  } = word;
+  if (length > maxKeywordLength || firstCode >= 128) return void 0;
+  const bucket = keywordBuckets[length << 7 | firstCode];
+  if (bucket !== void 0) {
+    for (let i = 0; i < bucket.length; i += 2) {
+      if (bucket[i] === word) return bucket[i + 1];
+    }
+  }
+  return void 0;
+}
 var Tokenizer = class extends CommentsParser {
   isLookahead;
   tokens = [];
@@ -7909,29 +7937,36 @@ var Tokenizer = class extends CommentsParser {
     const spaceStart = this.state.pos;
     const attachComment = (this.optionFlags & 8192) > 0;
     let comments;
-    loop: while (this.state.pos < this.length) {
-      const ch = this.input.charCodeAt(this.state.pos);
+    const {
+      input,
+      length
+    } = this;
+    let pos = spaceStart;
+    loop: while (pos < length) {
+      const ch = input.charCodeAt(pos);
       switch (ch) {
         case 32:
         case 160:
         case 9:
-          ++this.state.pos;
+          ++pos;
           break;
         case 13:
-          if (this.input.charCodeAt(this.state.pos + 1) === 10) {
-            ++this.state.pos;
+          if (input.charCodeAt(pos + 1) === 10) {
+            ++pos;
           }
         case 10:
         case 8232:
         case 8233:
-          ++this.state.pos;
+          ++pos;
           ++this.state.curLine;
-          this.state.lineStart = this.state.pos;
+          this.state.lineStart = pos;
           break;
         case 47:
-          switch (this.input.charCodeAt(this.state.pos + 1)) {
+          switch (input.charCodeAt(pos + 1)) {
             case 42: {
+              this.state.pos = pos;
               const comment = this.skipBlockComment("*/");
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7941,7 +7976,9 @@ var Tokenizer = class extends CommentsParser {
               break;
             }
             case 47: {
+              this.state.pos = pos;
               const comment = this.skipLineComment(2);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7956,11 +7993,12 @@ var Tokenizer = class extends CommentsParser {
           break;
         default:
           if (isWhitespace(ch)) {
-            ++this.state.pos;
+            ++pos;
           } else if (ch === 45 && !this.inModule && this.optionFlags & 16384) {
-            const pos = this.state.pos;
-            if (this.input.charCodeAt(pos + 1) === 45 && this.input.charCodeAt(pos + 2) === 62 && (spaceStart === 0 || this.state.lineStart > spaceStart)) {
+            if (input.charCodeAt(pos + 1) === 45 && input.charCodeAt(pos + 2) === 62 && (spaceStart === 0 || this.state.lineStart > spaceStart)) {
+              this.state.pos = pos;
               const comment = this.skipLineComment(3);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7971,9 +8009,10 @@ var Tokenizer = class extends CommentsParser {
               break loop;
             }
           } else if (ch === 60 && !this.inModule && this.optionFlags & 16384) {
-            const pos = this.state.pos;
-            if (this.input.charCodeAt(pos + 1) === 33 && this.input.charCodeAt(pos + 2) === 45 && this.input.charCodeAt(pos + 3) === 45) {
+            if (input.charCodeAt(pos + 1) === 33 && input.charCodeAt(pos + 2) === 45 && input.charCodeAt(pos + 3) === 45) {
+              this.state.pos = pos;
               const comment = this.skipLineComment(4);
+              pos = this.state.pos;
               if (comment !== void 0) {
                 this.addComment(comment);
                 if (attachComment) {
@@ -7988,6 +8027,7 @@ var Tokenizer = class extends CommentsParser {
           }
       }
     }
+    this.state.pos = pos;
     if (comments?.length) {
       const end = this.state.pos;
       const commentWhitespace = {
@@ -8593,22 +8633,32 @@ var Tokenizer = class extends CommentsParser {
     this.state.containsEsc = false;
     let word = "";
     const start = this.state.pos;
-    let chunkStart = this.state.pos;
+    let chunkStart = start;
+    const {
+      input,
+      length
+    } = this;
+    let pos = start;
     if (firstCode !== void 0) {
-      this.state.pos += firstCode <= 65535 ? 1 : 2;
+      pos += firstCode <= 65535 ? 1 : 2;
     }
-    while (this.state.pos < this.length) {
-      const ch = this.codePointAtPos(this.state.pos);
-      if (isIdentifierChar(ch)) {
-        this.state.pos += ch <= 65535 ? 1 : 2;
-      } else if (ch === 92) {
+    while (pos < length) {
+      let ch = input.charCodeAt(pos);
+      if (ch < 128) {
+        if (asciiIdentifierChar[ch] === 1) {
+          ++pos;
+          continue;
+        }
+        if (ch !== 92) break;
         this.state.containsEsc = true;
-        word += this.input.slice(chunkStart, this.state.pos);
+        word += input.slice(chunkStart, pos);
+        this.state.pos = pos;
         const escStart = this.state.curPosition();
-        const identifierCheck = this.state.pos === start ? isIdentifierStart : isIdentifierChar;
-        if (this.input.charCodeAt(++this.state.pos) !== 117) {
+        const identifierCheck = pos === start ? isIdentifierStart : isIdentifierChar;
+        if (input.charCodeAt(++this.state.pos) !== 117) {
           this.raise(Errors.MissingUnicodeEscape, this.state.curPosition());
           chunkStart = this.state.pos - 1;
+          pos = this.state.pos;
           continue;
         }
         ++this.state.pos;
@@ -8619,16 +8669,27 @@ var Tokenizer = class extends CommentsParser {
           }
           word += String.fromCodePoint(esc);
         }
-        chunkStart = this.state.pos;
+        chunkStart = pos = this.state.pos;
       } else {
-        break;
+        if ((ch & 64512) === 55296 && pos + 1 < length) {
+          const trail = input.charCodeAt(pos + 1);
+          if ((trail & 64512) === 56320) {
+            ch = 65536 + ((ch & 1023) << 10) + (trail & 1023);
+          }
+        }
+        if (isIdentifierChar(ch)) {
+          pos += ch <= 65535 ? 1 : 2;
+        } else {
+          break;
+        }
       }
     }
-    return word + this.input.slice(chunkStart, this.state.pos);
+    this.state.pos = pos;
+    return word + input.slice(chunkStart, pos);
   }
   readWord(firstCode) {
     const word = this.readWord1(firstCode);
-    const type = keywords$1.get(word);
+    const type = lookupKeyword(word, firstCode === void 0 ? word.charCodeAt(0) : firstCode);
     if (type !== void 0) {
       this.finishToken(type, tokenLabelName(type));
     } else {
@@ -9826,10 +9887,14 @@ var ExpressionParser = class extends LValParser {
     return expr;
   }
   parseExpression(disallowIn, refExpressionErrors) {
-    if (disallowIn) {
-      return this.disallowInAnd(() => this.parseExpressionBase(refExpressionErrors));
+    if (disallowIn ? this.enterDisallowIn() : this.enterAllowIn()) {
+      try {
+        return this.parseExpressionBase(refExpressionErrors);
+      } finally {
+        this.prodParam.exit();
+      }
     }
-    return this.allowInAnd(() => this.parseExpressionBase(refExpressionErrors));
+    return this.parseExpressionBase(refExpressionErrors);
   }
   parseExpressionBase(refExpressionErrors) {
     const startLoc = this.state.startLoc;
@@ -9846,10 +9911,24 @@ var ExpressionParser = class extends LValParser {
     return expr;
   }
   parseMaybeAssignDisallowIn(refExpressionErrors) {
-    return this.disallowInAnd(() => this.parseMaybeAssign(refExpressionErrors));
+    if (this.enterDisallowIn()) {
+      try {
+        return this.parseMaybeAssign(refExpressionErrors);
+      } finally {
+        this.prodParam.exit();
+      }
+    }
+    return this.parseMaybeAssign(refExpressionErrors);
   }
   parseMaybeAssignAllowIn(refExpressionErrors, isParenItem) {
-    return this.allowInAnd(() => this.parseMaybeAssign(refExpressionErrors, isParenItem));
+    if (this.enterAllowIn()) {
+      try {
+        return this.parseMaybeAssign(refExpressionErrors, isParenItem);
+      } finally {
+        this.prodParam.exit();
+      }
+    }
+    return this.parseMaybeAssign(refExpressionErrors, isParenItem);
   }
   setOptionalParametersError(refExpressionErrors) {
     refExpressionErrors.optionalParametersLoc = this.state.startLoc;
@@ -9957,7 +10036,6 @@ var ExpressionParser = class extends LValParser {
     if (this.shouldExitDescending(expr)) {
       return expr;
     }
-    this.state.canStartArrow = false;
     return this.parseExprOp(expr, startLoc, -1);
   }
   isEscapedKeywordOperatorAfterLineBreak() {
@@ -10024,6 +10102,7 @@ var ExpressionParser = class extends LValParser {
   }
   parseExprOpBaseRightExpr(op, prec) {
     const startLoc = this.state.startLoc;
+    this.state.canStartArrow = false;
     return this.parseExprOp(this.parseMaybeUnaryOrPrivate(), startLoc, tokenIsRightAssociative(op) ? prec - 1 : prec);
   }
   parseHackPipeBody() {
@@ -10056,9 +10135,9 @@ var ExpressionParser = class extends LValParser {
       if (!sawUnary) this.checkExponentialAfterUnary(expr2);
       return expr2;
     }
-    const update = this.match(30);
-    const node = this.startNode();
     if (tokenIsPrefix(this.state.type)) {
+      const update = this.match(30);
+      const node = this.startNode();
       node.operator = this.state.value;
       node.prefix = true;
       this.state.canStartArrow = false;
@@ -10083,8 +10162,11 @@ var ExpressionParser = class extends LValParser {
         }
         return this.finishNode(node, "UnaryExpression");
       }
+      const result = this.finishNode(node, "UpdateExpression");
+      this.checkLVal(result.argument, result);
+      return result;
     }
-    const expr = this.parseUpdate(node, update, refExpressionErrors);
+    const expr = this.parseUpdate(refExpressionErrors);
     if (isAwait) {
       const {
         type
@@ -10097,22 +10179,17 @@ var ExpressionParser = class extends LValParser {
     }
     return expr;
   }
-  parseUpdate(node, update, refExpressionErrors) {
-    if (update) {
-      const result = this.finishNode(node, "UpdateExpression");
-      this.checkLVal(result.argument, result);
-      return result;
-    }
+  parseUpdate(refExpressionErrors) {
     const startLoc = this.state.startLoc;
     let expr = this.parseExprSubscripts(refExpressionErrors);
     if (this.checkExpressionErrors(refExpressionErrors, false)) return expr;
     while (tokenIsPostfix(this.state.type) && !this.canInsertSemicolon()) {
-      const node2 = this.startNodeAt(startLoc);
-      node2.operator = this.state.value;
-      node2.prefix = false;
-      node2.argument = expr;
+      const node = this.startNodeAt(startLoc);
+      node.operator = this.state.value;
+      node.prefix = false;
+      node.argument = expr;
       this.next();
-      this.checkLVal(expr, expr = this.finishNode(node2, "UpdateExpression"));
+      this.checkLVal(expr, expr = this.finishNode(node, "UpdateExpression"));
     }
     return expr;
   }
@@ -10244,20 +10321,25 @@ var ExpressionParser = class extends LValParser {
     } else {
       node.arguments = this.parseCallExpressionArguments(base.type !== "Super", node, refExpressionErrors);
     }
-    let finishedNode = this.finishCallExpression(node, optionalChainMember);
-    if (maybeAsyncArrow && this.shouldParseAsyncArrow() && !optional) {
-      state.stop = true;
-      this.checkDestructuringPrivate(refExpressionErrors);
-      this.expressionScope.validateAsPattern();
-      this.expressionScope.exit();
-      finishedNode = this.parseAsyncArrowFromCallExpression(this.startNodeAt(startLoc), finishedNode);
-    } else {
-      if (maybeAsyncArrow) {
-        this.checkExpressionErrors(refExpressionErrors, true);
+    const finishedNode = this.finishCallExpression(node, optionalChainMember);
+    if (maybeAsyncArrow && !optional) {
+      const errorsLength = this.state.errors.length;
+      const asyncArrowHead = this.parseAsyncArrowHead(startLoc);
+      if (asyncArrowHead) {
+        const returnTypeErrors = this.state.errors.length > errorsLength ? this.state.errors.splice(errorsLength) : void 0;
+        state.stop = true;
+        this.checkDestructuringPrivate(refExpressionErrors);
+        this.expressionScope.validateAsPattern();
         this.expressionScope.exit();
+        if (returnTypeErrors) this.state.errors.push(...returnTypeErrors);
+        return this.parseAsyncArrowFromCallExpression(asyncArrowHead, finishedNode);
       }
-      this.toReferencedList(node.arguments);
     }
+    if (maybeAsyncArrow) {
+      this.checkExpressionErrors(refExpressionErrors, true);
+      this.expressionScope.exit();
+    }
+    this.toReferencedList(node.arguments);
     return finishedNode;
   }
   parseTaggedTemplateExpression(base, startLoc, state) {
@@ -10306,8 +10388,8 @@ var ExpressionParser = class extends LValParser {
     }
     return elts;
   }
-  shouldParseAsyncArrow() {
-    return this.match(15) && !this.canInsertSemicolon();
+  parseAsyncArrowHead(startLoc) {
+    return this.match(15) && !this.canInsertSemicolon() ? this.startNodeAt(startLoc) : void 0;
   }
   parseAsyncArrowFromCallExpression(node, call) {
     this.resetPreviousNodeTrailingComments(call);
@@ -10547,9 +10629,11 @@ var ExpressionParser = class extends LValParser {
     const oldLabels = this.state.labels;
     this.state.labels = [];
     if (isAsync) {
+      this.expressionScope.enter(sharedExpressionScope);
       this.prodParam.enter(2);
       node.body = this.parseBlock();
       this.prodParam.exit();
+      this.expressionScope.exit();
     } else {
       node.body = this.parseBlock();
     }
@@ -10607,7 +10691,7 @@ var ExpressionParser = class extends LValParser {
   parseImportMetaPropertyOrPhaseCallOrSyncCall(node) {
     this.next();
     if (this.isContextual(102) || this.isContextual(94)) {
-      const isSource = this.isContextual(102);
+      const isSource = this.match(102);
       this.expectPlugin(isSource ? "sourcePhaseImports" : "deferredImportEvaluation");
       this.next();
       node.phase = isSource ? "source" : "defer";
@@ -10708,8 +10792,8 @@ var ExpressionParser = class extends LValParser {
     }
     const innerEndLoc = this.state.lastTokEndLoc;
     this.expect(7);
-    let arrowNode = this.startNodeAt(startLoc);
-    if (canStartArrow && this.shouldParseArrow(exprList) && (arrowNode = this.parseArrow(arrowNode))) {
+    let arrowNode;
+    if (canStartArrow && this.shouldParseArrow(exprList) && (arrowNode = this.parseArrow(this.startNodeAt(startLoc)))) {
       this.checkDestructuringPrivate(refExpressionErrors);
       this.expressionScope.validateAsPattern();
       this.expressionScope.exit();
@@ -10875,22 +10959,23 @@ var ExpressionParser = class extends LValParser {
   }
   parsePropertyDefinition(refExpressionErrors) {
     const decorators = [];
+    const decoratorsStartLoc = this.state.startLoc;
     if (this.match(22)) {
       if (this.hasPlugin("decorators")) {
-        this.raise(Errors.UnsupportedPropertyDecorator, this.state.startLoc);
+        this.raise(Errors.UnsupportedPropertyDecorator, decoratorsStartLoc);
       }
       while (this.match(22)) {
         decorators.push(this.parseDecorator());
       }
     }
-    const prop = this.startNode();
-    let isAsync = false;
-    let isAccessor = false;
-    let startLoc;
     if (this.match(17)) {
       if (decorators.length) this.unexpected();
       return this.parseSpread();
     }
+    const prop = this.startNodeAt(decoratorsStartLoc);
+    let isAsync = false;
+    let isAccessor = false;
+    let startLoc;
     if (decorators.length) {
       prop.decorators = decorators;
     }
@@ -11215,6 +11300,7 @@ var ExpressionParser = class extends LValParser {
         this.replaceToken(131);
       }
     } else {
+      this.setLoc(this.state.startLoc);
       this.checkReservedWord(name, this.sourceToOffsetPos(start), tokenIsKeyword2, false);
     }
     this.next();
@@ -11326,7 +11412,7 @@ var ExpressionParser = class extends LValParser {
     return this.finishNode(node, "YieldExpression");
   }
   parseImportCall(node) {
-    this.next();
+    this.expect(6);
     const args = this.parseCallExpressionArguments();
     if (args.length === 0 || args.length > 2) {
       this.raise(Errors.ImportCallArity, node, node);
@@ -11353,32 +11439,24 @@ var ExpressionParser = class extends LValParser {
       this.state.seenTopicReference = oldSeenTopicReference;
     }
   }
-  allowInAnd(callback) {
+  enterAllowIn() {
     const flags = this.prodParam.currentFlags();
     const prodParamToSet = (8 | 16) & ~flags;
     if (prodParamToSet) {
       this.prodParam.enter(flags | 8 | 16);
-      try {
-        return callback();
-      } finally {
-        this.prodParam.exit();
-      }
+      return true;
     }
-    return callback();
+    return false;
   }
-  disallowInAnd(callback) {
+  enterDisallowIn() {
     const flags = this.prodParam.currentFlags();
     const prodParamToClear = 8 & flags;
     const prodParamToSet = 16 & ~flags;
     if (prodParamToClear || prodParamToSet) {
       this.prodParam.enter(flags & -9 | 16);
-      try {
-        return callback();
-      } finally {
-        this.prodParam.exit();
-      }
+      return true;
     }
-    return callback();
+    return false;
   }
   registerTopicReference() {
     this.state.seenTopicReference = true;
@@ -12352,7 +12430,7 @@ var StatementParser = class extends ExpressionParser {
     return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
   }
   isClassProperty() {
-    return this.match(25) || this.match(9) || this.match(4);
+    return this.match(25) || this.match(9) || this.match(4) || this.match(22) && this.hasPrecedingLineBreak();
   }
   isClassMethod() {
     return this.match(6);
@@ -12941,7 +13019,8 @@ var StatementParser = class extends ExpressionParser {
           if (local.type !== "Identifier") {
             this.raise(Errors.ExportBindingIsString, specifier, {
               localName: local.value,
-              exportName
+              exportName,
+              typeModifierIn: node.exportKind === "type" ? "declaration" : specifier.exportKind === "type" ? "specifier" : void 0
             });
           } else {
             this.checkReservedWord(local.name, local.start, true, false);
@@ -13504,6 +13583,39 @@ function tsIsTypeCast(node) {
     case "TSNonNullExpression":
     case "TSTypeAssertion":
       return true;
+    default:
+      return false;
+  }
+}
+function tsIsInvalidArrowParamsError(error, returnTypeStart) {
+  if (error.pos >= returnTypeStart) return false;
+  switch (error.reasonCode) {
+    case "AwaitBindingIdentifier":
+    case "AwaitExpressionFormalParameter":
+    case "IllegalLanguageModeDirective":
+    case "ParamDupe":
+    case "StrictEvalArgumentsBinding":
+    case "VarRedeclaration":
+    case "YieldInParameter":
+      return false;
+    default:
+      return true;
+  }
+}
+function tsHasUnambiguousArrowParams(params) {
+  if (!params?.length) return true;
+  let first = params[0];
+  if (first?.type === "AssignmentPattern" || first?.type === "AssignmentExpression") {
+    first = first.left;
+  }
+  switch (first?.type) {
+    case "RestElement":
+    case "SpreadElement":
+      return true;
+    case "TSTypeCastExpression":
+      return first.expression.type === "Identifier" || first.expression.type === "ThisExpression";
+    case "Identifier":
+      return !!first.typeAnnotation || !!first.optional;
     default:
       return false;
   }
@@ -14314,15 +14426,15 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return isTypeOperator ? this.tsParseTypeOperator() : this.isContextual(114) ? this.tsParseInferType() : this.tsInAllowConditionalTypesContext(() => this.tsParseArrayTypeOrHigher());
   }
   tsParseUnionOrIntersectionType(kind, parseConstituentType, operator) {
-    const node = this.startNode();
+    const startLoc = this.state.startLoc;
     const hasLeadingOperator = this.eat(operator);
-    const types2 = [];
-    do {
-      types2.push(parseConstituentType());
-    } while (this.eat(operator));
-    if (types2.length === 1 && !hasLeadingOperator) {
-      return types2[0];
+    const first = parseConstituentType();
+    if (!hasLeadingOperator && !this.match(operator)) {
+      return first;
     }
+    const node = this.startNodeAt(startLoc);
+    const types2 = [first];
+    while (this.eat(operator)) types2.push(parseConstituentType());
     node.types = types2;
     return this.finishNode(node, kind);
   }
@@ -14387,17 +14499,18 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     return this.tsInType(() => {
       const t = this.startNode();
       this.expect(returnToken);
-      const node = this.startNode();
-      const asserts = !!this.tsTryParse(this.tsParseTypePredicateAsserts.bind(this));
+      const startLoc = this.state.startLoc;
+      const asserts = this.match(108) && !!this.tsTryParse(this.tsParseTypePredicateAsserts.bind(this));
       if (asserts && this.match(74)) {
+        const node2 = this.startNodeAt(startLoc);
         let thisTypePredicate = this.tsParseThisTypeOrThisTypePredicate();
         if (thisTypePredicate.type === "TSThisType") {
-          node.parameterName = thisTypePredicate;
-          node.asserts = true;
-          node.typeAnnotation = null;
-          thisTypePredicate = this.finishNode(node, "TSTypePredicate");
+          node2.parameterName = thisTypePredicate;
+          node2.asserts = true;
+          node2.typeAnnotation = null;
+          thisTypePredicate = this.finishNode(node2, "TSTypePredicate");
         } else {
-          this.resetStartLocationFromNode(thisTypePredicate, node);
+          this.resetStartLocationFromNode(thisTypePredicate, node2);
           thisTypePredicate.asserts = true;
         }
         t.typeAnnotation = thisTypePredicate;
@@ -14408,12 +14521,14 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         if (!asserts) {
           return this.tsParseTypeAnnotation(false, t);
         }
-        node.parameterName = this.parseIdentifier();
-        node.asserts = asserts;
-        node.typeAnnotation = null;
-        t.typeAnnotation = this.finishNode(node, "TSTypePredicate");
+        const node2 = this.startNodeAt(startLoc);
+        node2.parameterName = this.parseIdentifier();
+        node2.asserts = asserts;
+        node2.typeAnnotation = null;
+        t.typeAnnotation = this.finishNode(node2, "TSTypePredicate");
         return this.finishNode(t, "TSTypeAnnotation");
       }
+      const node = this.startNodeAt(startLoc);
       const type = this.tsParseTypeAnnotation(false);
       node.parameterName = typePredicateVariable;
       node.typeAnnotation = type;
@@ -14870,11 +14985,17 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       node.typeParameters = this.tsParseTypeParameters(this.tsParseConstModifier);
       super.parseFunctionParams(node);
       node.returnType = this.tsTryParseTypeOrTypePredicateAnnotation();
+      const arrowStartPos = this.offsetToSourcePos(startLoc.index);
+      if (node.returnType && this.match(15) && this.tsIsArrowReturnTypeRestrictedAt(arrowStartPos)) {
+        this.tsArrowReturnTypeAt.set(arrowStartPos, node.returnType.start);
+      }
       this.expect(15);
       return node;
     });
     if (!res) return;
-    return super.parseArrowExpression(res, null, true);
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    const parse2 = () => res.returnType && this.tsIsArrowReturnTypeRestrictedAt(startPos) ? this.tsParseWithDeferredArrowErrors(() => super.parseArrowExpression(res, null, true)) : super.parseArrowExpression(res, null, true);
+    return this.tsIsArrowReturnTypeRestrictedAt(startPos) ? this.tsParseWithRestrictedArrowReturnType(parse2, this.hasPlugin("jsx") || this.state.tsArrowReturnTypeAllowed) : parse2();
   }
   tsParseTypeArgumentsInExpression() {
     if (this.reScan_lt() !== 43) return;
@@ -15026,7 +15147,8 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     if (this.match(43) || this.match(47)) {
       let missingParenErrorLoc;
-      const result = this.tsTryParseAndCatch(() => {
+      let parsingAsyncArrow = true;
+      const parseAttempt = () => {
         if (!noCalls && this.atPossibleAsyncArrow(base)) {
           const asyncArrowFn = this.tsTryParseGenericAsyncArrowFunction(startLoc);
           if (asyncArrowFn) {
@@ -15034,6 +15156,7 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
             return asyncArrowFn;
           }
         }
+        parsingAsyncArrow = false;
         const typeArguments = this.tsParseTypeArgumentsInExpression();
         if (!typeArguments) return;
         if (isOptionalCall && !this.match(6)) {
@@ -15064,7 +15187,13 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         node.expression = base;
         node.typeArguments = typeArguments;
         return this.finishNode(node, "TSInstantiationExpression");
-      });
+      };
+      const attempt = this.tryParse((abort) => parseAttempt() || abort());
+      if (attempt.thrown && parsingAsyncArrow && this.tsShouldKeepArrowErrorAt(attempt.error, this.offsetToSourcePos(startLoc.index))) {
+        throw attempt.error;
+      }
+      const result = attempt.node;
+      if (result && attempt.error) this.state = attempt.failState;
       if (missingParenErrorLoc) {
         this.unexpected(missingParenErrorLoc, 6);
       }
@@ -15454,16 +15583,35 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         return expr;
       }
     }
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    const isRestricted = this.tsIsArrowReturnTypeRestrictedAt(startPos);
+    const allowsReturnType = isRestricted && this.state.tsArrowReturnTypeAllowed;
     this.next();
     const node = this.startNodeAt(startLoc);
     node.test = expr;
-    const oldInConditionalConsequent = this.state.inConditionalConsequent;
-    this.state.inConditionalConsequent = true;
-    node.consequent = this.parseMaybeAssignAllowIn();
-    this.state.inConditionalConsequent = oldInConditionalConsequent;
+    node.consequent = this.tsParseWithRestrictedArrowReturnType(() => this.parseMaybeAssignAllowIn());
     this.expect(10);
-    node.alternate = this.parseMaybeAssign();
+    node.alternate = isRestricted ? this.tsParseWithRestrictedArrowReturnType(() => this.parseMaybeAssign(), allowsReturnType) : this.parseMaybeAssign();
     return this.finishNode(node, "ConditionalExpression");
+  }
+  tsIsArrowReturnTypeRestrictedAt(sourcePos) {
+    return this.state.tsArrowReturnTypeRestrictionAt === sourcePos;
+  }
+  tsRestrictArrowReturnTypeAt(sourcePos, allowsReturnType, genericParams = false) {
+    this.state.tsArrowReturnTypeRestrictionAt = sourcePos;
+    this.state.tsArrowReturnTypeAllowed = allowsReturnType;
+    this.state.tsGenericArrowParams = genericParams;
+  }
+  tsParseWithRestrictedArrowReturnType(parse2, allowsReturnType = false, genericParams = false) {
+    const oldAllowed = this.state.tsArrowReturnTypeAllowed;
+    const oldGeneric = this.state.tsGenericArrowParams;
+    const oldStart = this.state.tsArrowReturnTypeRestrictionAt;
+    this.tsRestrictArrowReturnTypeAt(this.state.start, allowsReturnType, genericParams);
+    const result = parse2();
+    this.state.tsArrowReturnTypeRestrictionAt = oldStart;
+    this.state.tsArrowReturnTypeAllowed = oldAllowed;
+    this.state.tsGenericArrowParams = oldGeneric;
+    return result;
   }
   parseParenItem(node, startLoc) {
     const newNode = super.parseParenItem(node, startLoc);
@@ -15630,13 +15778,82 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       this.resetEndLocation(decl.id);
     }
   }
-  parseAsyncArrowFromCallExpression(node, call) {
-    if (this.match(10)) {
-      node.returnType = this.tsParseTypeAnnotation();
-    }
-    return super.parseAsyncArrowFromCallExpression(node, call);
-  }
   parseMaybeAssign(refExpressionErrors, isParenItem) {
+    const startPos = this.state.start;
+    if (!this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      return this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+    }
+    const oldStart = this.state.tsArrowReturnTypeRestrictionAt;
+    const oldAllowed = this.state.tsArrowReturnTypeAllowed;
+    const oldGeneric = this.state.tsGenericArrowParams;
+    const node = this.match(6) || this.match(43) || this.isContextual(92) ? this.tsParseMaybeArrowWithRestrictedReturnType(startPos, refExpressionErrors, isParenItem) : this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+    this.state.tsArrowReturnTypeRestrictionAt = oldStart;
+    this.state.tsArrowReturnTypeAllowed = oldAllowed;
+    this.state.tsGenericArrowParams = oldGeneric;
+    return node;
+  }
+  tsParseWithDeferredArrowErrors(parse2) {
+    if (this.optionFlags & 4096) return parse2();
+    this.optionFlags |= 4096;
+    try {
+      return parse2();
+    } finally {
+      this.optionFlags &= -4097;
+    }
+  }
+  tsShouldKeepArrowErrorAt(error, startPos) {
+    if (!this.tsIsArrowReturnTypeRestrictedAt(startPos)) return false;
+    const returnTypeStart = this.tsArrowReturnTypeAt.get(startPos);
+    return returnTypeStart !== void 0 && !tsIsInvalidArrowParamsError(error, returnTypeStart);
+  }
+  tsArrowReturnTypeAt = /* @__PURE__ */ new Map();
+  tsParseMaybeArrowWithRestrictedReturnType(startPos, refExpressionErrors, isParenItem) {
+    if (!this.noArrowAt.has(startPos)) {
+      const allowsReturnType = this.state.tsArrowReturnTypeAllowed;
+      const parse2 = () => this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+      let state = this.state.clone();
+      const {
+        tokensLength
+      } = state;
+      this.tsArrowReturnTypeAt.delete(startPos);
+      let result = this.tryParse(parse2, state);
+      const returnTypeStart = this.tsArrowReturnTypeAt.get(startPos);
+      if (result.thrown && returnTypeStart !== void 0 && !tsIsInvalidArrowParamsError(result.error, returnTypeStart) && !(this.optionFlags & 4096)) {
+        state = this.state.clone();
+        this.optionFlags |= 4096;
+        try {
+          result = this.tryParse(parse2, state);
+        } finally {
+          this.optionFlags &= -4097;
+        }
+      }
+      if (result.thrown) {
+        if (!this.tsArrowReturnTypeAt.has(startPos)) throw result.error;
+      } else {
+        if (result.error) this.state = result.failState;
+        const node = result.node;
+        if (node.type !== "ArrowFunctionExpression" || !node.returnType || node.extra?.parenthesized) {
+          return node;
+        }
+        const {
+          start
+        } = node.returnType;
+        const hasInvalidParams = result.error != null && this.state.errors.slice(state.errors.length).some((error) => tsIsInvalidArrowParamsError(error, start));
+        const isUnambiguous = node.typeParameters ? this.hasPlugin("jsx") : tsHasUnambiguousArrowParams(node.params);
+        if (!hasInvalidParams && (allowsReturnType || this.match(10)) || isUnambiguous && !(hasInvalidParams && node.async)) {
+          if (result.error && !(this.optionFlags & 4096)) {
+            throw result.error;
+          }
+          return node;
+        }
+      }
+      this.noArrowAt.add(startPos);
+      this.state = state;
+      this.state.tokensLength = tokensLength;
+    }
+    return this.tsParseMaybeAssign(refExpressionErrors, isParenItem);
+  }
+  tsParseMaybeAssign(refExpressionErrors, isParenItem) {
     let state;
     let jsx2;
     let typeCast;
@@ -15658,8 +15875,26 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     if (!state || state === this.state) state = this.state.clone();
     let typeParameters;
     const arrow = this.tryParse((abort) => {
+      const startPos = this.state.start;
+      if (this.noArrowAt.has(startPos)) abort();
+      const allowsReturnType = !this.match(43) || this.state.tsArrowReturnTypeAllowed;
+      const isRestricted = this.tsIsArrowReturnTypeRestrictedAt(startPos);
       typeParameters = this.tsParseTypeParameters(this.tsParseConstModifier);
-      const expr = super.parseMaybeAssign(refExpressionErrors, isParenItem);
+      let expr;
+      if (isRestricted) {
+        const paramsStartPos = this.state.start;
+        this.tsArrowReturnTypeAt.delete(paramsStartPos);
+        try {
+          expr = this.tsParseWithRestrictedArrowReturnType(() => super.parseMaybeAssign(refExpressionErrors, isParenItem), allowsReturnType, true);
+        } finally {
+          const returnTypeStart = this.tsArrowReturnTypeAt.get(paramsStartPos);
+          if (returnTypeStart !== void 0) {
+            this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
+          }
+        }
+      } else {
+        expr = super.parseMaybeAssign(refExpressionErrors, isParenItem);
+      }
       if (expr.type !== "ArrowFunctionExpression" || expr.extra?.parenthesized) {
         abort();
       }
@@ -15677,6 +15912,15 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       }
       return expr;
     }, state);
+    if (jsx2 && arrow.node && arrow.error && !(this.optionFlags & 4096)) {
+      throw arrow.error;
+    }
+    if (arrow.error && this.tsShouldKeepArrowErrorAt(arrow.error, state.start)) {
+      if (!arrow.node) throw arrow.error;
+      this.state = arrow.failState;
+      if (typeParameters) this.reportReservedArrowTypeParam(typeParameters);
+      return arrow.node;
+    }
     if (!arrow.error && !arrow.aborted) {
       if (typeParameters) this.reportReservedArrowTypeParam(typeParameters);
       return arrow.node;
@@ -15714,6 +15958,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   parseArrow(node) {
     if (this.match(10)) {
+      const startPos = this.offsetToSourcePos(node.start);
+      if (this.noArrowAt.has(startPos)) return;
+      const returnTypeStart = this.sourceToOffsetPos(this.state.start);
       const result = this.tryParse((abort) => {
         const returnType = this.tsParseTypeOrTypePredicateAnnotation(10);
         if (this.canInsertSemicolon() || !this.match(15)) abort();
@@ -15723,6 +15970,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       if (!result.thrown) {
         if (result.error) this.state = result.failState;
         node.returnType = result.node;
+        if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+          this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
+        }
       }
     }
     return super.parseArrow(node);
@@ -15890,19 +16140,46 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
     }
     return super.shouldParseArrow(params);
   }
-  shouldParseAsyncArrow() {
-    if (this.match(10)) {
-      if (this.state.inConditionalConsequent) return false;
-      return true;
+  parseAsyncArrowHead(startLoc) {
+    if (!this.match(10)) return super.parseAsyncArrowHead(startLoc);
+    const returnTypeStart = this.sourceToOffsetPos(this.state.start);
+    const result = this.tryParse((abort) => {
+      const returnType = this.tsParseTypeAnnotation();
+      if (!this.match(15)) abort();
+      return returnType;
+    });
+    if (result.aborted || result.thrown) return void 0;
+    if (result.error) this.state = result.failState;
+    const startPos = this.offsetToSourcePos(startLoc.index);
+    if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      this.tsArrowReturnTypeAt.set(startPos, returnTypeStart);
     }
-    return super.shouldParseAsyncArrow();
+    const node = this.startNodeAt(startLoc);
+    node.returnType = result.node;
+    return node;
   }
-  parseParenAndDistinguishExpression(canStartArrow) {
-    const oldInConditionalConsequent = this.state.inConditionalConsequent;
-    this.state.inConditionalConsequent = false;
-    const result = super.parseParenAndDistinguishExpression(canStartArrow);
-    this.state.inConditionalConsequent = oldInConditionalConsequent;
-    return result;
+  atPossibleAsyncArrow(base) {
+    return super.atPossibleAsyncArrow(base) && !this.noArrowAt.has(this.offsetToSourcePos(base.start));
+  }
+  parseMaybeConditional(refExpressionErrors) {
+    if (!this.tsIsArrowReturnTypeRestrictedAt(this.state.start)) {
+      return super.parseMaybeConditional(refExpressionErrors);
+    }
+    const allowsReturnType = this.state.tsArrowReturnTypeAllowed;
+    const expr = super.parseMaybeConditional(refExpressionErrors);
+    if (tokenIsAssignment(this.state.type)) {
+      this.tsRestrictArrowReturnTypeAt(this.nextTokenStart(), allowsReturnType);
+    }
+    return expr;
+  }
+  parseArrowExpression(node, params, isAsync, trailingCommaLoc) {
+    const startPos = this.offsetToSourcePos(node.start);
+    if (this.tsIsArrowReturnTypeRestrictedAt(startPos)) {
+      const genericParams = this.state.tsGenericArrowParams;
+      const parse2 = () => super.parseArrowExpression(node, params, isAsync, trailingCommaLoc);
+      return this.tsParseWithRestrictedArrowReturnType(genericParams && node.returnType ? () => this.tsParseWithDeferredArrowErrors(parse2) : parse2, this.state.tsArrowReturnTypeAllowed || !genericParams && tsHasUnambiguousArrowParams(params));
+    }
+    return super.parseArrowExpression(node, params, isAsync, trailingCommaLoc);
   }
   canHaveLeadingDecorator() {
     return super.canHaveLeadingDecorator() || this.isAbstractClass();
@@ -16047,9 +16324,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
         hasTypeSpecifier = true;
         leftOfAs = firstAs;
       }
-    } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+    } else if (this.tsIsStartOfModuleExportName()) {
       hasTypeSpecifier = true;
-      leftOfAs = this.parseIdentifier(true);
+      leftOfAs = this.parseModuleExportName();
     }
     node.imported = leftOfAs;
     node.importKind = hasTypeSpecifier ? "type" : "value";
@@ -16062,20 +16339,20 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       const firstAs = this.parseIdentifier();
       if (this.isContextual(90)) {
         const secondAs = this.parseIdentifier();
-        if (tokenIsKeywordOrIdentifier(this.state.type)) {
+        if (this.tsIsStartOfModuleExportName()) {
           hasTypeSpecifier = true;
           node.local = firstAs;
           node.exported = this.parseModuleExportName();
         } else {
           node.exported = secondAs;
         }
-      } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+      } else if (this.tsIsStartOfModuleExportName()) {
         node.exported = this.parseModuleExportName();
       } else {
         hasTypeSpecifier = true;
         node.local = firstAs;
       }
-    } else if (tokenIsKeywordOrIdentifier(this.state.type)) {
+    } else if (this.tsIsStartOfModuleExportName()) {
       hasTypeSpecifier = true;
       node.local = this.parseModuleExportName();
     }
@@ -16083,7 +16360,10 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
       this.raise(TSErrors.TypeModifierIsUsedInTypeExports, local);
     }
     node.exportKind = hasTypeSpecifier ? "type" : "value";
-    node.exported ??= this.eatContextual(90) ? this.parseModuleExportName() : this.cloneIdentifier(node.local);
+    node.exported ??= this.eatContextual(90) ? this.parseModuleExportName() : this.isStringModuleExportName(node.local) ? this.cloneStringLiteral(node.local) : this.cloneIdentifier(node.local);
+  }
+  tsIsStartOfModuleExportName() {
+    return tokenIsKeywordOrIdentifier(this.state.type) || this.match(133);
   }
   fillOptionalPropertiesForTSESLint(node) {
     switch (node.type) {
