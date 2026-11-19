@@ -99,30 +99,17 @@ Models and efforts come from the review profile: `python3 -I <skills root>/revie
 
 For a Claude pane, also set the pane environment when splitting it: `--env ANTHROPIC_MODEL=<m> --env CLAUDE_CODE_EFFORT_LEVEL=<e>`. A read-only session takes `user-args --read-only`.
 
-### Human handoff
+### Session mode
 
-When a human must launch an Agy pass, print the full launch line, substituting
-the active run's pinned model and effort, the absolute review worktree and all
-resolved user arguments. With the approved full-bypass tier it is:
+In session mode the user launches a review pass in their own terminal, and the herd waits for its record. The pass counts like any other only because it records through the shipped helpers at the run's exact head; the herder never posts, attests or edits ledger records for it. An engine's passes take this route when the review profile's `<engine>.reviewer.launch` resolves to `user` (`review-profile.py resolve` reports `launch`, `pane` by default), or for one pass when the user chooses it after a pane pass breaks the helper contract (`hreview`, User pass).
 
-```bash
-cd <review-worktree> && agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions
-```
+The block comes from the run controller, never from hand-written text: `local-review-handoff.py user-handoff` reads the active run, refuses when no pass is due, the run has ended or the head moved, and prints for the next pass:
 
-If the owner chose a `--settings` override instead, print that exact argument
-in place of the bypass flag. Preserve an active run's pins; do not resolve new
-settings for it. A bare `agy` will not work for this handoff: it can select the
-default model and retain the user sandbox. Include the skill invocation and
-these in-session preflight commands, using the installed `.agents` helper:
+- the launch line, `cd <review-worktree> && <cli> <pinned model and effort> <user args>`, in the engine's form from the table above (`claude --model … --effort …`, `codex -m … -c 'model_reasoning_effort="…"'`, `agy --model … --effort …`), using the pair this run launched that engine with and every resolved `user-args` entry;
+- the in-session preflight: `git rev-parse HEAD` equal to the run's exact head, and that engine root's `review-ledger.js --version` equal to its `review-ledger.version` pin;
+- the skill invocation and pass prompt, addressed the way that engine expects.
 
-```bash
-git rev-parse HEAD
-node .agents/skills/critique/scripts/review-ledger.js --version
-```
-
-Require the helper version to match its sibling `review-ledger.version` pin.
-On failure, the reviewer reports the command and exact error, posts nothing and
-stops; the controller or user owns any relaunch.
+A bare CLI will not do: it can pick a different model, and for Agy it can keep the user's mount sandbox, which hides linked-worktree Git metadata and `gh` credentials. When the owner chose an Agy `--settings` override instead of the bypass flag, that exact argument is in `user-args` and reaches the line. A reviewer whose preflight or helper call fails reports the command and its exact error, posts nothing and stops; the herder or the user owns any relaunch.
 
 ## Tabs and panes
 

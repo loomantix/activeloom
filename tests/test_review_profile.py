@@ -109,6 +109,7 @@ def test_init_writes_confirmed_defaults_privately(
         "engine": "claude",
         "model": "claude-opus-5-5",
         "effort": "high",
+        "launch": "pane",
         "source": "user profile",
     }
 
@@ -255,6 +256,7 @@ def test_repository_overrides_layer_over_user_settings(
         "engine": "codex",
         "model": "example-model",
         "effort": "medium",
+        "launch": "pane",
         "source": "repository override",
     }
     assert run(capsys, "order", "--tier", "lean", "--repo", "example/project")[
@@ -411,7 +413,7 @@ def test_defaults_prefill_worker_settings_from_reviewer_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = json.loads(run(capsys, "defaults")[1])
-    assert defaults["schema_version"] == 5
+    assert defaults["schema_version"] == 6
     for settings in defaults["engines"].values():
         assert settings["worker"] == {
             "model": settings["model"],
@@ -430,6 +432,7 @@ def test_v1_profile_is_read_without_rewriting_and_reports_missing_worker_keys(
         "engine": "claude",
         "model": "opus",
         "effort": "medium",
+        "launch": "pane",
         "source": "user profile",
     }
     assert run(capsys, "order", "--tier", "deep")[1].strip() == "claude,codex,gemini"
@@ -561,6 +564,7 @@ def test_worker_settings_resolve_separately_from_reviewer_settings(
         "engine": "claude",
         "model": "claude-opus-5-5",
         "effort": "medium",
+        "launch": "pane",
         "source": "user profile",
     }
     assert json.loads(
@@ -1135,3 +1139,75 @@ def test_silent_matcher_agrees_with_the_ledger_helper() -> None:
     vectors = json.loads((ROOT / "tests/fixtures/silent-globs.json").read_text())
     for vector in vectors:
         assert module.silent_pattern_matches(vector["pattern"], vector["repo"]) is vector["match"]
+
+
+def test_reviewer_launch_defaults_to_pane_and_layers_per_repository(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+
+    def launch(engine: str, *repo: str) -> str:
+        status, out, err = run(capsys, "resolve", "--engine", engine, *repo)
+        assert status == 0, err
+        return str(json.loads(out)["launch"])
+
+    assert {engine: launch(engine) for engine in ("claude", "codex", "gemini")} == {
+        "claude": "pane", "codex": "pane", "gemini": "pane",
+    }
+    # Unset is not stored; show reports the effective value per engine.
+    assert "launch" not in json.loads(profile.read_text())["engines"]["gemini"]
+    assert json.loads(run(capsys, "show")[1])["launch"]["gemini"] == "pane"
+
+    before = profile.read_bytes()
+    for assignment in ("gemini.reviewer.launch=terminal", "gemini.launch=user"):
+        assert run(capsys, "set", assignment)[0] == 2, assignment
+        assert profile.read_bytes() == before
+
+    repo = ("--repo", "example/project")
+    assert run(capsys, "set", *repo, "gemini.reviewer.launch=user")[0] == 0
+    assert launch("gemini", *repo) == "user"
+    assert launch("gemini") == "pane"
+    assert launch("claude", *repo) == "pane"
+    assert json.loads(run(capsys, "show", *repo)[1])["launch"]["gemini"] == "user"
+    # Placement never reaches the launch flags.
+    assert run(capsys, "launch-args", "--engine", "gemini", *repo)[1] == "gemini-3.8-flash-high\nhigh\n"
+
+    assert run(capsys, "set", "codex.reviewer.launch=user")[0] == 0
+    assert launch("codex", *repo) == "user"
+    assert run(capsys, "set", *repo, "codex.reviewer.launch=pane")[0] == 0
+    assert launch("codex", *repo) == "pane"
+    assert launch("codex") == "user"
+
+    assert run(capsys, "unset", *repo, "gemini.reviewer.launch")[0] == 0
+    assert launch("gemini", *repo) == "pane"
+
+
+def test_storing_reviewer_launch_keeps_the_profile_readable_by_older_readers(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults", "--replace")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+    status, _, err = run(capsys, "set", "gemini.reviewer.launch=user")
+    assert status == 0, err
+    stored = json.loads(profile.read_text())
+    assert stored["schema_version"] == 6
+    assert "min_reader_version" not in stored
+
+    # An older copy sets the placement aside, still resolves, and refuses to write.
+    def older_reader(*argv: str) -> tuple[int, str]:
+        module = load()
+        setattr(module, "SCHEMA_VERSION", 5)
+        keys = module.engine_settings_keys
+        setattr(module, "engine_settings_keys", lambda engine: keys(engine) - {"launch"})
+        status = module.main(list(argv))
+        return status, capsys.readouterr().out
+
+    status, out = older_reader("resolve", "--engine", "gemini")
+    assert status == 0
+    assert json.loads(out)["engine"] == "gemini"
+    before = profile.read_bytes()
+    assert older_reader("set", "claude.effort=high")[0] == 1
+    assert profile.read_bytes() == before
+
+    assert run(capsys, "set", "gemini.reviewer.launch=pane")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 6
