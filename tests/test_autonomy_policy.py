@@ -168,6 +168,7 @@ def test_authentication_requires_positive_permission_and_exact_diagnostic(tmp_pa
     monkeypatch.setattr(policy, "protected", lambda *a, **kw: None)
     # A sudo-rs listing refusal defers to the proof; never read the host's real one.
     monkeypatch.setattr(policy, "PROOF", tmp_path / "missing-proof.json")
+    monkeypatch.setattr(policy, "DROP_IN", tmp_path / "drop-in")
     results = [listing, probe, (0, "User fixture may run the following commands on host:\n    (ALL : ALL) ALL\n", "")]
     def run(argv: list[str]) -> Any:
         status, out, err = results.pop(0)
@@ -638,12 +639,47 @@ def sudo_rs_host(installation: Path, monkeypatch: pytest.MonkeyPatch) -> dict[st
         host["calls"].append(argv)
         if argv == [str(policy.VISUDO), "-V"]:
             return subprocess.CompletedProcess(argv, 0, host["visudo"], "")
+        if "-u" in argv:
+            assert argv == [str(policy.SUDO), "-n", "-u", f"#{os.environ['SUDO_UID']}", "--",
+                            "/usr/bin/test", "-r", str(policy.DROP_IN.parent)]
+            return subprocess.CompletedProcess(argv, 0 if host.get("reader_can_list", True) else 1, "", "")
         who = "root" if "-U" in argv else "user"
         kind = "probe" if "-l" not in argv else "listing" if str(policy.SETTER) in argv else "inventory"
         status, out, err = host[who][kind]
         return subprocess.CompletedProcess(argv, status, f"{policy.SETTER} --check\n" if out == "exact" else out, err)
     monkeypatch.setattr(policy, "_run", run)
     return host
+
+
+def test_sudo_rs_searchable_unreadable_inventory(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    directory = policy.DROP_IN.parent
+    directory.chmod(0o751)
+    assert policy.capture_proof() is None
+    sudo_rs_host["reader_can_list"] = False
+    listdir = os.listdir
+
+    def reader_listdir(path: Path) -> list[str]:
+        if path == directory:
+            raise PermissionError("directory entries unreadable")
+        return listdir(path)
+
+    def check_report() -> None:
+        with monkeypatch.context() as reader:
+            reader.setattr(policy.os, "listdir", reader_listdir)
+            report = policy.report()
+        assert report["installed"] and report["launch_blocked"] and not report["protected"]
+        assert report["mode"] == "manual" and report["network"]["mode"] == "restricted"
+        assert "cannot list" in report["reason"] and str(directory) in report["reason"]
+        assert "re-run" not in report["reason"]
+
+    check_report()  # Includes installations with a previously captured proof.
+    monkeypatch.setattr(policy.os, "geteuid", lambda: 0)
+    assert policy.main(["set", "--autonomy", "full", "--network", "open"]) == 0
+    warning = capsys.readouterr().err
+    assert "cannot list" in warning and str(directory) in warning
+    assert not policy.PROOF.exists()
+    check_report()
 
 
 def test_sudo_rs_install_proof_reports_protected(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -141,17 +141,25 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _unreadable_inventory() -> str:
+    return f"sudo-rs permission proof unverifiable: policy reader cannot list {DROP_IN.parent} to verify all entries"
+
+
 def _proof_status() -> tuple[bool, str]:
     """Check the root-captured sudo-rs proof against the live installation."""
     stale = "sudo-rs permission proof missing or stale; re-run the setter's set command through sudo"
     try:
+        try:
+            entries = sorted(os.listdir(DROP_IN.parent))
+        except PermissionError:
+            return False, _unreadable_inventory()
         protected(PROOF, 0o644)
         proof = json.loads(PROOF.read_bytes())
         if (not isinstance(proof, dict) or proof.get("version") != 1 or proof.get("uid") != os.getuid()
                 or proof.get("policy_sha256") != _sha256(POLICY) or proof.get("setter_sha256") != _sha256(SETTER)
                 or not isinstance(proof.get("entries"), list)
                 or any(not isinstance(e, str) or "/" in e or e in ("", ".", "..") for e in proof["entries"])
-                or proof["entries"] != sorted(os.listdir(DROP_IN.parent))
+                or proof["entries"] != entries
                 or proof.get("fingerprint") != _fingerprint(proof["entries"])):
             return False, stale
     except (OSError, ValueError):
@@ -325,6 +333,12 @@ def capture_proof() -> str | None:
         return f"{ETC / 'sudoers-rs'} exists; sudo-rs permission proof not recorded"
     protected_program(SUDO)
     sudoers = ETC / "sudoers"
+    # Root can enumerate a 0751 directory. Check read access as the proof's reader.
+    access = _run([str(SUDO), "-n", "-u", f"#{uid}", "--", "/usr/bin/test", "-r", str(DROP_IN.parent)])
+    if access.returncode == 1 and not access.stdout and not access.stderr:
+        return _unreadable_inventory()
+    if access.returncode or access.stdout or access.stderr:
+        return f"cannot establish reader access to {DROP_IN.parent}; sudo-rs permission proof not recorded"
     entries = sorted(os.listdir(DROP_IN.parent))
     fingerprint = _fingerprint(entries)
     # visudo-rs needs no blank after the keyword (`@include"/x"`) and never
