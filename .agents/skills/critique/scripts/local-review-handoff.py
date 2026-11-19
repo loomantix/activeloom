@@ -1791,7 +1791,14 @@ def _user_launch_line(
         if not ENV_ENTRY.fullmatch(entry):
             _fail(f"--env entry {entry!r} is not KEY=VALUE")
     # The repository's pane-env entries, which every herd session carries.
-    argv = ["env", *env] if env else []
+    pins: list[str] = []
+    if engine == "claude":
+        # As on a Claude pane: an inherited CLAUDE_CODE_EFFORT_LEVEL takes
+        # precedence over --effort, so the pinned pair goes in the environment too.
+        if model != INHERIT_MODEL:
+            pins.append(f"ANTHROPIC_MODEL={model}")
+        pins.append(f"CLAUDE_CODE_EFFORT_LEVEL={effort}")
+    argv = ["env", *env, *pins] if env or pins else []
     argv.append(USER_LAUNCH[engine]["cli"])
     if engine == "codex":
         if model != INHERIT_MODEL:

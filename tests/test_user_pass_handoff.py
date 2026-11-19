@@ -112,7 +112,10 @@ def launch_line(block: str) -> list[str]:
         (
             [],
             "claude",
-            ["claude", "--model", "example-model", "--effort", "high"],
+            [
+                "env", "ANTHROPIC_MODEL=example-model", "CLAUDE_CODE_EFFORT_LEVEL=high",
+                "claude", "--model", "example-model", "--effort", "high",
+            ],
         ),
         (
             [clean_pass(0, "claude")],
@@ -188,7 +191,23 @@ def test_pane_env_entries_reach_the_launch_line(
     )
     assert launch_line(block)[3:] == [
         "env", "LOOM_REVIEW_TELEMETRY_STORE=issue", "EXTRA=a b",
+        "ANTHROPIC_MODEL=example-model", "CLAUDE_CODE_EFFORT_LEVEL=high",
         "claude", "--model", "example-model", "--effort", "high",
+    ]
+
+
+def test_claude_pins_effort_in_the_environment_even_with_an_inherited_model(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    worktree: Path,
+) -> None:
+    # Claude gives CLAUDE_CODE_EFFORT_LEVEL precedence over --effort, so a value
+    # inherited from the user's terminal must not survive the launch line.
+    wire(controller, monkeypatch, [])
+    block = render(controller, capsys, args(worktree, model="inherit", effort="medium"))
+    assert launch_line(block)[3:] == [
+        "env", "CLAUDE_CODE_EFFORT_LEVEL=medium", "claude", "--effort", "medium",
     ]
 
 
