@@ -198,4 +198,4 @@ A failed production deploy, or a lane after the deploy that did not pass (any `p
 
 ## Blocks
 
-Leave GitHub as it stands, keep the lock and every worktree, rename the tab `P<mmdd> ⚠`, and follow herdr.md, Blocks. The user decides how to resume; the driver re-enters at the phase they name.
+Leave GitHub as it stands, keep the lock and every worktree, rename the tab `P<mmdd> ⚠`, and follow herdr.md, Blocks. The user decides how to resume; the driver re-enters at the phase they name. To re-enter, prompt the driver with the skill's bare `run` invocation (herdr.md, Engines), sending the phase and any context first as a brief (herdr.md, Prompting), never on the invocation line.

@@ -97,6 +97,8 @@ Models and efforts come from the review profile: `python3 -I <skills root>/revie
 | `codex`  | `codex`        | `-m <m> -c 'model_reasoning_effort="<e>"'` | `-s read-only`           | `Use .codex/skills/<skill>/SKILL.md for <target>` | `ctrl+c ctrl+c` |
 | `gemini` | `agy`          | `--model <m> --effort <e>`                 | `--mode plan`            | `/<skill> <args>`                                 | `/exit`         |
 
+`/<skill> <args>` is the whole prompt: one short line, the skill and its arguments, nothing after them. Claude and agy parse a slash command only when it arrives as typed input; a long or multi-line prompt arrives as pasted text, and a skill that only the user may invoke then refuses to start. A skill that needs a brief gets it as [Prompting](#prompting) describes. Codex takes its invocation and brief in one prompt.
+
 For a Claude pane, also set the pane environment when splitting it: `--env ANTHROPIC_MODEL=<m> --env CLAUDE_CODE_EFFORT_LEVEL=<e>`. A read-only session takes `user-args --read-only`.
 
 ### Human handoff
@@ -157,6 +159,8 @@ stops; the controller or user owns any relaunch.
 - Always `herdr agent prompt <name> "<text>" --wait --timeout <ms>`. Without `--wait`, text can be dropped while an input box is still loading; `--timeout` is accepted only with `--wait`.
 - `--wait` can time out while the session is already working. Before resending, count the prompt's first line in `herdr agent read <name> --source recent-unwrapped --lines 400`; resend only when it is absent.
 - Text on screen is not proof of submission: a multi-line prompt can sit in the input box as a collapsed paste (`[Pasted text #1 +12 lines]`) and match a check for its own text. After prompting, confirm the session is working (a spinner, `Working`, a tool call `Running…`). If the input box still holds your paste, submit it with `herdr agent send-keys <name> enter`; it is your own text, not an autosuggestion.
+- **A skill with a brief (Claude and agy).** A dispatch template's brief, recovery line or extra context never goes on the slash-command line. Send it first as its own plain prompt, headed `Context for the command that follows. Do not act on it yet; reply with exactly one line: BRIEF-READY`, then the brief. Wait for the session to settle and confirm `BRIEF-READY` is its last line; anything else is a block. Then send `/<skill> <args>` alone. The session keeps the brief in its conversation and uses it once the skill starts. A skill that reads a brief from a file can take the file's path as an argument instead.
+- **Refused invocation.** After sending a slash command, read the pane. If it shows `Claude couldn't run /<skill>. It runs only when you type it at the prompt.`, the command arrived as pasted text: resend the bare `/<skill> <args>` once. A second refusal is a block; never record it as a failed pass.
 - `agent_blocked` means the session is waiting on a question: read and answer it first.
 - A greyed suggestion in an input box is the client's autosuggestion, not input. Never send `tab` or `right` to a session; they accept it.
 - Free text goes through `agent prompt`; menu choices through `herdr agent send-keys <name> <keys>`.
@@ -195,7 +199,7 @@ Never `source` or `.` a `.env` or other secrets file into a session's shell. It 
 ## Stalls and crashes
 
 - **Stall:** on each `timeout` while working, hash `herdr agent read <name> --source recent-unwrapped --lines 200`. Two consecutive timeouts with an unchanged hash mean a stall: send `esc`, then prompt `Continue from where you stopped.`
-- **Crash:** `agent_not_found`, or the shell back in the foreground. Relaunch in the same pane with the same prompt plus the skill's recovery line. At most two relaunches per unit of work; a third failure is a block.
+- **Crash:** `agent_not_found`, or the shell back in the foreground. Relaunch in the same pane with the same prompt plus the skill's recovery line; on Claude and agy the recovery line joins the brief, never the slash-command line (Prompting). At most two relaunches per unit of work; a third failure is a block.
 - **Stale blocked state:** herdr can keep reporting `blocked` after the question is answered. Read the pane; if it is working, wait with `--until done --until idle`.
 
 ## Ending a session

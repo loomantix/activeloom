@@ -1,0 +1,67 @@
+"""Herd dispatch templates keep Claude/agy skill invocations single-line.
+
+Claude and agy parse a slash command only when it arrives as typed input. A
+prompt that carries a brief after the command arrives as pasted text, and a
+skill that only the user may invoke refuses to start. The herd skills must send
+the bare `/<skill> <args>` alone and deliver any brief as a separate prompt.
+"""
+import re
+from pathlib import Path
+
+import pytest
+
+from tests.conftest import REPO_ROOT
+
+HERD_SKILLS = ("hgrill", "horch", "hloop", "hpromote", "hreview", "hred-team", "auto-glance")
+ROOTS = ("prompts", ".claude", ".agents", ".codex")
+# Templates whose pass prompt carries a brief alongside a skill invocation.
+BRIEF_TEMPLATES = ("hgrill", "hreview", "hred-team")
+REFUSAL = "Claude couldn't run /<skill>. It runs only when you type it at the prompt."
+
+FENCE = re.compile(r"^(\s*)```[a-z]*\n(.*?)^\1```", re.M | re.S)
+
+
+def _herd_sources() -> list[Path]:
+    paths = []
+    for root in ROOTS:
+        base = REPO_ROOT / root
+        paths.append(base / "references/herdr.md")
+        paths.extend(base / "skills" / s / "SKILL.md" for s in HERD_SKILLS)
+    return [p for p in paths if p.exists()]
+
+
+def _engines_row(text: str, engine: str) -> list[str]:
+    row = next(line for line in text.splitlines() if line.startswith(f"| `{engine}`"))
+    return [cell.strip() for cell in row.strip("|").split("|")]
+
+
+@pytest.mark.parametrize("path", _herd_sources(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_fenced_prompt_appends_a_brief_to_a_slash_command(path: Path) -> None:
+    for match in FENCE.finditer(path.read_text()):
+        lines = [ln.strip() for ln in match.group(2).splitlines() if ln.strip()]
+        if lines and re.match(r"^/[a-z<]", lines[0]):
+            assert len(lines) == 1, f"{path}: slash command followed by a brief:\n{match.group(2)}"
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_herdr_reference_states_the_invocation_contract(root: str) -> None:
+    text = (REPO_ROOT / root / "references/herdr.md").read_text()
+    for engine in ("claude", "gemini"):
+        invoke = _engines_row(text, engine)[4]
+        assert invoke == "`/<skill> <args>`"
+    assert "is the whole prompt: one short line" in text
+    assert "Send it first as its own plain prompt" in text
+    assert "BRIEF-READY" in text
+    assert REFUSAL in text
+    assert "resend the bare `/<skill> <args>` once" in text
+    assert "A second refusal is a block; never record it as a failed pass." in text
+
+
+@pytest.mark.parametrize("root", ROOTS)
+@pytest.mark.parametrize("skill", BRIEF_TEMPLATES)
+def test_brief_templates_deliver_the_brief_separately(root: str, skill: str) -> None:
+    text = (REPO_ROOT / root / "skills" / skill / "SKILL.md").read_text()
+    assert "herdr.md's Prompting gives" in text
+    assert "then the bare" in text
+    for stale in ("First line: the `<kind>` skill", "Text: the skill line, then"):
+        assert stale not in text
