@@ -391,10 +391,10 @@ FULL_RUBRIC = (
 
 @pytest.fixture(autouse=True)
 def _isolated_user_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the per-user backlog-refinement settings at an absent test file."""
-    path = tmp_path / "user-config" / "backlog-refinement.json"
-    monkeypatch.setenv("ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG", str(path))
-    return path
+    """Point the default per-user settings location at an absent test file."""
+    monkeypatch.delenv("ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    return tmp_path / "user-config" / "activeloom" / "backlog-refinement.json"
 
 
 def _load_rubric_config(tmp_path: Path, text: str) -> Any:
@@ -971,7 +971,6 @@ def test_handback_user_setting_applies_without_local_rubric(tmp_path: Path, _iso
 
 
 def test_handback_user_setting_default_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv('ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG')
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
     _write_user_settings(tmp_path / 'xdg/activeloom/backlog-refinement.json', {'schema_version': 1, 'grill_handback': 'auto'})
     _, config = _load_rubric_config(tmp_path, FULL_RUBRIC)
@@ -998,6 +997,28 @@ def test_handback_invalid_user_setting_fails_closed(
         _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: auto -->\n')
     assert exc.value.code == 1
     assert str(_isolated_user_settings) in capsys.readouterr().err
+
+
+def test_handback_user_setting_explicit_path_must_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / 'typo' / 'backlog-refinement.json'
+    monkeypatch.setenv('ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG', str(missing))
+    with pytest.raises(SystemExit) as exc:
+        _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: auto -->\n')
+    assert exc.value.code == 1
+    assert str(missing) in capsys.readouterr().err
+
+
+def test_handback_user_setting_explicit_path_overrides_default(
+    tmp_path: Path, _isolated_user_settings: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_user_settings(_isolated_user_settings, {'schema_version': 1, 'grill_handback': 'auto'})
+    explicit = tmp_path / 'explicit.json'
+    _write_user_settings(explicit, {'schema_version': 1, 'grill_handback': 'ask'})
+    monkeypatch.setenv('ACTIVELOOM_BACKLOG_REFINEMENT_CONFIG', str(explicit))
+    _, config = _load_rubric_config(tmp_path, FULL_RUBRIC + '\n<!-- grill-handback: auto -->\n')
+    assert config.grill_handback == 'ask'
 
 
 def test_handback_user_setting_path_must_be_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

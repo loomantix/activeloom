@@ -135,8 +135,9 @@ def user_config_path() -> Path:
 def user_grill_handback() -> tuple[str, str] | None:
     """(mode, path) from the per-user settings file; None when it sets no mode.
 
-    A missing file is the ordinary case and says nothing. Anything present but
-    unreadable or off-shape exits, because guessing past a personal setting the
+    A missing file at the default location is the ordinary case and says
+    nothing. A missing file that USER_CONFIG_ENV names, and anything present but
+    unreadable or off-shape, exits, because guessing past a personal setting the
     user believes is live would change what refinement asks without notice.
     """
     path = user_config_path()
@@ -144,6 +145,9 @@ def user_grill_handback() -> tuple[str, str] | None:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
+        if os.environ.get(USER_CONFIG_ENV):
+            sys.stderr.write(f"{USER_CONFIG_ENV} names {path}, which does not exist.\n")
+            sys.exit(1)
         return None
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"Could not read backlog-refinement user settings {path}: {exc}\n")
