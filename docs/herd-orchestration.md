@@ -231,6 +231,18 @@ Where it stops:
 
 It never merges, marks a PR ready only through the converged path, the auto-glance clean-result and CI gate, or a `clear` dependency analysis and CI gate (plus the documented gate-fix exception), never starts a new run to get more rounds, and never overrides or dismisses a reviewer's finding.
 
+#### Session mode: passes you launch yourself
+
+Some engines review better in a plain terminal than in a herdr pane. Route one engine's passes to your own terminal with your review profile:
+
+```bash
+python3 .claude/skills/review-setup/scripts/review-profile.py set gemini.reviewer.launch=user
+```
+
+Add `--repo OWNER/REPO` to scope it to one repository; `pane` (the default) undoes it. When that engine's pass is next, the herder prints a `USER PASS` block rendered by the run controller: the `cd <worktree> && <cli> …` line with the run's model, effort and your launch arguments, two preflight checks to run first (the exact head and the ledger helper's version), and the skill invocation and prompt. It notifies you, then waits on its own until the pass's record lands, and continues the chain. `horch` alerts you with the same block. The herder posts and records nothing for your pass, and the round, coverage, independence and restart rules are unchanged.
+
+When a pane pass keeps calling helper commands that do not exist, the herder blocks and offers this route for that pass; only your answer in the herder tab selects it.
+
 #### Silent mode
 
 A normal run leaves a lot on the PR. In a sample of 50 reviewed PRs, the chain averaged about 19 comments per reviewed PR: one comment per finding, one reply per fix, plus 10–17 bookkeeping markers even when nothing was found. Silent mode keeps all of it on your machine.

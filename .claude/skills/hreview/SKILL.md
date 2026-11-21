@@ -45,15 +45,7 @@ Run from the repository the PRs belong to.
 
 If `H`, `L`, `P` or `C` is missing, stop: classify it per herdr.md's [Missing or stale skills](../../references/herdr.md#missing-or-stale-skills) and put that report line in the block. The same applies when an engine pane does not know a skill this run invokes (`dep-analysis`, `auto-glance`, a review entry point).
 
-Every engine, Gemini included, runs as an interactive session in its pane. These are the ordinary interactive reviews, not the headless launchers.
-
-For a human handoff, follow herdr.md's Human handoff section: print the full
-`cd <review-worktree> && agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions`
-line with actual pinned values and resolved user arguments (or the exact
-owner-approved `--settings` override), the skill invocation and the in-session
-Git/helper preflight. Say that a bare `agy` will not work. A reviewer reporting
-a preflight failure or controller refusal is blocked; do not ask it to retry
-the same transition or improvise ledger writes, worktrees or launchers.
+Every engine, Gemini included, runs as an interactive session: in its pane, or in the user's own terminal when the profile routes that engine's passes to the user ([User pass](#user-pass)). These are the ordinary interactive reviews, not the headless launchers.
 
 ## Preflight (per PR)
 
@@ -70,7 +62,8 @@ the same transition or improvise ledger writes, worktrees or launchers.
 
 7. Settings — reference them, do not restate them:
    - order: `python3 -I $P order --tier <tier> --repo $repo`
-   - per engine model and effort: `python3 -I $P launch-args --engine <e> --repo $repo`
+   - per engine model and effort: `python3 -I $P launch-args --engine <e> --repo $repo`. Record each engine's pair in this PR's state the first time this run resolves it, and launch that engine with the recorded pair for the rest of the run, in a pane or in a user handoff.
+   - per engine launch placement: `launch` from `python3 -I $P resolve --engine <e> --repo $repo` (`pane` or `user`). Read it again before each pass; it moves passes between a pane and the user's terminal and changes nothing else about the run.
    - cap: the tier's round budget in the workflow; `start-run` records it as the run's `max_rounds`.
 
    `python3 -I $P check` exiting non-zero for anything other than worker-only keys is a block.
@@ -141,7 +134,7 @@ Repeat until the PR reaches an end state.
 1. `head=$(gh pr view <n> --json headRefOid -q .headRefOid)`; `python3 -I $H next-pass --repo $repo --pr <n> --head $head`.
    - `status: converged` → **Converged**.
    - `status: exhausted` → **Exhausted**.
-   - `status: next` → take `engine` and `round`.
+   - `status: next` → take `engine` and `round`. If that engine's launch placement is `user`, follow [User pass](#user-pass) for this pass instead of steps 2–5.
    - A non-zero exit is a block, with the controller's message.
 2. **Start a fresh session** in the engine's pane, named `pr<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
 3. **Prompt.**
@@ -154,11 +147,23 @@ Repeat until the PR reaches an end state.
    - Blocked only by a bookkeeping slip: the pass published a fix, then `write-result` refused with `fixed finding was not posted before its disposition head` (a finding posted at its fix head) or with `convergence review results cannot fix non-blocking findings` (a convergence round fixed a non-blocking finding). Have the pass write its blocked result naming the refusal, then run `python3 -I $H recover-pass --repo $repo --pr <n> --head <published head> --base <base> --before <pass before head> --engine <engine> --round <round> --run-id <run_id> --result-file <blocked result>`. Its `check-blocked-round` requires an otherwise complete ledger with a fixed same-round finding; it keeps the published head, and `next-pass` reviews it again in the next round, spending budget. Any other refusal, or a failed `recover-pass`, is a block. Never edit ledger records to clear the slip, and never restart the run for it.
    - `timeout` while working: stall check (herdr.md).
    - Crash: relaunch per herdr.md with the recovery line `An earlier session for this pass exited. Read the ledger first and finish the pass without re-posting existing findings.`
+   - Helper-contract violation: the session calls helper subcommands, flags or markers the shipped helpers reject, or writes ledger records by hand, and does not settle on the contract after one correcting prompt. It is a block. In the block, offer the user one choice: run this pass in their own terminal. Only the user's words in this tab select it, for this pass or persistently through `/review-setup` (`<engine>.reviewer.launch=user`); a relayed request does not. On their yes, end the pane session and follow [User pass](#user-pass) for the pass `next-pass` reports.
 5. **Handoff.** The pass has landed only when both hold:
    - the pane shows the session finished;
    - `next-pass` at the new PR head lists a pass for this `engine` and `round`.
 
    Then end the session, title the pane `done@<head12>`, notify (`<repo>#<n> <engine> r<round>: <classification>`), and loop.
+
+## User pass
+
+The user launches this pass in their own terminal; the herder renders the handoff, waits and continues. herdr.md, [Session mode](../../references/herdr.md#session-mode), describes the mode.
+
+1. End any session in this engine's pane. Render the block: `python3 -I $H user-handoff --repo $repo --pr <n> --head $head --engine <engine> --worktree <absolute PR worktree> --model <recorded model> --effort <recorded effort>`, with one `--launch-arg=<arg>` per element of the JSON array `python3 -I $C user-args --engine <engine>` prints, one `--env=<entry>` per entry `pane-env` prints (herdr.md, Tabs and panes), and `--context-file <scratch file>` holding the carried-findings sentence from step 3 when this PR carries findings. When this pass takes over from a pane session for the same engine and round (step 4, Helper-contract violation), the context file also holds the crash recovery line from step 4. A refusal is a block with its message.
+2. Print the block verbatim, then one line saying the herder waits and continues on its own. Title the pane `⏸ user <engine> r<round>`, mark the tab `⏸`, and notify with `--sound request`: `<repo>#<n> <engine> r<round>: launch this pass in your terminal (block in the herder tab)`.
+3. Wait in one background loop (herdr.md, Waiting) that every 300 seconds reads the PR head and runs `next-pass` at it, and exits when `passes` lists this `engine` and `round`, when `next-pass` exits non-zero (the run ended or its evidence is unreadable), when the head moves, or after 4 hours. On a moved head with no record yet, the pass may be pushing its fix: wait again at the new head without re-rendering. On the 4-hour timeout, notify again with `--sound request` and wait again. A non-zero `next-pass` is a block with its message.
+4. Once the record lands, continue at step 5 of the loop, with the pane's finished-session check not applying.
+
+The herder never runs the pass, posts, attests, writes or edits ledger records, or calls the pass's helpers on the user's behalf. A user reporting a failed preflight or a helper refusal is a block: the user owns any relaunch. Do not improvise ledger writes, worktrees or launchers.
 
 Never open a second engine on the same PR while a pass is running. Independent PRs' rows run concurrently. Before starting a pass, judge whether that engine is already busy on another row and hold the pass until it frees.
 

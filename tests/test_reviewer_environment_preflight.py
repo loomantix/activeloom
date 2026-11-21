@@ -55,11 +55,19 @@ def test_missing_ledger_arguments_allow_one_same_pass_correction(root: str, skil
 
 
 @pytest.mark.parametrize("root", [".agents", ".claude", ".codex"])
-def test_human_handoff_has_full_agy_launch_and_preflight(root: str) -> None:
+def test_session_mode_handoff_is_rendered_by_the_controller(root: str) -> None:
+    """The user handoff is engine-neutral and never hand-written by the herder.
+
+    The launch line, preflight and invocation themselves are covered by
+    tests/test_user_pass_handoff.py against the controller that renders them.
+    """
     reference = (ROOT / root / "references/herdr.md").read_text()
     skill = (ROOT / root / "skills/hreview/SKILL.md").read_text()
+    assert "### Session mode" in reference and "### Human handoff" not in reference
     for text in (reference, skill):
-        assert "agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions" in text
-        assert "bare `agy` will not work" in text
-    assert "git rev-parse HEAD" in reference
-    assert "node .agents/skills/critique/scripts/review-ledger.js --version" in reference
+        assert "user-handoff" in text
+    assert "A bare CLI will not do" in reference
+    assert "`git rev-parse HEAD`" in reference
+    assert "`review-ledger.js --version`" in reference
+    for line in ("claude --model", "codex -m", "agy --model"):
+        assert line in reference
