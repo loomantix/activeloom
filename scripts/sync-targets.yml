@@ -382,6 +382,11 @@ harnesses:
         destination: .claude/skills/hgrill/SKILL.md
         substitutions: []
 
+      - source: .claude/skills/hgrill/scripts/signoff.py
+        destination: .claude/skills/hgrill/scripts/signoff.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/horch/SKILL.md
         destination: .claude/skills/horch/SKILL.md
         substitutions: []
@@ -994,6 +999,11 @@ harnesses:
         destination: .codex/skills/hgrill/SKILL.md
         substitutions: []
 
+      - source: .codex/skills/hgrill/scripts/signoff.py
+        destination: .codex/skills/hgrill/scripts/signoff.py
+        substitutions: []
+        mode: '0755'
+
       - source: .codex/skills/horch/SKILL.md
         destination: .codex/skills/horch/SKILL.md
         substitutions: []
@@ -1552,6 +1562,11 @@ harnesses:
       - source: .agents/skills/hgrill/SKILL.md
         destination: .agents/skills/hgrill/SKILL.md
         substitutions: []
+
+      - source: .agents/skills/hgrill/scripts/signoff.py
+        destination: .agents/skills/hgrill/scripts/signoff.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/horch/SKILL.md
         destination: .agents/skills/horch/SKILL.md
