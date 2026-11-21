@@ -31,6 +31,9 @@ LIMITATION = "Protected from edits, not yet from same-user workers; unwrapped he
 PASSWORD_REQUIRED = ("sudo: a password is required", "sudo: interactive authentication is required")
 SUDO_RS_AUTH = PASSWORD_REQUIRED[1]
 INVENTORY_HEADER = r"^User .+ may run the following commands on .+:$"
+# Run as the invoking user: exit 3 only for an unlistable directory, sentinel on success.
+LIST_AS_READER = ("import os, sys\ntry:\n    os.listdir(sys.argv[1])\nexcept PermissionError:\n    sys.exit(3)\n"
+                  "print('listed')\n")
 
 
 class PolicyError(ValueError):
@@ -333,11 +336,15 @@ def capture_proof() -> str | None:
         return f"{ETC / 'sudoers-rs'} exists; sudo-rs permission proof not recorded"
     protected_program(SUDO)
     sudoers = ETC / "sudoers"
-    # Root can enumerate a 0751 directory. Check read access as the proof's reader.
-    access = _run([str(SUDO), "-n", "-u", f"#{uid}", "--", "/usr/bin/test", "-r", str(DROP_IN.parent)])
-    if access.returncode == 1 and not access.stdout and not access.stderr:
+    # Root can enumerate a 0751 directory. List it as the proof's reader with the
+    # reader's own primitive: test(1) may ignore ACLs and supplementary groups.
+    python = Path("/usr/bin/python3")
+    protected_program(python)
+    access = _run([str(SUDO), "-n", "-u", f"#{uid}", "--", str(python), "-I", "-c", LIST_AS_READER,
+                   str(DROP_IN.parent)])
+    if access.returncode == 3 and not access.stdout and not access.stderr:
         return _unreadable_inventory()
-    if access.returncode or access.stdout or access.stderr:
+    if access.returncode or access.stdout != "listed\n" or access.stderr:
         return f"cannot establish reader access to {DROP_IN.parent}; sudo-rs permission proof not recorded"
     entries = sorted(os.listdir(DROP_IN.parent))
     fingerprint = _fingerprint(entries)

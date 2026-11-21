@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -616,6 +617,7 @@ def test_restart_marker_position(prefix: str) -> None:
 RS_AUTH = (1, "", "sudo: interactive authentication is required\n")
 RS_LISTING_OK = (0, "exact", "")
 RS_INVENTORY_OK = (0, "User fixture may run the following commands on host:\n    (ALL : ALL) ALL\n", "")
+READER_LISTED = (0, "listed\n", "")
 
 
 @pytest.fixture
@@ -640,9 +642,9 @@ def sudo_rs_host(installation: Path, monkeypatch: pytest.MonkeyPatch) -> dict[st
         if argv == [str(policy.VISUDO), "-V"]:
             return subprocess.CompletedProcess(argv, 0, host["visudo"], "")
         if "-u" in argv:
-            assert argv == [str(policy.SUDO), "-n", "-u", f"#{os.environ['SUDO_UID']}", "--",
-                            "/usr/bin/test", "-r", str(policy.DROP_IN.parent)]
-            return subprocess.CompletedProcess(argv, 0 if host.get("reader_can_list", True) else 1, "", "")
+            assert argv == [str(policy.SUDO), "-n", "-u", f"#{os.environ['SUDO_UID']}", "--", "/usr/bin/python3",
+                            "-I", "-c", policy.LIST_AS_READER, str(policy.DROP_IN.parent)]
+            return subprocess.CompletedProcess(argv, *host.get("reader", READER_LISTED))
         who = "root" if "-U" in argv else "user"
         kind = "probe" if "-l" not in argv else "listing" if str(policy.SETTER) in argv else "inventory"
         status, out, err = host[who][kind]
@@ -656,7 +658,7 @@ def test_sudo_rs_searchable_unreadable_inventory(sudo_rs_host: dict[str, Any], m
     directory = policy.DROP_IN.parent
     directory.chmod(0o751)
     assert policy.capture_proof() is None
-    sudo_rs_host["reader_can_list"] = False
+    sudo_rs_host["reader"] = (3, "", "")
     listdir = os.listdir
 
     def reader_listdir(path: Path) -> list[str]:
@@ -680,6 +682,32 @@ def test_sudo_rs_searchable_unreadable_inventory(sudo_rs_host: dict[str, Any], m
     assert "cannot list" in warning and str(directory) in warning
     assert not policy.PROOF.exists()
     check_report()
+
+
+@pytest.mark.parametrize("reader", [(1, "", ""), (1, "", "sudo: user '#1000' not found\n"), (3, "", "noise\n"),
+                                    (0, "", ""), (0, "listed\nextra\n", ""), (127, "", "")])
+def test_sudo_rs_capture_refuses_unestablished_reader_access(sudo_rs_host: dict[str, Any], reader: Any) -> None:
+    sudo_rs_host["reader"] = reader
+    warning = policy.capture_proof()
+    assert warning is not None and warning.startswith("cannot establish reader access")
+    assert not policy.PROOF.exists()
+
+
+def test_list_as_reader_uses_the_readers_listing(tmp_path: Path) -> None:
+    def probe(path: Path) -> tuple[int, str, str]:
+        done = subprocess.run([sys.executable, "-I", "-c", policy.LIST_AS_READER, str(path)],
+                              capture_output=True, text=True, check=False)
+        return done.returncode, done.stdout, done.stderr
+
+    assert probe(tmp_path) == READER_LISTED
+    assert probe(tmp_path / "missing")[0] not in (0, 3)
+    if os.geteuid():
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o311)
+        try:
+            assert probe(locked) == (3, "", "")
+        finally:
+            locked.chmod(0o755)
 
 
 def test_sudo_rs_install_proof_reports_protected(sudo_rs_host: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
