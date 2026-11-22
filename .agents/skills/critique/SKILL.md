@@ -7,9 +7,11 @@ description: PR-first adversarial code review for Antigravity or Gemini CLI. Use
 
 ## Reviewer environment preflight — hard stop
 
-When hreview supplies a binding and you have not yet entered this pass, run the controller-supplied absolute `reviewer-entry.py enter`
-command first and follow its bound skill from the candidate cwd, including nested lanes.
-A failed entry ends the pass before any evidence operation.
+When hreview supplies a binding, run the controller-supplied absolute `reviewer-entry.py enter`
+command before following this skill and follow its bound skill from the candidate cwd, unless you are
+already following that skill's entered text. Each nested lane gets its own `enter` with `--skill` set
+to that lane; after a pushed fix, set `--head` to the new Git-derived HEAD and keep the base, run,
+round and receipt. A failed entry ends the pass before any evidence operation.
 
 This preflight precedes all other entry gates, including instructions below to
 classify or check context first. Before profile setup, GitHub reads, telemetry,

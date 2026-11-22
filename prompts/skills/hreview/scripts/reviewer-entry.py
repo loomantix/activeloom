@@ -219,7 +219,9 @@ def entry(args: argparse.Namespace) -> None:
           f"Read {root}/references/local-review-ledger.md for transport commands and refusal rules. "
           "These helper bindings apply inside linked documents too. For silent evidence, use read-ledger, "
           "read-roster and export-threads, and direct raw posting steps to the named scratchpad. "
-          "Re-enter nested lanes with the same binding. Stop on conflicting requirements.")
+          "Enter each nested lane with its own enter command, --skill set to that lane; after a pushed fix "
+          "set --head to the new Git-derived HEAD and keep the base, run, round and receipt. "
+          "Stop on conflicting requirements.")
     print("Verified destination:", json.dumps(status))
     installed = (root / skill).read_text()
     governing = (base / skill).read_text()

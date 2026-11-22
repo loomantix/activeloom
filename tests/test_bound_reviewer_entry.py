@@ -156,6 +156,11 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     assert helper and helper[1] == str(tools / LEDGER)
     assert str(tools / ".agents/references/local-review-ledger.md") in prompt
     assert str(policy / ".agents/references/local-review-ledger.md") not in prompt
+    assert str(policy / ".agents/REVIEW_WORKFLOW.md") in prompt
+    assert str(tools / ".agents/REVIEW_WORKFLOW.md") not in prompt
+    for transport in ("review-setup/scripts/review-profile.py", "critique/scripts/local-review-handoff.py"):
+        assert str(tools / ".agents/skills" / transport) in prompt
+        assert str(policy / ".agents/skills" / transport) not in prompt
     body = tmp_path / "body"
     body.write_text(f"<!-- local-review-tier:v1 head={head} -->\nSynthetic review tier.\n")
     posted = json.loads(subprocess.check_output(
