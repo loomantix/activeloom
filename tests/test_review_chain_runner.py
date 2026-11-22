@@ -5048,6 +5048,11 @@ def disposition(fingerprint: str, outcome: str, round: int = 1) -> str:
             {"posted": 2, "major": {"validFixed": 1}},
         ),
         (
+            [],
+            [(1, finding("f1", "blocking")), (2, disposition("f1", "dismissed"))],
+            {"posted": 1, "blocking": {"invalidDismissed": 1}},
+        ),
+        (
             # An earlier pass's thread dispositioned now also counts as posted.
             [1],
             [(1, finding("f1", "minor", 1)), (2, disposition("f1", "deferred", 2))],

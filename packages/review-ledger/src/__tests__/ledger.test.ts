@@ -1596,7 +1596,7 @@ describe('ledger operations and workflow verification', () => {
         threadId: 'PRRT_escalated',
         content: 'Attempted deferral.',
       }),
-    ).toThrowError('blocking local-review findings must be fixed');
+    ).toThrowError('blocking local-review findings cannot be deferred');
 
     // Fixing the corrected blocker succeeds.
     const dispRes = dispose({

@@ -44,7 +44,7 @@ import { createHash } from "crypto";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.18.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.18.1" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -17981,21 +17981,21 @@ function verifyBlockingNotDeferred(repo, matched) {
   for (const records of grouped.values()) {
     records.sort((a, b) => a[0] - b[0]);
     const [, finding, disposition] = records[records.length - 1];
-    if (finding.severity === "blocking" && disposition.outcome !== "fixed") {
-      fail("blocking local-review findings must be fixed");
+    if (finding.severity === "blocking" && disposition.outcome === "deferred") {
+      fail("blocking local-review findings cannot be deferred");
     }
     const priorUnfixedBlockers = [];
     for (let index = 0; index < records.length - 1; index++) {
       const [, priorFinding, priorDisposition] = records[index];
-      if (priorFinding.severity === "blocking" && priorDisposition.outcome !== "fixed") {
+      if (priorFinding.severity === "blocking" && priorDisposition.outcome === "deferred") {
         priorUnfixedBlockers.push(index);
       }
     }
     if (priorUnfixedBlockers.length === 0) {
       continue;
     }
-    if (disposition.outcome !== "fixed") {
-      fail("an unfixed blocker must be cleared by a later fixed occurrence");
+    if (disposition.outcome === "deferred") {
+      fail("a deferred blocker must be fixed or dismissed with evidence");
     }
     if (repo === void 0) {
       fail(
@@ -18010,7 +18010,9 @@ function verifyBlockingNotDeferred(repo, matched) {
         records[index + 1][1].head
       );
     }
-    verifyForwardTransition(repo, finding.head, disposition.head);
+    if (disposition.outcome === "fixed" || finding.head !== disposition.head) {
+      verifyForwardTransition(repo, finding.head, disposition.head);
+    }
   }
 }
 function verifyThreadDispositions(threads, historicalCommentIds, options) {
@@ -18120,8 +18122,8 @@ function sameRoundDispositions(args, matched, allowedHeads, slips) {
         );
       }
     }
-    if (finding.severity === "blocking" && disposition.outcome !== "fixed") {
-      fail("blocking local-review findings must be fixed");
+    if (finding.severity === "blocking" && disposition.outcome === "deferred") {
+      fail("blocking local-review findings cannot be deferred");
     }
     const fixed = disposition.outcome === "fixed";
     const fixedMajor = fixed && (finding.severity === "blocking" || finding.severity === "major");
@@ -18734,8 +18736,8 @@ function dispose(params) {
     );
   }
   const finding = matches[0];
-  if (finding.severity === "blocking" && params.outcome !== "fixed") {
-    fail("blocking local-review findings must be fixed");
+  if (finding.severity === "blocking" && params.outcome === "deferred") {
+    fail("blocking local-review findings cannot be deferred");
   }
   const dispMatches = comments.filter((row) => {
     const match = matchDisposition(String(row.body ?? ""));

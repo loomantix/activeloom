@@ -542,40 +542,54 @@ describe('complete thread verification', () => {
     ).toThrowError(/topology is invalid/);
   });
 
-  it('rejects a blocking finding left deferred', () => {
+  function blockingThread(outcome: string, content: string) {
     const fc = 'the finding\n';
-    const dc = 'deferred to a follow-up\n';
-    const node = thread([
+    return thread([
       comment(
         `${findingMarker({ fingerprint: 'fp1', severity: 'blocking', content: fc })}\n${fc}`,
         1,
       ),
       comment(
-        `${dispositionMarker({ fingerprint: 'fp1', outcome: 'deferred', content: dc })}\n${dc}`,
+        `${dispositionMarker({ fingerprint: 'fp1', outcome, content })}\n${content}`,
         2,
       ),
     ]);
-    expect(() =>
-      verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+  }
+
+  it('rejects a blocking dismissal without evidence', () => {
+    runner.threadNodes = [blockingThread('dismissed', '  \n')];
+    expect(() => verifyLedger({ ...scope, head: HEAD })).toThrow(
+      /content is empty/,
+    );
   });
 
-  it('rejects a blocking finding that was dismissed', () => {
-    const fc = 'the finding\n';
-    const dc = 'not a defect after all\n';
-    const node = thread([
-      comment(
-        `${findingMarker({ fingerprint: 'fp1', severity: 'blocking', content: fc })}\n${fc}`,
-        1,
+  it('accepts a blocking dismissal with evidence in the same round', () => {
+    runner.threadNodes = [
+      blockingThread(
+        'dismissed',
+        'The parser rejects the input before the write.',
       ),
-      comment(
-        `${dispositionMarker({ fingerprint: 'fp1', outcome: 'dismissed', content: dc })}\n${dc}`,
-        2,
-      ),
-    ]);
-    expect(() =>
-      verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+    ];
+    expect(verifyLedger({ ...scope, head: HEAD }).dispositions).toBe(1);
+    const matched = verifyThreadDispositions(
+      runner.threadNodes,
+      undefined,
+      scope,
+    );
+    expect(
+      sameRoundDispositions({ engine: 'claude', round: 1 }, matched, {
+        [HEAD]: 0,
+      }),
+    ).toEqual([['fp1', false, false, false]]);
+  });
+
+  it('still rejects a deferred blocker', () => {
+    runner.threadNodes = [
+      blockingThread('deferred', 'Tracked for a later change.'),
+    ];
+    expect(() => verifyLedger({ ...scope, head: HEAD })).toThrow(
+      /blocking local-review findings cannot be deferred/,
+    );
   });
 
   it('rejects one fingerprint split across two threads', () => {
