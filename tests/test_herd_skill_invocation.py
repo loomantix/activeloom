@@ -52,8 +52,10 @@ def test_herdr_reference_states_the_invocation_contract(root: str) -> None:
     assert "is the whole prompt: one short line" in text
     assert "Send it first as its own plain prompt" in text
     assert "BRIEF-READY" in text
+    assert "reply to this brief must be exactly `BRIEF-READY`" in text
     assert REFUSAL in text
     assert "resend the bare `/<skill> <args>` once" in text
+    assert "fresh refusal following the retry" in text
     assert "A second refusal is a block; never record it as a failed pass." in text
 
 
@@ -65,3 +67,10 @@ def test_brief_templates_deliver_the_brief_separately(root: str, skill: str) -> 
     assert "then the bare" in text
     for stale in ("First line: the `<kind>` skill", "Text: the skill line, then"):
         assert stale not in text
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_promotion_resume_preserves_dry_run(root: str) -> None:
+    text = (REPO_ROOT / root / "skills/hpromote/SKILL.md").read_text()
+    blocks = text.split("## Blocks\n", 1)[1]
+    assert "`run --dry-run` for a dry run" in blocks
