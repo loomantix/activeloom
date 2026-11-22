@@ -107,12 +107,22 @@ The launcher also owns a 45-minute pass timeout. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
 are rejected.
 
-The contract-v4 `agent-loop` is the sole exception: its wrapper directly
-invokes the separately tested
+There are exactly two exceptions. First, the contract-v4 `agent-loop`: its
+wrapper directly invokes the separately tested
 `.codex/skills/agent-loop/scripts/run-codex-review.sh`, which starts Claude with
 its own literal `--effort low` and the same permission, persistence, and output policy against an
-immutable base-blob `.claude` snapshot. Interactive review and every
-non-agent-loop caller continue to use `run-claude-review.sh` only.
+immutable base-blob `.claude` snapshot.
+
+Second, a herd chain's interactive Claude reviewer pane. When a herd skill such
+as `hreview` starts a Claude reviewer as an interactive session in a herdr pane
+with `herdr agent start`, Claude's model and effort argv come only from
+`review-profile.py launch-args` (or the pair the run recorded from it) and its
+permission argv only from `herd-config.py user-args`, passed through unchanged.
+Never hand-compose, add to, or override those arguments; a missing or failing
+helper is a blocker.
+
+Outside a herd chain, every Codex session that runs a Claude review,
+interactive or not, uses `run-claude-review.sh` only.
 
 ### Select the local session mode
 
