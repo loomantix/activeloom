@@ -21,6 +21,18 @@ def run(*argv: str | Path, cwd: Path | None = None) -> str:
     return subprocess.run(argv, cwd=cwd, text=True, stdout=subprocess.PIPE, check=True).stdout.strip()
 
 
+def is_commit(revision: str) -> bool:
+    return subprocess.run(("git", "cat-file", "-e", revision + "^{commit}"),
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def is_ancestor(ancestor: str, descendant: str) -> bool:
+    status = subprocess.run(("git", "merge-base", "--is-ancestor", ancestor, descendant)).returncode
+    if status not in (0, 1):
+        raise ValueError(f"could not compare {ancestor} with {descendant}")
+    return status == 0
+
+
 def verify_checkout(tree: Path, revision: str, *, input_tree: bool) -> None:
     if (not re.fullmatch("[0-9a-f]{40}", revision)
             or run("git", "rev-parse", "--show-toplevel", cwd=tree) != str(tree)
@@ -134,7 +146,10 @@ def entry(args: argparse.Namespace) -> None:
         # A resumed run keeps its original policy. Refuse rewritten or unavailable history.
         if not re.fullmatch("[0-9a-f]{40}", tip):
             raise ValueError("could not resolve the live policy branch")
-        run("git", "merge-base", "--is-ancestor", args.policy_revision, tip)
+        if not is_commit(tip):
+            run("git", "fetch", "--quiet", "--no-tags", "origin", tip)
+        if not is_ancestor(args.policy_revision, tip):
+            raise ValueError("the live target branch no longer descends from the pinned policy revision")
     root = tools / ROOTS[args.engine]
     base = policy / ROOTS[args.engine]
     for local in (".review/addendum.local.md", ".activeloom-review.json", "AGENTS.md", "CLAUDE.md"):
@@ -153,7 +168,11 @@ def entry(args: argparse.Namespace) -> None:
         raise ValueError(f"unsupported policy ledger {policy_version}; use a verified compatible pairing")
     merge_base = run("git", "merge-base", args.policy_revision, args.head)
     if args.base and args.base != merge_base:
-        raise ValueError("review-range base differs from the run pin")
+        # A run keeps its original base after the branch merges its target mid-run.
+        if not (re.fullmatch("[0-9a-f]{40}", args.base) and is_ancestor(args.base, args.policy_revision)
+                and is_ancestor(args.base, args.head)):
+            raise ValueError("review-range base differs from the run pin")
+        merge_base = args.base
     decision = json.loads(run("node", classifier, "classify-changeset", "--base", merge_base, "--head", args.head))
     if type(decision.get("skip")) is not bool or type(decision.get("smallChange")) is not bool:
         raise ValueError("base classifier did not return a review decision")

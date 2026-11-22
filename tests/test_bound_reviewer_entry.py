@@ -170,10 +170,32 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
         assert redirected.returncode and not redirected.stdout
         assert not (tmp_path / "different-store").exists()
         env["ACTIVELOOM_SILENT_ROOT"] = original
+    if not legacy and not silent:
+        # A resumed run follows a target that advances along the pinned policy, never a rewritten one.
+        identity = ("-c", "user.name=Test", "-c", "user.email=test@example.org")
+        tree = git(candidate, "rev-parse", f"{base}^{{tree}}")
+        advanced = git(candidate, *identity, "commit-tree", tree, "-p", base, "-m", "target advanced")
+        rewritten = git(candidate, *identity, "commit-tree", tree, "-m", "target rewritten")
+        env["TEST_BASE"] = advanced
+        invoke("context", "--receipt", context["receipt"])
+        env["TEST_BASE"] = rewritten
+        refused = invoke("context", "--receipt", context["receipt"], check=False)
+        assert refused.returncode and "no longer descends" in refused.stderr
+        env["TEST_BASE"] = base
+        # The run keeps an earlier base on the policy lineage after the branch merges its target.
+        kept = invoke(*enter[:5], "--base", revision, *enter[7:], check=False)
+        assert "review-range base differs" not in kept.stderr
+        unrelated = invoke(*enter[:5], "--base", rewritten, *enter[7:], check=False)
+        assert unrelated.returncode and "review-range base differs" in unrelated.stderr
     env["TEST_ACTOR"] = "different-reviewer"
     refused = invoke(*enter, check=False)
     assert refused.returncode and not refused.stdout
-    assert "actor" in refused.stderr or "owner" in refused.stderr
+    assert "actor" in refused.stderr
+    if silent:
+        # Without a receipt only the destination check can see that another actor owns the pin.
+        foreign = invoke("context", check=False)
+        assert foreign.returncode and not foreign.stdout
+        assert "pin owner differs" in foreign.stderr
     assert git(candidate, "rev-parse", "HEAD") == head
     assert not git(candidate, "status", "--porcelain", "--ignored")
     assert not git(policy, "status", "--porcelain", "--ignored")
