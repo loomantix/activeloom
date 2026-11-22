@@ -201,9 +201,10 @@ def validate(
                 errors.append(f"{where}: a validated stale entry needs non-empty evidence")
         bails = [x for x in add if x.startswith(BAIL_PREFIX) and x != hold_label]
         needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
-        carried = sorted(x for x in (current or {}).get(number, set())
-                         if x.startswith(BAIL_PREFIX) and x not in (hold_label, STALE))
-        omitted = verdict == "exclude" and not bails and bool(carried)
+        labels_now = (current or {}).get(number, set())
+        carried_bails = sorted(x for x in labels_now
+                               if x.startswith(BAIL_PREFIX) and x not in (hold_label, STALE))
+        omitted = verdict == "exclude" and not bails and bool(carried_bails)
         if sum(x in priority_labels for x in add) > 1:
             errors.append(f"{where}: more than one priority label")
         if len(needs) > 1:
@@ -218,11 +219,10 @@ def validate(
         elif READY in add:
             errors.append(f"{where}: only a ready verdict adds {READY!r}")
         if omitted:
-            held = hold_label in (current or {}).get(number, set())
             errors.append(
                 f"{where}: exclude restates no agent-bail: label, but the issue carries "
-                f"{', '.join(map(repr, carried))}; restate the exclusion it keeps in add_labels"
-                + (f" (the hold {hold_label!r} stays on and is left out)" if held else "")
+                f"{', '.join(map(repr, carried_bails))}; restate the exclusion it keeps in add_labels"
+                + (f" (the hold {hold_label!r} stays on and is left out)" if hold_label in labels_now else "")
             )
         elif verdict == "exclude" and (len(bails) != 1 or STALE in bails):
             errors.append(f"{where}: exclude takes exactly one agent-bail: label other than stale")
