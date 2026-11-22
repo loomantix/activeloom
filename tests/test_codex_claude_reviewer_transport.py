@@ -24,8 +24,9 @@ def test_hreview_codex_render_requires_interactive_panes() -> None:
     text = " ".join(HREVIEW.read_text(encoding="utf-8").split())
     assert "runs as an interactive session" in text
     assert "not the headless launchers" in text
-    assert "review-profile.py launch-args" in text or "launch-args --engine" in text
-    assert "user-args" in text
+    assert "$P launch-args --engine" in text
+    assert "$C user-args --engine" in text
+    assert "$H user-handoff" in text
 
 
 def test_codex_boundary_permits_herd_interactive_claude_panes() -> None:
@@ -33,9 +34,19 @@ def test_codex_boundary_permits_herd_interactive_claude_panes() -> None:
     assert "sole exception" not in boundary
     assert "herd chain's interactive Claude reviewer pane" in boundary
     assert "herdr agent start" in boundary
+    assert "local-review-handoff.py user-handoff" in boundary
     assert "review-profile.py launch-args" in boundary
     assert "herd-config.py user-args" in boundary
-    assert "Never hand-compose" in boundary
+    assert "Never add an option of your own" in boundary
+
+
+def test_codex_boundary_keeps_its_prohibitions_and_two_exceptions() -> None:
+    boundary = _boundary()
+    assert "There are exactly two exceptions." in boundary
+    assert "Third," not in boundary
+    assert "Never invoke the raw `claude` CLI directly" in boundary
+    assert "Do not set `CLAUDE_REVIEW_CLI` outside launcher tests." in boundary
+    assert "--effort low" not in boundary
 
 
 def test_codex_boundary_preserves_agent_loop_hook_settings() -> None:
@@ -50,5 +61,5 @@ def test_codex_boundary_keeps_launcher_outside_both_exceptions() -> None:
     boundary = _boundary()
     assert boundary.endswith(
         "Outside the contract-v4 `agent-loop` hook and the herd-launched interactive "
-        "reviewer pane, use `run-claude-review.sh` for every Claude review."
+        "reviewer session, use `run-claude-review.sh` for every Claude review."
     )

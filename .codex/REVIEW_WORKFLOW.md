@@ -131,15 +131,17 @@ the run's pinned model and effort against an immutable base-blob `.claude`
 snapshot. The hook owns its permission, persistence, and output options.
 
 Second, a herd chain's interactive Claude reviewer pane. When a herd skill such
-as `hreview` starts a Claude reviewer as an interactive session in a herdr pane
-with `herdr agent start`, Claude's model and effort argv come only from
-`review-profile.py launch-args` (or the pair the run recorded from it) and its
-permission argv only from `herd-config.py user-args`, passed through unchanged.
-Never hand-compose, add to, or override those arguments; a missing or failing
-helper is a blocker.
+as `hreview` starts a Claude reviewer as an interactive session, either in a
+herdr pane with `herdr agent start` or as a user pass rendered by
+`local-review-handoff.py user-handoff` for the user's own terminal, build the
+launch exactly as `herdr.md` gives it for the `claude` engine. Take model and
+effort only from `review-profile.py launch-args` (or the pair the run recorded
+from it), the user's extra launch argv only from `herd-config.py user-args`,
+and the pane environment only from that reference. Never add an option of your
+own or override one of those values; a missing or failing helper is a blocker.
 
 Outside the contract-v4 `agent-loop` hook and the herd-launched interactive
-reviewer pane, use `run-claude-review.sh` for every Claude review.
+reviewer session, use `run-claude-review.sh` for every Claude review.
 
 ### Select the local session mode
 
