@@ -281,5 +281,12 @@ def test_herder_checks_before_restart_and_dispatches_bound_entry(harness: str) -
     assert skill.index('check <binding>') < skill.index('$C record-policy-restart')
     assert 'enter <binding> --receipt <saved receipt> --skill <skill> --base <run base> --run-id <run id> --round <round>' in skill
     converged = skill.split("## End states", 1)[1]
-    assert converged.index("If it predates that gate, proceed to step 4") < converged.index('node "$classifier" classify-changeset')
-    assert "missing or malformed `dependencyPaths` array leaves the PR draft" in converged
+    step3 = converged.split("\n3. ", 1)[1].split("\n4. ", 1)[0]
+    assert converged.index(step3) < converged.index("gh pr ready <n>")
+    assert "Human glance section defines the mixed range" in step3
+    assert "when unsure, treat the gate as required" in step3
+    assert step3.index("If it defines no mixed range") < step3.index('node "$classifier" classify-changeset')
+    assert "missing or malformed `dependencyPaths` array leaves the PR draft" in step3
+    assert "dep-analysis <n>` at `$head`" in step3 and "verdict=clear" in step3
+    assert "leaves the PR draft, notifies with the reason or verdict, and stops before `gh pr ready`" in step3
+    assert "when step 3 ran `" in converged.split("\n4. ", 1)[1].split("\n5. ", 1)[0]
