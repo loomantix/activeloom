@@ -33,7 +33,13 @@ Agy's sandbox can hide the primary checkout's Git metadata and user configuratio
 do not prove the host worktree or configuration is broken. Report this possible
 cause to the controller or user, who owns relaunching with the approved settings.
 
-One exception applies after this preflight: when the pinned ledger CLI returns a
+Pass full SHAs directly from Git output; never retype or expand an abbreviated SHA.
+After publishing, record the full SHA captured after this pass's successful push;
+a pass that publishes nothing records its Git-derived reviewed head instead.
+Before each `dispose`, capture a complete pre-call ledger snapshot and verify the
+local HEAD, the pushed remote branch and the live PR head all equal that recorded SHA.
+
+The missing-argument exception applies after this preflight: when the pinned ledger CLI returns a
 missing-required-argument diagnostic followed by that subcommand's `usage:` synopsis,
 and its required-argument guard rejected the invocation before any write, the
 reviewer may make one corrected invocation. Read that subcommand's `--help`;
@@ -46,6 +52,20 @@ same run, round and budget; do not relaunch a worker or rewrite a result.
 A second failure stops the pass. This exception never covers a controller
 refusal, stale-head, authorization, lifecycle or integrity refusal, a
 partial or uncertain write, or an error whose pre-write status is unproven.
+
+A separate head-transcription exception applies only to `dispose` rejected with
+`PR head mismatch`. The supplied `--head` must differ from that recorded SHA,
+and must not be a previously valid pass head.
+Require the local HEAD, pushed remote branch and live PR head to still match that
+recorded SHA, and require the complete pre-call ledger snapshot to be
+unchanged after the refusal. Also verify from the pinned implementation that the
+failed call stopped before any write; the error text alone is insufficient,
+because a post-write head check can report the same mismatch. Then change only
+`--head` to the Git-derived recorded SHA and retry once, preserving every other
+argument and the content file. Do not replace a previously valid head with a newer head.
+Missing evidence, a real head move or a partial/uncertain write stops the pass.
+Both exceptions share one correction attempt per pass, within the same run,
+round and budget; they never revive an already-blocked result or relaunch a worker.
 
 At any other later ledger or controller refusal, including `transition-run`, stop and
 report the exact command and error to the controller or user. Never retry the

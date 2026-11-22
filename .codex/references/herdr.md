@@ -97,35 +97,23 @@ Models and efforts come from the review profile: `python3 -I <skills root>/revie
 | `codex`  | `codex`        | `-m <m> -c 'model_reasoning_effort="<e>"'` | `-s read-only`           | `Use .codex/skills/<skill>/SKILL.md for <target>` | `ctrl+c ctrl+c` |
 | `gemini` | `agy`          | `--model <m> --effort <e>`                 | `--mode plan`            | `/<skill> <args>`                                 | `/exit`         |
 
+`/<skill> <args>` is the whole prompt: one short line, the skill and its arguments, nothing after them. Claude and agy parse a slash command only when it arrives as typed input; a long or multi-line prompt arrives as pasted text, and a skill that only the user may invoke then refuses to start. A skill that needs a brief gets it as [Prompting](#prompting) describes. Codex takes its invocation and brief in one prompt.
+
 For a Claude pane, also set the pane environment when splitting it: `--env ANTHROPIC_MODEL=<m> --env CLAUDE_CODE_EFFORT_LEVEL=<e>`. A read-only session takes `user-args --read-only`.
 
-### Human handoff
+### Session mode
 
-When a human must launch an Agy pass, print the full launch line, substituting
-the active run's pinned model and effort, the absolute review worktree and all
-resolved user arguments. With the approved full-bypass tier it is:
+In session mode the user launches a review pass in their own terminal, and the herd waits for its record. The pass counts like any other only because it records through the shipped helpers at the run's exact head; the herder never posts, attests or edits ledger records for it. An engine's passes take this route when the review profile's `<engine>.reviewer.launch` resolves to `user` (`review-profile.py resolve` reports `launch`, `pane` by default), or for one pass when the user chooses it after a pane pass breaks the helper contract (`hreview`, User pass).
 
-```bash
-cd <review-worktree> && agy --model <pinned-model> --effort <pinned-effort> --dangerously-skip-permissions
-```
+The block comes from the run controller, never from hand-written text: `local-review-handoff.py user-handoff` reads the active run, refuses when no pass is due, the run has ended or the head moved, and prints for the next pass:
 
-If the owner chose a `--settings` override instead, print that exact argument
-in place of the bypass flag. Preserve an active run's pins; do not resolve new
-settings for it. A bare `agy` will not work for this handoff: it can select the
-default model and retain the user sandbox. Include the skill invocation and
-the exact bound `reviewer-entry.py enter` command from hreview for a bound pass.
-Its emitted skill and absolute helpers govern that handoff. For an unbound
-invocation, give these in-session preflight commands:
+- the launch line, `cd <review-worktree> && [env <pane-env entries>] <cli> <pinned model and effort> <user args>`, in the engine's form from the table above (`claude --model … --effort …`, `codex -m … -c 'model_reasoning_effort="…"'`, `agy --model … --effort …`), using the pair this run launched that engine with, every resolved `user-args` entry, and every `pane-env` entry, which a user terminal would otherwise lack; for Claude the `env` prefix also carries the pane's `ANTHROPIC_MODEL` (unless the model is `inherit`) and `CLAUDE_CODE_EFFORT_LEVEL`, since an inherited effort variable would override `--effort`;
+- the in-session preflight: `git rev-parse HEAD` equal to the run's exact head, and that engine root's `review-ledger.js --version` equal to its `review-ledger.version` pin;
+- the skill invocation and pass prompt, addressed the way that engine expects.
 
-```bash
-git rev-parse HEAD
-node .agents/skills/critique/scripts/review-ledger.js --version
-node .agents/skills/critique/scripts/review-ledger.js silent-status --help
-```
+For a bound pass the herder's context file also carries the exact bound `reviewer-entry.py enter` command from hreview; its emitted skill and absolute helpers govern that handoff.
 
-Require a matching version pin and the command-specific silent-status synopsis.
-On failure, the reviewer reports the command and exact error, posts nothing and
-stops; the controller or user owns any relaunch.
+A bare CLI will not do: it can pick a different model, and for Agy it can keep the user's mount sandbox, which hides linked-worktree Git metadata and `gh` credentials. When the owner chose an Agy `--settings` override instead of the bypass flag, that exact argument is in `user-args` and reaches the line. A reviewer whose preflight or helper call fails reports the command and its exact error, posts nothing and stops; the herder or the user owns any relaunch.
 
 ## Tabs and panes
 
@@ -158,8 +146,10 @@ stops; the controller or user owns any relaunch.
 ## Prompting
 
 - Always `herdr agent prompt <name> "<text>" --wait --timeout <ms>`. Without `--wait`, text can be dropped while an input box is still loading; `--timeout` is accepted only with `--wait`.
-- `--wait` can time out while the session is already working. Before resending, count the prompt's first line in `herdr agent read <name> --source recent-unwrapped --lines 400`; resend only when it is absent.
+- Before each send, including a retry, record the end of the pane output with `herdr agent read <name> --source recent-unwrapped --lines 400`. If `--wait` times out, compare the pane with that snapshot. An earlier copy of the same command or brief header cannot confirm this send. Wait if the session is working. Resend only if the session is idle, the input is empty and the comparison shows this attempt never arrived. If delivery remains uncertain, block.
 - Text on screen is not proof of submission: a multi-line prompt can sit in the input box as a collapsed paste (`[Pasted text #1 +12 lines]`) and match a check for its own text. After prompting, confirm the session is working (a spinner, `Working`, a tool call `Running…`). If the input box still holds your paste, submit it with `herdr agent send-keys <name> enter`; it is your own text, not an autosuggestion.
+- **A skill with a brief (Claude and agy).** A dispatch template's brief, recovery line or extra context never goes on the slash-command line. Send it first as its own plain prompt, headed `Context for the command that follows. Do not act on it yet: its instructions, including any reply format, apply once the command runs. Reply now with exactly one line: BRIEF-READY`, then the brief. Wait for the session to settle. Its reply to this brief must be exactly `BRIEF-READY`. Ignore the echoed input, status lines and input box when reading the reply. Any other reply is a block. Then send `/<skill> <args>` alone. The session keeps the brief in its conversation and uses it once the skill starts. A skill that reads a brief from a file can take the file's path as an argument instead.
+- **Refused invocation.** After each submission settles, and on any `idle`/`done` read before sending a continue or finish nudge, read the new output following that command's echo. If this attempt reports `Claude couldn't run /<skill>. It runs only when you type it at the prompt.`, the command arrived as pasted text: resend the bare `/<skill> <args>` once. Count only a fresh refusal following the retry. A second refusal is a block; never record it as a failed pass.
 - `agent_blocked` means the session is waiting on a question: read and answer it first.
 - A greyed suggestion in an input box is the client's autosuggestion, not input. Never send `tab` or `right` to a session; they accept it.
 - Free text goes through `agent prompt`; menu choices through `herdr agent send-keys <name> <keys>`.
@@ -198,7 +188,7 @@ Never `source` or `.` a `.env` or other secrets file into a session's shell. It 
 ## Stalls and crashes
 
 - **Stall:** on each `timeout` while working, hash `herdr agent read <name> --source recent-unwrapped --lines 200`. Two consecutive timeouts with an unchanged hash mean a stall: send `esc`, then prompt `Continue from where you stopped.`
-- **Crash:** `agent_not_found`, or the shell back in the foreground. Relaunch in the same pane with the same prompt plus the skill's recovery line. At most two relaunches per unit of work; a third failure is a block.
+- **Crash:** `agent_not_found`, or the shell back in the foreground. Relaunch in the same pane with the same prompt plus the skill's recovery line; on Claude and agy the recovery line joins the brief, never the slash-command line (Prompting). At most two relaunches per unit of work; a third failure is a block.
 - **Stale blocked state:** herdr can keep reporting `blocked` after the question is answered. Read the pane; if it is working, wait with `--until done --until idle`.
 
 ## Ending a session

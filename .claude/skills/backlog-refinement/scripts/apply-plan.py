@@ -958,7 +958,7 @@ def main() -> int:
                 if not args.confirm_summary:
                     fail('Handback requires --confirm-summary; auto never skips summary confirmation')
                 if config.grill_handback != 'auto' and not args.confirm_handback:
-                    fail('Handback requires --confirm-handback (or local grill-handback: auto)')
+                    fail('Handback requires --confirm-handback (or grill-handback: auto in the user settings or local rubric)')
                 if entry['verdict'] in ('dont-build', 'stale') and entry['number'] not in args.confirm_close:
                     fail(f"#{entry['number']}: handback close requires --confirm-close {entry['number']}")
             elif entry.get('children') and entry['number'] not in args.confirm_split:

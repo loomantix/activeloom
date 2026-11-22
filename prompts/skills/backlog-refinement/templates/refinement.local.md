@@ -25,7 +25,7 @@ What refinement does with a verified-stale issue: `close` it itself once its evi
 
 <!-- stale-action: close -->
 
-Interview handback confirmation: `ask` shows one combined preview and asks before posting/applying; `auto` skips only that handback question. Both require the user to confirm the interview summary and each offered close. Keep exactly one marker line.
+Interview handback confirmation: `ask` shows one combined preview and asks before posting/applying; `auto` skips only that handback question. Both require the user to confirm the interview summary and each offered close. This is the repository default; a user's own `grill_handback` in `~/.config/activeloom/backlog-refinement.json` overrides it for that user only. Keep exactly one marker line.
 
 <!-- grill-handback: ask -->
 

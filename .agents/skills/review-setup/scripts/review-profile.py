@@ -9,15 +9,17 @@ the recommended defaults only when explicitly asked to.
 Each engine holds reviewer settings (`model`, `effort`, and for Codex an
 optional `fallback` pair), worker settings under `worker` (`model`, `effort`,
 optional `fallback` pair; Claude's also takes `execution`, `local` or `cloud`),
-and an optional global `availability`. An engine
+an optional reviewer `launch` placement (`pane`, the default, or `user`), and an
+optional global `availability`. An engine
 marked `unavailable` is never launched and cannot appear in an order. A key the
 profile does not hold yet is reported as missing rather than making the whole
 profile invalid; older schema_version profiles are read unchanged. The
 profile is shared by every repository's synced copy of this helper, so it is
 written at the oldest version that holds it: 1 without version 2 settings, 2
 without the version 3 `reviewit` setting, 3 without the version 4 worker
-`execution` setting, 4 without the version 5 `silent` list. Older copies can
-read those. A profile holding `silent` also sets `min_reader_version` 5: an
+`execution` setting, 4 without the version 5 `silent` list, 5 without the
+version 6 reviewer `launch` setting. Older copies can read those; a copy older
+than version 6 sets `launch` aside and keeps launching in a pane. A profile holding `silent` also sets `min_reader_version` 5: an
 older copy would set the list aside and post to a repository the user asked to
 keep quiet, so it must refuse instead.
 
@@ -47,7 +49,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # The oldest schema this reader still understands. A profile NEWER than
 # SCHEMA_VERSION is read rather than rejected: the writer below stores the
 # lowest version that fits, so a bump means new content exists, not that old
@@ -75,12 +77,16 @@ ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
 # Where a build on the worker settings runs. Only Claude has a cloud runner.
 EXECUTION = ("local", "cloud")
 EXECUTION_ENGINES = ("claude",)
+# Where a herd starts this engine's review passes: in a herdr pane, or handed
+# to the user to launch in their own terminal. Placement only; it never changes
+# model, effort or roster.
+LAUNCH = ("pane", "user")
 REPO_OVERRIDE_KEYS = frozenset({"engines", "order"})
 
 
 def engine_settings_keys(engine: str) -> frozenset[str]:
     """Settings keys one engine accepts. `fallback` is codex-only."""
-    keys = frozenset({*PAIR, "worker", "availability"})
+    keys = frozenset({*PAIR, "worker", "availability", "launch"})
     return keys | {"fallback"} if engine == "codex" else keys
 
 
@@ -240,6 +246,11 @@ def validate_engine_settings(
                 f"{engine}: invalid availability {settings['availability']!r}; "
                 f"expected one of {', '.join(AVAILABILITY)}"
             )
+    if "launch" in settings and settings["launch"] not in LAUNCH:
+        _fail(
+            f"{engine}.reviewer.launch: invalid value {settings['launch']!r}; "
+            f"expected one of {', '.join(LAUNCH)}"
+        )
     validate_fallback(engine, engine, settings.get("fallback"))
     validate_pair(engine, engine, settings)
     if "worker" in settings:
@@ -535,12 +546,14 @@ def require_profile() -> dict[str, Any]:
 
 def storage_schema_version(document: dict[str, Any]) -> int:
     """The oldest schema that holds the document, so older readers keep accepting it."""
-    if "silent" in document:
-        return 5
     engines = document.get("engines", {})
     scopes = [engines] + [
         override.get("engines", {}) for override in document.get("repos", {}).values()
     ]
+    if any("launch" in settings for scope in scopes for settings in scope.values()):
+        return 6
+    if "silent" in document:
+        return 5
     if any(
         "execution" in settings.get("worker", {})
         for scope in scopes
@@ -735,6 +748,8 @@ def resolve(engine: str, repo: str | None, role: str = "reviewer") -> dict[str, 
         missing_error(missing)
     source = "repository override" if merged["repo_override"] else "user profile"
     result = {"engine": engine, **role_settings(merged["engines"][engine], role)}
+    if role == "reviewer":
+        result["launch"] = merged["engines"][engine].get("launch", LAUNCH[0])
     if role == "worker":
         result["role"] = role
         if engine in EXECUTION_ENGINES:
@@ -782,6 +797,9 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
         if field in (*PAIR, "availability"):
             validate_engine_settings(section, {field: value}, partial=True)
             settings[field] = value
+        elif field == "reviewer.launch":
+            validate_engine_settings(section, {"launch": value}, partial=True)
+            settings["launch"] = value
         elif section == "codex" and field == "fallback" and value == "none":
             settings["fallback"] = None
         elif section == "codex" and field in ("fallback.model", "fallback.effort"):
@@ -815,6 +833,10 @@ def command_show(args: argparse.Namespace) -> None:
             confirmed_at=document["confirmed_at"],
             missing=missing,
             suggested=suggestions(merged, missing),
+            launch={
+                engine: merged["engines"].get(engine, {}).get("launch", LAUNCH[0])
+                for engine in ENGINES
+            },
             **merged,
         )
         if "reviewit" in document:
@@ -912,7 +934,10 @@ def command_unset(args: argparse.Namespace) -> None:
             path = [field]
         else:
             node = repos[repo].get("engines", {})
-            path = [section, *field.split(".")]
+            # The reviewer launch placement is stored beside the reviewer pair.
+            path = [section, "launch"] if field == "reviewer.launch" else [
+                section, *field.split(".")
+            ]
         parents = []
         for part in path[:-1]:
             if not isinstance(node, dict) or not isinstance(node.get(part), dict):
