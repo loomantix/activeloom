@@ -58,6 +58,8 @@ def test_herdr_reference_states_the_invocation_contract(root: str) -> None:
     assert "reply to this brief must be exactly `BRIEF-READY`" in text
     assert "Any other reply is a block." in text
     assert "Then send `/<skill> <args>` alone." in text
+    assert "Before each send, including a retry, record the end of the pane output" in text
+    assert "An earlier copy of the same command or brief header cannot confirm this send." in text
     assert REFUSAL in text
     assert "on any `idle`/`done` read before sending a continue or finish nudge" in text
     assert "resend the bare `/<skill> <args>` once" in text
