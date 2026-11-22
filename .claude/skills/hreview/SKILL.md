@@ -177,7 +177,7 @@ A pass that returns blocked only because the local gate is red on code the PR do
    - The gate is not weakened: never skip, delete, loosen or `.todo` a failing test, add an environment guard that skips it, or widen a timeout to get green.
    - Any change to tooling comes with a test that fails against the old code.
 5. Mark the fix PR ready and notify with `--sound request`: `<repo>#<fix> gate fix (test/tooling only) for the red gate on #<n> — merge to resume`. Merging stays the user's.
-6. Wait for `gh pr view <fix> --json state` to read `MERGED` (herdr.md, Waiting). Then merge `origin/<PR base>` into the PR branch in its worktree with a merge commit (never rebase or force-push), run each `gate_fix.extra_checks` command and the failing check, push, re-post the roster at the new head (`post-roster` derives `--supersedes`), and re-run the blocked pass from step 1 of the loop. Its prompt carries one extra line naming the earlier blocked result and the fix PR, and telling it to read the ledger first.
+6. Wait for `gh pr view <fix> --json state` to read `MERGED` (herdr.md, Waiting). Then merge `origin/<PR base>` into the PR branch in its worktree with a merge commit (never rebase or force-push), run each `gate_fix.extra_checks` command and the failing check, push, re-post the roster at the new head (`post-roster` derives `--supersedes`), and re-run the blocked pass from step 1 of the loop. Its brief carries one extra line naming the earlier blocked result and the fix PR, and telling it to read the ledger first.
 
 At most one gate fix per PR per run. A second red gate of this kind is a block.
 

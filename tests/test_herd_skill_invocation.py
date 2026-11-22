@@ -41,7 +41,7 @@ def _engines_row(text: str, engine: str) -> list[str]:
 def test_no_fenced_prompt_appends_a_brief_to_a_slash_command(path: Path) -> None:
     for match in FENCE.finditer(path.read_text()):
         lines = [ln.strip() for ln in match.group(2).splitlines() if ln.strip()]
-        if lines and re.match(r"^/[a-z<]", lines[0]):
+        if lines and re.match(r"^(?:/|<<INVOKE>>)[a-z<]", lines[0]):
             assert len(lines) == 1, f"{path}: slash command followed by a brief:\n{match.group(2)}"
 
 
@@ -52,13 +52,18 @@ def test_herdr_reference_states_the_invocation_contract(root: str) -> None:
         invoke = _engines_row(text, engine)[4]
         assert invoke == "`/<skill> <args>`"
     assert "is the whole prompt: one short line" in text
+    assert "Codex takes its invocation and brief in one prompt." in text
     assert "Send it first as its own plain prompt" in text
-    assert "BRIEF-READY" in text
+    assert "Do not act on it yet" in text
     assert "reply to this brief must be exactly `BRIEF-READY`" in text
+    assert "Any other reply is a block." in text
+    assert "Then send `/<skill> <args>` alone." in text
     assert REFUSAL in text
+    assert "on any `idle`/`done` read before sending a continue or finish nudge" in text
     assert "resend the bare `/<skill> <args>` once" in text
     assert "fresh refusal following the retry" in text
     assert "A second refusal is a block; never record it as a failed pass." in text
+    assert "the recovery line joins the brief, never the slash-command line" in text
 
 
 @pytest.mark.parametrize("root", ROOTS)
@@ -67,8 +72,28 @@ def test_brief_templates_deliver_the_brief_separately(root: str, skill: str) -> 
     text = (REPO_ROOT / root / "skills" / skill / "SKILL.md").read_text()
     assert "herdr.md's Prompting gives" in text
     assert "then the bare" in text
-    for stale in ("First line: the `<kind>` skill", "Text: the skill line, then"):
+    for stale in (
+        "First line: the `<kind>` skill",
+        "Text: the skill line, then",
+        "addressed the way its engine expects, then:",
+        "prompt its `skill` with the issue, the `brief` to read first",
+    ):
         assert stale not in text
+
+
+@pytest.mark.parametrize("root", ROOTS)
+def test_secondary_brief_paths_use_the_brief_protocol(root: str) -> None:
+    hgrill = (REPO_ROOT / root / "skills/hgrill/SKILL.md").read_text()
+    assert "with this appended to the brief:" in hgrill
+
+    hreview = (REPO_ROOT / root / "skills/hreview/SKILL.md").read_text()
+    assert "(`<n>`, plus `silent` for a silent PR)" in hreview
+    assert "pass `silent` to the skill" not in hreview
+    assert "Send each prompt with `herdr agent prompt" in hreview
+    assert "Its brief carries one extra line naming the earlier blocked result" in hreview
+
+    horch = (REPO_ROOT / root / "skills/horch/SKILL.md").read_text()
+    assert "delivered through herdr.md's Prompting brief protocol, never on the slash-command line." in horch
 
 
 @pytest.mark.parametrize("root", ROOTS)
@@ -76,3 +101,6 @@ def test_promotion_resume_preserves_dry_run(root: str) -> None:
     text = (REPO_ROOT / root / "skills/hpromote/SKILL.md").read_text()
     blocks = text.split("## Blocks\n", 1)[1]
     assert "`run --dry-run` for a dry run" in blocks
+    assert "`merged` for Post-merge" in blocks
+    assert "`deployed` for Post-deploy" in blocks
+    assert "Supply the requested phase and context as the brief for that invocation" in blocks
