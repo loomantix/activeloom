@@ -725,6 +725,13 @@ def test_apply_plan_reads_the_configured_hold_label(
             apply_mod.load_hold_label(str(tmp_path))
 
 
+@pytest.mark.parametrize('hold', ['needs: owner-review', 'status: blocked', 'dev: agent'])
+def test_exclusion_keeps_configured_hold_during_hygiene(apply_mod: ModuleType, hold: str) -> None:
+    entry = _entry(add_labels=['agent-bail: spec-gap', 'needs: grill'])
+    _, remove = apply_mod.label_changes(entry, {hold, 'needs: other'}, (), hold)
+    assert remove == ['needs: other']
+
+
 HELD = ('agent: refined', 'agent-bail: sensitive-domain', 'agent-bail: grill-review')
 
 
@@ -755,6 +762,20 @@ def test_preview_prints_the_computed_hygiene_removals(
     for label in ('+dev: agent', '+agent: refined', '-agent-bail: spec-gap', '-needs: grill'):
         assert label in line
     assert 'grill-review' not in line
+    assert fake.writes() == []
+
+
+def test_closed_preview_shows_no_mutations(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ready = _entry(verdict='ready', add_labels=['dev: agent'], body='Spec.')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [ready]}, '--apply')
+    fake.issue.update(state='CLOSED', labels=[{'name': 'agent-bail: spec-gap'}])
+    assert apply_mod.main() == 0
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith('#7 '))
+    assert row.endswith('closed now; (no label change)')
+    assert 'skipped: already closed' in out
     assert fake.writes() == []
 
 
@@ -1282,6 +1303,20 @@ def test_handback_preserves_assignment_and_provisional_label(apply_mod: ModuleTy
     with pytest.raises(SystemExit):
         apply_mod.apply_entry(entry, _config(apply_mod))
     assert fake.verbs() == ['issue view', 'issue view']
+
+
+def test_provisional_handback_preserves_a_needs_prefixed_hold(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entry = _handback_entry('provisional')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]},
+                        '--apply', '--confirm-summary', '--confirm-handback')
+    hold = 'needs: owner-review'
+    (tmp_path / '.activeloom-herd.json').write_text(json.dumps({'grill': {'hold_label': hold}}))
+    fake.issue['labels'] = [{'name': hold}, {'name': 'needs: grill'}]
+    fake.issue['comments'] = [{'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}]
+    assert apply_mod.main() == 0
+    assert hold not in json.dumps(fake.writes())
 
 
 @pytest.mark.parametrize('auto,flags,allowed', [
@@ -2236,12 +2271,14 @@ def test_a_plan_never_names_the_hold_label(
 
 
 @pytest.mark.parametrize('held', [101, 102])
+@pytest.mark.parametrize('hold', ['agent-bail: grill-review', 'needs: owner-review'])
 def test_held_existing_handback_passes_preflight_and_keeps_the_hold(
-    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, held: int
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, held: int, hold: str
 ) -> None:
     """A held coordination parent or child restates its bail; guard() and apply leave the hold alone."""
     _, _, _, remote = _existing_child_setup(apply_mod, monkeypatch, tmp_path, bail_labels=[GRILL_BAILS[1]], carry=True)
-    remote.issues[held]['labels'].append({'name': 'agent-bail: grill-review'})
+    (tmp_path / '.activeloom-herd.json').write_text(json.dumps({'grill': {'hold_label': hold}}))
+    remote.issues[held]['labels'].append({'name': hold})
     before = {n: [x['name'] for x in i['labels']] for n, i in remote.issues.items()}
     assert apply_mod.main() == 0
     assert {n: [x['name'] for x in i['labels']] for n, i in remote.issues.items()} == before

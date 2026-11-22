@@ -138,6 +138,8 @@ def validate(
     if not isinstance(plan, dict) or not isinstance(plan.get("issues"), list):
         return ['The plan must be an object with an "issues" list.']
     errors: list[str] = []
+    if hold_label == REFINED:
+        errors.append(f"the hgrill hold must differ from {REFINED!r}; every assessment sets it")
     if REFINED not in repo_labels:
         errors.append(f"label {REFINED!r} does not exist in this repository; every entry adds it")
     seen: set[int] = set()
@@ -423,9 +425,10 @@ def label_changes(
     """
     add = list(dict.fromkeys([*entry.get("add_labels", []), REFINED]))
     remove = set(entry.get("remove_labels", []))
-    swept = {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX)) and x != hold_label}
+    assessment_labels = current - {hold_label}
+    swept = {x for x in assessment_labels if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))}
     # An existing priority stands: never stack a second one on it.
-    if (current - remove) & set(priority_labels):
+    if (assessment_labels - remove) & set(priority_labels):
         add = [x for x in add if x not in priority_labels or x in current]
     if entry["verdict"] == "ready":
         remove |= swept | {BLOCKED}
@@ -441,8 +444,8 @@ def label_changes(
         remove |= swept
     if any(x.startswith(NEEDS_PREFIX) for x in add):
         remove |= {x for x in current if x.startswith(NEEDS_PREFIX)}
-    to_add = [x for x in add if x not in current]
-    to_remove = sorted((remove & current) - set(add))
+    to_add = [x for x in add if x not in current and x != hold_label]
+    to_remove = sorted((remove & assessment_labels) - set(add))
     return to_add, to_remove
 
 
@@ -554,7 +557,7 @@ def load_child_recovery(path: str, plan: dict[str, Any]) -> dict[str, Any] | Non
     return state
 
 
-def check_handback(entry: dict[str, Any], issue: dict[str, Any]) -> None:
+def check_handback(entry: dict[str, Any], issue: dict[str, Any], hold_label: str = DEFAULT_HOLD_LABEL) -> None:
     """A draft can be previewed; application needs the recorded, confirmed decision."""
     if not entry.get('decision_comment') and not entry.get('children'):
         return
@@ -573,7 +576,8 @@ def check_handback(entry: dict[str, Any], issue: dict[str, Any]) -> None:
             or not decision_is_newer(comments, record[0], decision['kind'])
         ):
             fail(f"#{entry['number']}: post a current confirmed decision before applying")
-        current = {x['name'] for x in issue.get('labels', []) if x['name'].startswith(NEEDS_PREFIX)}
+        current = {x['name'] for x in issue.get('labels', [])
+                   if x['name'] != hold_label and x['name'].startswith(NEEDS_PREFIX)}
         if decision and decision['outcome'] == 'provisional' and current and current != {f"needs: {decision['kind']}"}:
             fail(f"#{entry['number']}: provisional handback must preserve the current needs: label")
 
@@ -590,9 +594,9 @@ def read_json_object(path: str) -> dict[str, Any]:
     return value
 
 
-def check_coordination_decision(entry: dict[str, Any], issue: dict[str, Any]) -> None:
+def check_coordination_decision(entry: dict[str, Any], issue: dict[str, Any], hold_label: str) -> None:
     """A settled coordination record must supersede both interview frontiers."""
-    check_handback(entry, issue)
+    check_handback(entry, issue, hold_label)
     comments = issue.get('comments', [])
     text = entry['decision_comment']
     decision = parse_decision(text)
@@ -703,10 +707,9 @@ class ExistingHandback:
             fail('Existing handback repository identity changed')
         for number, entry in self.entries.items():
             issue = json.loads(gh(['issue', 'view', str(number), '--json', 'state,labels,comments,assignees,body']))
-            labels = {x['name'] for x in issue.get('labels', [])}
-            hold = self.config.hold_label
-            bails = {x for x in labels if x.startswith(BAIL_PREFIX) and x != hold}
-            expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX) and x != hold}
+            labels = {x['name'] for x in issue.get('labels', [])} - {self.config.hold_label}
+            bails = {x for x in labels if x.startswith(BAIL_PREFIX)}
+            expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX)}
             needs = {x for x in labels if x.startswith(NEEDS_PREFIX)}
             is_ready = entry['verdict'] == 'ready'
             if (issue.get('state') != 'OPEN' or issue.get('assignees') or bails != expected
@@ -728,7 +731,7 @@ class ExistingHandback:
                 if number in self.state['started']:
                     checked['comments'] = [c for c in issue.get('comments', [])
                                            if c.get('body', '').strip() != entry['comment'].strip()]
-                check_coordination_decision(entry, checked)
+                check_coordination_decision(entry, checked, self.config.hold_label)
                 pages = json.loads(gh(['api', f'repos/{{owner}}/{{repo}}/issues/{number}/sub_issues', '--paginate', '--slurp']))
                 if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
                     fail(f'#{number}: incomplete native child inventory')
@@ -854,7 +857,7 @@ def apply_entry(
             fail(f"#{number}: required handback work cannot be applied to a closed issue")
         return "skipped: already closed"
     if not bound:
-        check_handback(entry, issue)
+        check_handback(entry, issue, config.hold_label)
     if entry['verdict'] == 'dont-build' and not close_confirmed:
         fail(f"#{number}: closing a dont-build decision requires explicit confirmation")
     if entry.get('decision_comment') and entry['verdict'] == 'stale' and not close_confirmed:
@@ -927,7 +930,9 @@ def preview(
     """Print what apply does: each issue's computed label changes, hygiene included."""
     print(f"{'#':<7}{'verdict':<14}notes; labels")
     for entry in plan["issues"]:
-        if entry["number"] in current:
+        if entry["number"] in closed:
+            labels = "(no label change)"
+        elif entry["number"] in current:
             add, remove = label_changes(entry, current[entry["number"]], config.priority_labels, config.hold_label)
             labels = " ".join([*(f"+{x}" for x in add), *(f"-{x}" for x in remove)]) or "(no label change)"
         else:
@@ -947,7 +952,7 @@ def preview(
         if entry["number"] in done:
             notes.append("already applied")
         if entry["number"] in closed:
-            notes.append("closed now")
+            notes = ["closed now"]
         print(f"#{entry['number']:<6}{entry['verdict']:<14}{', '.join(notes) or '-'}; {labels}")
         if entry.get('decision_comment') or entry.get('children') or entry.get('handback_parent'):
             print(json.dumps(entry, indent=2))
@@ -1049,7 +1054,7 @@ def main() -> int:
                 fail(f"#{entry['number']}: child creation requires --confirm-split {entry['number']}")
             if entry.get('decision_comment') or entry.get('children'):
                 issue = json.loads(gh(['issue', 'view', str(entry['number']), '--json', 'state,labels,comments,assignees']))
-                check_handback(entry, issue)
+                check_handback(entry, issue, config.hold_label)
         recovery_file = child_recovery_path(args.plan)
         child_recovery = load_child_recovery(recovery_file, plan)
         existing_handback = ExistingHandback(plan, args.plan, args.existing_child_plan, config, done) if bound else None
