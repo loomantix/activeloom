@@ -28,11 +28,12 @@ def _herd_sources() -> list[Path]:
         base = REPO_ROOT / root
         paths.append(base / "references/herdr.md")
         paths.extend(base / "skills" / s / "SKILL.md" for s in HERD_SKILLS)
-    return [p for p in paths if p.exists()]
+    return paths
 
 
 def _engines_row(text: str, engine: str) -> list[str]:
-    row = next(line for line in text.splitlines() if line.startswith(f"| `{engine}`"))
+    section = text.split("## Engines\n", 1)[1].split("\n## ", 1)[0]
+    row = next(line for line in section.splitlines() if line.startswith(f"| `{engine}`"))
     return [cell.strip() for cell in row.strip("|").split("|")]
 
 
