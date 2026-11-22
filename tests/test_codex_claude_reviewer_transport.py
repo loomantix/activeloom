@@ -38,9 +38,17 @@ def test_codex_boundary_permits_herd_interactive_claude_panes() -> None:
     assert "Never hand-compose" in boundary
 
 
-def test_codex_boundary_keeps_launcher_outside_herd_chains() -> None:
+def test_codex_boundary_preserves_agent_loop_hook_settings() -> None:
     boundary = _boundary()
-    assert "Outside a herd chain" in boundary
-    assert re.search(r"Outside a herd chain,[^.]*uses `run-claude-review\.sh` only", boundary)
-    # The unconditional rule that would forbid hreview's interactive pane is gone.
-    assert "Interactive review and every non-agent-loop caller continue to use" not in boundary
+    assert (
+        "`.codex/skills/agent-loop/scripts/run-codex-review.sh`, which starts Claude "
+        "with the run's pinned model and effort"
+    ) in boundary
+
+
+def test_codex_boundary_keeps_launcher_outside_both_exceptions() -> None:
+    boundary = _boundary()
+    assert boundary.endswith(
+        "Outside the contract-v4 `agent-loop` hook and the herd-launched interactive "
+        "reviewer pane, use `run-claude-review.sh` for every Claude review."
+    )

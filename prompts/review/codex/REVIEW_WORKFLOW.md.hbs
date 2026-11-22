@@ -110,8 +110,8 @@ are rejected.
 There are exactly two exceptions. First, the contract-v4 `agent-loop`: its
 wrapper directly invokes the separately tested
 `.codex/skills/agent-loop/scripts/run-codex-review.sh`, which starts Claude with
-its own literal `--effort low` and the same permission, persistence, and output policy against an
-immutable base-blob `.claude` snapshot.
+the run's pinned model and effort against an immutable base-blob `.claude`
+snapshot. The hook owns its permission, persistence, and output options.
 
 Second, a herd chain's interactive Claude reviewer pane. When a herd skill such
 as `hreview` starts a Claude reviewer as an interactive session in a herdr pane
@@ -121,8 +121,8 @@ permission argv only from `herd-config.py user-args`, passed through unchanged.
 Never hand-compose, add to, or override those arguments; a missing or failing
 helper is a blocker.
 
-Outside a herd chain, every Codex session that runs a Claude review,
-interactive or not, uses `run-claude-review.sh` only.
+Outside the contract-v4 `agent-loop` hook and the herd-launched interactive
+reviewer pane, use `run-claude-review.sh` for every Claude review.
 
 ### Select the local session mode
 
