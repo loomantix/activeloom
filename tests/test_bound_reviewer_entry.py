@@ -175,11 +175,17 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     if not legacy and not silent:
         # A resumed run follows a target that advances along the pinned policy, never a rewritten one.
         identity = ("-c", "user.name=Test", "-c", "user.email=test@example.org")
-        tree = git(candidate, "rev-parse", f"{base}^{{tree}}")
-        advanced = git(candidate, *identity, "commit-tree", tree, "-p", base, "-m", "target advanced")
-        rewritten = git(candidate, *identity, "commit-tree", tree, "-m", "target rewritten")
+        tree_oid = git(candidate, "rev-parse", f"{base}^{{tree}}")
+        remote = tmp_path / "origin.git"
+        git(candidate, "clone", "--bare", "--no-local", str(candidate), str(remote))
+        git(candidate, "remote", "add", "origin", str(remote))
+        advanced = git(remote, *identity, "commit-tree", tree_oid, "-p", base, "-m", "target advanced")
+        git(remote, "update-ref", "refs/heads/release", advanced)
+        rewritten = git(candidate, *identity, "commit-tree", tree_oid, "-m", "target rewritten")
         env["TEST_BASE"] = advanced
+        assert subprocess.run(["git", "cat-file", "-e", advanced], cwd=candidate).returncode != 0
         invoke("context", "--receipt", context["receipt"])
+        assert git(candidate, "cat-file", "-t", advanced) == "commit"
         env["TEST_BASE"] = rewritten
         refused = invoke("context", "--receipt", context["receipt"], check=False)
         assert refused.returncode and "no longer descends" in refused.stderr
@@ -203,9 +209,20 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     assert not git(policy, "status", "--porcelain", "--ignored")
 
     if legacy and not silent:
+        # A generic overview cannot satisfy the preflight the reviewer will run.
+        cli = tools / LEDGER
+        cli.rename(cli.with_name("original.js"))
+        cli.write_text("if (process.argv.slice(2).join(' ') === 'silent-status --help') "
+                       "process.argv.splice(2, 2, '--help');\nawait import('./original.js');\n")
+        digest = base64.b64encode(hashlib.sha512(cli.read_bytes()).digest()).decode()
+        cli.with_suffix(".integrity").write_text("sha512-" + digest)
+        revision_index = args.index(revision)
+        args[revision_index] = commit(tools, "generic subcommand help")
+        generic = invoke("check", check=False)
+        assert generic.returncode and "command-specific synopsis" in generic.stderr and not generic.stdout
         # A self-consistent but incapable controller must stop even if the candidate matches it.
         legacy_ledger(tools)
-        args[args.index(revision)] = commit(tools, "unsupported transport")
+        args[revision_index] = commit(tools, "unsupported transport")
         refused = invoke("check", check=False)
         assert refused.returncode and ("unknown command" in refused.stderr or "missing commands" in refused.stderr)
 

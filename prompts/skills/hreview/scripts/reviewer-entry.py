@@ -85,6 +85,8 @@ def check_transport(root: Path, ledger: Path) -> Path:
                  "preflight-fix write-result validate-result export-threads attest verify-coverage".split())
     if needed - commands:
         raise ValueError(f"incompatible review transport; missing commands: {sorted(needed - commands)}")
+    if not run("node", ledger, "silent-status", "--help").startswith("usage: review-ledger silent-status --repo "):
+        raise ValueError("incompatible review transport; silent-status --help lacks the command-specific synopsis")
     for command, flag in (("start-run", "--restart-approval-id"), ("authorize-pass", "--run-id"),
                           ("authorize-fix", "--run-id"), ("next-pass", "--head"), ("run-state", "--repo"),
                           ("user-handoff", "--bound-entry-file")):
