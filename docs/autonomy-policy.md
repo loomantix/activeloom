@@ -56,6 +56,14 @@ not guess:
   launch-blocked, with reason `sudoers drop-in unverifiable`. Automatic
   authority stays disabled on such hosts until the drop-in can be verified.
 
+On Ubuntu 26.04, a root-owned `0751` `/etc/sudoers.d` lets an unprivileged
+reader look up the known drop-in by name. When sudo-rs requires a captured
+permission proof, the reader must also list the directory to detect newly
+added rules. If the invoking user lacks directory read access, `install` and
+`set` warn and skip proof capture. The policy report identifies the unreadable
+directory and keeps automatic authority disabled. Repeating `set` with the
+same permissions cannot enable full autonomy.
+
 Each file is replaced atomically and synced. The installer checks the staged
 sudoers fragment and the complete sudoers configuration with `visudo -c`, including
 evidence that the fragment was included, before activating the initial policy.
