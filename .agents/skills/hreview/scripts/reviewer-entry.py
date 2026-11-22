@@ -228,11 +228,20 @@ def entry(args: argparse.Namespace) -> None:
         # Preserve any additional consumer policy in a customized base section.
         governing = governing.replace(guard, "")
 
+    governing = governing.replace(
+        "../../references/local-review-ledger.md",
+        str(root / "references/local-review-ledger.md"),
+    )
+
     def qualify(match: re.Match[str]) -> str:
         path = match.group()
         if path.endswith("/review-ledger.js") and re.match(r"\s*(?:\\\s*)?classify-changeset\b", governing[match.end():]):
             return str(classifier)
-        transport = path.startswith(root.name + "/skills/critique/scripts/") or path.startswith(root.name + "/skills/review-setup/scripts/")
+        transport = (
+            path.startswith(root.name + "/skills/critique/scripts/")
+            or path.startswith(root.name + "/skills/review-setup/scripts/")
+            or path == root.name + "/references/local-review-ledger.md"
+        )
         return str(tools if transport else policy) + "/" + path
 
     print(re.sub(r"(?<![\w/])\.(?:agents|claude|codex|review)/[\w./-]+", qualify, governing))

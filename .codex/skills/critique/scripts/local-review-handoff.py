@@ -1884,8 +1884,12 @@ def _user_handoff(args: argparse.Namespace) -> None:
         "findings inline before edits; validate, commit, push, reply and resolve; "
         "publish the normal review result."
         + (
-            " This PR is silent: pass `silent` to the skill and keep the ledger "
-            "local per the protocol's Silent mode."
+            (
+                " This PR is silent: pass `silent` to the skill and keep the ledger "
+                "local per the protocol's Silent mode."
+                if args.bound_entry_file is None
+                else " This PR is silent: keep the ledger local per the protocol's Silent mode."
+            )
             if silent else ""
         )
         + (f" {context}" if context else "")

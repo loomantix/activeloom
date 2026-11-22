@@ -183,12 +183,15 @@ def test_bound_handoff_supplies_only_the_assigned_entry_instructions(
     capsys: pytest.CaptureFixture[str], tmp_path: Path,
 ) -> None:
     wire(controller, monkeypatch, [], record=run_record("lean", ["codex", "claude"]))
+    monkeypatch.setattr(controller, "SILENT_SCOPE", ("example/repo", 7))
     entry_file = tmp_path / "entry"
     entry = "\n".join(f"python3 -IB /tools/entry.py enter --skill {s}" for s in ("refactorpass", "critique"))
     entry_file.write_text(entry)
     block = render(controller, capsys, args(tmp_path, bound_entry_file=str(entry_file)))
     assert entry in block and block.index(entry) < block.index("Review pass for")
     assert ".codex/skills" not in block
+    assert "pass `silent` to the skill" not in block
+    assert "This PR is silent: keep the ledger local per the protocol's Silent mode." in block
     assert f"run {RUN_ID}, round 1, pinned base {BASE}, exact head {HEAD}" in block
 
 

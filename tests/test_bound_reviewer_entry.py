@@ -154,6 +154,8 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     assert "Synthetic base-only gate" in prompt and "Synthetic candidate-only gate" not in prompt
     helper = re.search(r"^node (\S+) --version$", prompt, re.M)
     assert helper and helper[1] == str(tools / LEDGER)
+    assert str(tools / ".agents/references/local-review-ledger.md") in prompt
+    assert str(policy / ".agents/references/local-review-ledger.md") not in prompt
     body = tmp_path / "body"
     body.write_text(f"<!-- local-review-tier:v1 head={head} -->\nSynthetic review tier.\n")
     posted = json.loads(subprocess.check_output(
@@ -183,8 +185,8 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
         assert refused.returncode and "no longer descends" in refused.stderr
         env["TEST_BASE"] = base
         # The run keeps an earlier base on the policy lineage after the branch merges its target.
-        kept = invoke(*enter[:5], "--base", revision, *enter[7:], check=False)
-        assert "review-range base differs" not in kept.stderr
+        kept = json.loads(invoke("check", "--base", revision).stdout)
+        assert kept["merge_base"] == revision
         unrelated = invoke(*enter[:5], "--base", rewritten, *enter[7:], check=False)
         assert unrelated.returncode and "review-range base differs" in unrelated.stderr
     env["TEST_ACTOR"] = "different-reviewer"
