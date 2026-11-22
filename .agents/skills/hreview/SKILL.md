@@ -168,10 +168,10 @@ One tab: this herder pane, plus one row per PR and one pane per engine in the or
 
 Repeat until the PR reaches an end state.
 
-1. Run `context <binding> --receipt <saved receipt>` at the fresh exact head before opening the round. A mismatch blocks. `head=$(gh pr view <n> --json headRefOid -q .headRefOid)`; `python3 -IB $H next-pass --repo $repo --pr <n> --head $head`.
+1. `head=$(gh pr view <n> --json headRefOid -q .headRefOid)`; `python3 -IB $H next-pass --repo $repo --pr <n> --head $head`.
    - `status: converged` → **Converged**.
    - `status: exhausted` → **Exhausted**.
-   - `status: next` → take `engine` and `round`. If that engine's launch placement is `user`, follow [User pass](#user-pass) for this pass instead of steps 2–5.
+   - `status: next` → take `engine` and `round`, then run `python3 -IB "$E" context <binding> --receipt <saved receipt>` at the fresh `$head` for `engine` before opening the round (a mismatch blocks). If that engine's launch placement is `user`, follow [User pass](#user-pass) for this pass instead of steps 2–5.
    - A non-zero exit is a block, with the controller's message.
 2. **Start a fresh session** in the engine's pane, named `pr<n>-<engine>`, with the profile's model and effort and the user's `user-args` for that engine (herdr.md, Starting a session). End any earlier session in the pane first.
 3. **Prompt.**

@@ -98,8 +98,22 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     if legacy:
         legacy_ledger(policy)
     skill = HARNESS / "skills/deepcritique/SKILL.md"
-    with (policy / skill).open("a") as out:
-        out.write("\nSynthetic base-only gate.\n")
+    if legacy:
+        text = (policy / skill).read_text().replace(
+            "## Reviewer environment preflight — hard stop\n",
+            "## Reviewer environment preflight — hard stop\n\n"
+            "Synthetic custom base preflight note referencing [ledger](../../references/local-review-ledger.md).\n",
+            1,
+        )
+        (policy / skill).write_text(
+            text + "\nSynthetic base-only gate.\n"
+            "Check .review/addendum.local.md.\n"
+            "node .agents/skills/critique/scripts/review-ledger.js classify-changeset --base A --head B\n"
+            "node .agents/skills/critique/scripts/review-ledger.js \\\n  classify-changeset --base A --head B\n"
+        )
+    else:
+        with (policy / skill).open("a") as out:
+            out.write("\nSynthetic base-only gate.\n")
     base = commit(policy, "trusted target policy")
     git(tools, "worktree", "add", "--detach", str(candidate), base)
     (candidate / skill).write_text("Synthetic candidate-only gate.\n")
@@ -161,6 +175,16 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     for transport in ("review-setup/scripts/review-profile.py", "critique/scripts/local-review-handoff.py"):
         assert str(tools / ".agents/skills" / transport) in prompt
         assert str(policy / ".agents/skills" / transport) not in prompt
+    if legacy:
+        assert "Synthetic custom base preflight note" in prompt
+        assert "../../references/local-review-ledger.md" not in prompt
+        assert f"[ledger]({tools / '.agents/references/local-review-ledger.md'})" in prompt
+        assert f"Check {policy / '.review/addendum.local.md'}." in prompt
+        assert str(tools / ".review/addendum.local.md") not in prompt
+        assert f"node {policy / LEDGER} classify-changeset --base A --head B" in prompt
+        assert f"node {policy / LEDGER} \\\n  classify-changeset --base A --head B" in prompt
+        assert f"node {tools / LEDGER} classify-changeset" not in prompt
+        assert f"node {tools / LEDGER} \\\n  classify-changeset" not in prompt
     body = tmp_path / "body"
     body.write_text(f"<!-- local-review-tier:v1 head={head} -->\nSynthetic review tier.\n")
     posted = json.loads(subprocess.check_output(
@@ -176,7 +200,24 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
         redirected = invoke(*enter, check=False)
         assert redirected.returncode and not redirected.stdout
         assert not (tmp_path / "different-store").exists()
+        env["ACTIVELOOM_SILENT_ROOT"] = "relative-store"
+        relative = invoke(*enter, check=False)
+        assert relative.returncode and not relative.stdout and "must be absolute" in relative.stderr
         env["ACTIVELOOM_SILENT_ROOT"] = original
+        pin_file = tmp_path / "state/sample-project-3/silent/mode.json"
+        saved_pin = pin_file.read_bytes()
+        pin_file.unlink()
+        lost_pin = invoke(*enter, check=False)
+        assert lost_pin.returncode and not lost_pin.stdout and "evidence routing inputs changed" in lost_pin.stderr
+        assert not (tmp_path / "public").exists()
+        pin_file.write_bytes(saved_pin)
+        profile_file = tmp_path / "profile"
+        saved_profile = profile_file.read_text()
+        profile_file.write_text("{}")
+        downgraded = invoke(*enter, check=False)
+        assert downgraded.returncode and not downgraded.stdout and "evidence routing inputs changed" in downgraded.stderr
+        assert not (tmp_path / "public").exists()
+        profile_file.write_text(saved_profile)
     if not legacy and not silent:
         # A resumed run follows a target that advances along the pinned policy, never a rewritten one.
         identity = ("-c", "user.name=Test", "-c", "user.email=test@example.org")
