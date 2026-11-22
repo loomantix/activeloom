@@ -74,7 +74,8 @@ def check_transport(root: Path, ledger: Path) -> Path:
     if needed - commands:
         raise ValueError(f"incompatible review transport; missing commands: {sorted(needed - commands)}")
     for command, flag in (("start-run", "--restart-approval-id"), ("authorize-pass", "--run-id"),
-                          ("authorize-fix", "--run-id"), ("next-pass", "--head"), ("run-state", "--repo")):
+                          ("authorize-fix", "--run-id"), ("next-pass", "--head"), ("run-state", "--repo"),
+                          ("user-handoff", "--bound-entry-file")):
         if flag not in run(sys.executable, "-IB", controller, command, "--help"):
             raise ValueError(f"controller lacks {command} {flag}")
     for skill in SKILLS:
@@ -158,10 +159,12 @@ def entry(args: argparse.Namespace) -> None:
         raise ValueError("base classifier did not return a review decision")
     binding = dict(policy_root=str(base), classifier=str(classifier), classification=decision,
                    merge_base=merge_base, ledger=str(ledger), controller=str(controller))
+    actor = run("gh", "api", "user", "--jq", ".login")
+    if not actor or os.environ.get("AGENT_LOOP_REVIEW_ACTOR", actor) != actor:
+        raise ValueError("authenticated actor is missing or differs from the review actor")
     if args.action == "check" and not args.receipt:
         print(json.dumps(binding))
         return
-    actor = run("gh", "api", "user", "--jq", ".login")
     context = [args.repo.lower(), args.pr, str(Path.cwd()), branch, args.policy_revision,
                args.tool_revision, actor, digest, hashlib.sha256(controller.read_bytes()).hexdigest()]
     def scope_digest() -> str:
@@ -170,10 +173,8 @@ def entry(args: argparse.Namespace) -> None:
     if args.receipt and args.receipt.partition(".")[0] != scope_digest():
         raise ValueError("policy, transport, actor or evidence routing inputs changed")
     status = json.loads(run("node", ledger, "silent-status", "--repo", args.repo, "--pr", str(args.pr)))
-    if os.environ.get("AGENT_LOOP_REVIEW_ACTOR", actor) != actor:
-        raise ValueError("authenticated actor differs from the review actor")
-    if not actor or type(status.get("silent")) is not bool:
-        raise ValueError("actor or evidence destination unavailable")
+    if type(status.get("silent")) is not bool:
+        raise ValueError("evidence destination unavailable")
     if status["silent"] and (not status.get("scratchpad") or status.get("pin", {}).get("actor") != actor):
         raise ValueError("silent evidence location or pin owner differs from the current actor")
     receipt = scope_digest() + "." + fingerprint(status)

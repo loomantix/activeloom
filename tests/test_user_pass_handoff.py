@@ -88,6 +88,7 @@ def args(path: Path, **fields: Any) -> SimpleNamespace:
         "launch_arg": None,
         "env": None,
         "context_file": None,
+        "bound_entry_file": None,
     }
     values.update(fields)
     return SimpleNamespace(**values)
@@ -175,6 +176,20 @@ def test_lean_first_pass_names_refactorpass_and_inherit_omits_the_model(
     assert launch_line(block)[3:] == ["codex", "-c", 'model_reasoning_effort="medium"']
     assert "Use .codex/skills/refactorpass/SKILL.md for 7" in block
     assert "Use .codex/skills/critique/SKILL.md for 7" in block
+
+
+def test_bound_handoff_supplies_only_the_assigned_entry_instructions(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    wire(controller, monkeypatch, [], record=run_record("lean", ["codex", "claude"]))
+    entry_file = tmp_path / "entry"
+    entry = "\n".join(f"python3 -IB /tools/entry.py enter --skill {s}" for s in ("refactorpass", "critique"))
+    entry_file.write_text(entry)
+    block = render(controller, capsys, args(tmp_path, bound_entry_file=str(entry_file)))
+    assert entry in block and block.index(entry) < block.index("Review pass for")
+    assert ".codex/skills" not in block
+    assert f"run {RUN_ID}, round 1, pinned base {BASE}, exact head {HEAD}" in block
 
 
 def test_pane_env_entries_reach_the_launch_line(

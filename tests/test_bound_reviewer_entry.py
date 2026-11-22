@@ -130,6 +130,13 @@ def test_bound_pass(tmp_path: Path, legacy: bool, silent: bool) -> None:
     assert bool(checked["classification"].get("legacyPolicy")) == legacy
     assert not (tmp_path / "state").exists()
     assert not (tmp_path / "public").exists()
+    if silent:
+        env["AGENT_LOOP_REVIEW_ACTOR"] = "other-reviewer"
+        for action in ("check", "context"):
+            mismatch = invoke(action, check=False)
+            assert mismatch.returncode and "actor" in mismatch.stderr
+            assert not (tmp_path / "state").exists()
+        del env["AGENT_LOOP_REVIEW_ACTOR"]
     context = json.loads(invoke("context").stdout)
     assert context["silent"] is silent
     authorization = tmp_path / "authorization"
