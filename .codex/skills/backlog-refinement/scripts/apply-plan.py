@@ -31,7 +31,11 @@ Plan shape::
 
 `agent: refined` is always added. Label hygiene follows the core rubric: a
 ready issue loses any `agent-bail:`/`needs:`/`status: blocked` left from an
-earlier assessment, and an excluded or stale one loses `dev: agent`. A stale
+earlier assessment, and an excluded or stale one loses `dev: agent`. hgrill's
+hold label (`grill.hold_label` in `.activeloom-herd.json`, default
+`agent-bail: grill-review`) is the owner's sign-off: a plan never names it,
+it never counts as a bail, and hygiene never removes it. The preview prints
+each issue's computed label changes, hygiene included. A stale
 issue is closed when the local rubric sets `stale-action: close` (the default)
 and the entry is validated: `validated: true` with non-empty `evidence`, set by
 the orchestrator after re-running that evidence against the integration
@@ -60,6 +64,7 @@ from typing import Any, Iterator, NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rubric import (  # noqa: E402
+    DEFAULT_HOLD_LABEL,
     RubricConfig,
     comment_time,
     decision_is_newer,
@@ -87,6 +92,7 @@ GRILL_CLASS_BAILS = frozenset({
 VERDICTS = ("ready", "exclude", "refined-only", "stale", "dont-build")
 CLOSE_REASONS = ("completed", "not planned")
 TIMEOUT = 60
+HERD_FILE = ".activeloom-herd.json"
 
 
 def fail(message: str) -> NoReturn:
@@ -120,8 +126,15 @@ def refinement_label(label: str, priority_labels: tuple[str, ...]) -> bool:
     )
 
 
-def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...]) -> list[str]:
-    """Every problem with the plan; empty means it is safe to apply."""
+def validate(
+    plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...],
+    *, hold_label: str = DEFAULT_HOLD_LABEL, current: dict[int, set[str]] | None = None,
+) -> list[str]:
+    """Every problem with the plan; empty means it is safe to apply.
+
+    ``current`` maps issue numbers to their labels now, so a refusal can name
+    the exclusion an issue already carries.
+    """
     if not isinstance(plan, dict) or not isinstance(plan.get("issues"), list):
         return ['The plan must be an object with an "issues" list.']
     errors: list[str] = []
@@ -158,6 +171,9 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
                 errors.append(f"{where}: label {label!r} is not one refinement sets")
         if set(add) & set(remove):
             errors.append(f"{where}: a label is both added and removed")
+        if hold_label in [*add, *remove]:
+            errors.append(f"{where}: {hold_label!r} is the hgrill hold; only the owner's sign-off removes it, "
+                          "so leave it out of add_labels and remove_labels")
         comment = entry.get("comment")
         body = entry.get("body")
         carried = entry.get("handback_parent") is not None and body is None and comment is None
@@ -181,8 +197,11 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
                 errors.append(f"{where}: validated is only for a stale verdict")
             if not isinstance(evidence, list) or not any(isinstance(x, str) and x.strip() for x in evidence):
                 errors.append(f"{where}: a validated stale entry needs non-empty evidence")
-        bails = [x for x in add if x.startswith(BAIL_PREFIX)]
+        bails = [x for x in add if x.startswith(BAIL_PREFIX) and x != hold_label]
         needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
+        carried = sorted(x for x in (current or {}).get(number, set())
+                         if x.startswith(BAIL_PREFIX) and x not in (hold_label, STALE))
+        omitted = verdict == "exclude" and not bails and bool(carried)
         if sum(x in priority_labels for x in add) > 1:
             errors.append(f"{where}: more than one priority label")
         if len(needs) > 1:
@@ -196,7 +215,14 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
                 errors.append(f"{where}: ready needs the rewritten body")
         elif READY in add:
             errors.append(f"{where}: only a ready verdict adds {READY!r}")
-        if verdict == "exclude" and (len(bails) != 1 or STALE in bails):
+        if omitted:
+            held = hold_label in (current or {}).get(number, set())
+            errors.append(
+                f"{where}: exclude restates no agent-bail: label, but the issue carries "
+                f"{', '.join(map(repr, carried))}; restate the exclusion it keeps in add_labels"
+                + (f" (the hold {hold_label!r} stays on and is left out)" if held else "")
+            )
+        elif verdict == "exclude" and (len(bails) != 1 or STALE in bails):
             errors.append(f"{where}: exclude takes exactly one agent-bail: label other than stale")
         if verdict == "stale" and bails != [STALE]:
             errors.append(f"{where}: stale takes {STALE!r} and no other bail")
@@ -204,7 +230,7 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
             errors.append(f"{where}: refined-only carries no agent-bail: or needs: label")
         if needs and not bails:
             errors.append(f"{where}: a needs: label only accompanies an agent-bail: label")
-        errors.extend(validate_handback(entry, repo_labels, priority_labels))
+        errors.extend(validate_handback(entry, repo_labels, priority_labels, hold_label, omitted=omitted))
     return errors if errors else validate_existing_children(plan)
 
 
@@ -291,8 +317,15 @@ def validate_child_carry(entry: dict[str, Any], expected: list[str], needs: list
     return []
 
 
-def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple[str, ...]) -> list[str]:
-    """Keep each decision outcome consistent with its proposed assessment."""
+def validate_handback(
+    entry: dict[str, Any], labels: set[str], priorities: tuple[str, ...],
+    hold_label: str = DEFAULT_HOLD_LABEL, *, omitted: bool = False,
+) -> list[str]:
+    """Keep each decision outcome consistent with its proposed assessment.
+
+    ``omitted``: the caller already refused an exclusion that drops the
+    issue's carried bail, so the outcome check does not restate that cause.
+    """
     where = f"#{entry['number']}"
     errors = []
     text = entry.get("decision_comment")
@@ -300,7 +333,7 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
     if text is not None and decision is None:
         errors.append(f"{where}: decision_comment must end with a valid grill-decision marker")
     add = entry.get("add_labels", [])
-    bails = [x for x in add if x.startswith(BAIL_PREFIX)]
+    bails = [x for x in add if x.startswith(BAIL_PREFIX) and x != hold_label]
     needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
     verdict = entry["verdict"]
     children = entry.get("children", [])
@@ -315,7 +348,7 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
             errors.append(f"{where}: settled must continue to refine, grill or product-grill")
         if outcome == 'settled' and next_step == 'refine' and needs:
             errors.append(f"{where}: settled with next: refine removes the resolved needs: label")
-        if outcome == 'settled' and next_step == 'refine' and not (
+        if outcome == 'settled' and next_step == 'refine' and not omitted and not (
             verdict in ('ready', 'stale')
             or (verdict == 'exclude' and len(bails) == 1 and bails[0] not in GRILL_CLASS_BAILS)
             or bool(entry.get('existing_children'))
@@ -375,31 +408,37 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
                 if '<!-- refinement-child' in str(assessment.get('body', '')):
                     errors.append(f"{where}: child assessment must not supply a recovery marker")
                 errors.extend(f"{where} child: {e}" for e in validate(
-                    {'issues': [{'number': 1, **assessment}]}, labels, priorities))
+                    {'issues': [{'number': 1, **assessment}]}, labels, priorities, hold_label=hold_label))
     return errors
 
 
 def label_changes(
-    entry: dict[str, Any], current: set[str], priority_labels: tuple[str, ...] = ()
+    entry: dict[str, Any], current: set[str], priority_labels: tuple[str, ...] = (),
+    hold_label: str = DEFAULT_HOLD_LABEL,
 ) -> tuple[list[str], list[str]]:
-    """Labels to add and remove, including the rubric's hygiene rules."""
+    """Labels to add and remove, including the rubric's hygiene rules.
+
+    The hold label shares the bail prefix but is the owner's sign-off, so no
+    sweep below removes it.
+    """
     add = list(dict.fromkeys([*entry.get("add_labels", []), REFINED]))
     remove = set(entry.get("remove_labels", []))
+    swept = {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX)) and x != hold_label}
     # An existing priority stands: never stack a second one on it.
     if (current - remove) & set(priority_labels):
         add = [x for x in add if x not in priority_labels or x in current]
     if entry["verdict"] == "ready":
-        remove |= {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))} | {BLOCKED}
+        remove |= swept | {BLOCKED}
     else:
         remove.add(READY)
     if entry["verdict"] in ("stale", "dont-build"):
         remove.add(BLOCKED)
     if entry["verdict"] == "dont-build":
-        remove |= {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))}
+        remove |= swept
     # Replace an earlier assessment's bail/needs rather than stacking a second;
     # a needs: label only ever accompanies the bail it was set with.
-    if any(x.startswith(BAIL_PREFIX) for x in add):
-        remove |= {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))}
+    if any(x.startswith(BAIL_PREFIX) and x != hold_label for x in add):
+        remove |= swept
     if any(x.startswith(NEEDS_PREFIX) for x in add):
         remove |= {x for x in current if x.startswith(NEEDS_PREFIX)}
     to_add = [x for x in add if x not in current]
@@ -665,8 +704,9 @@ class ExistingHandback:
         for number, entry in self.entries.items():
             issue = json.loads(gh(['issue', 'view', str(number), '--json', 'state,labels,comments,assignees,body']))
             labels = {x['name'] for x in issue.get('labels', [])}
-            bails = {x for x in labels if x.startswith(BAIL_PREFIX)}
-            expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX)}
+            hold = self.config.hold_label
+            bails = {x for x in labels if x.startswith(BAIL_PREFIX) and x != hold}
+            expected = {x for x in entry['add_labels'] if x.startswith(BAIL_PREFIX) and x != hold}
             needs = {x for x in labels if x.startswith(NEEDS_PREFIX)}
             is_ready = entry['verdict'] == 'ready'
             if (issue.get('state') != 'OPEN' or issue.get('assignees') or bails != expected
@@ -844,7 +884,7 @@ def apply_entry(
             finally:
                 os.unlink(tmp)
             notes.append("body rewritten")
-    add, remove = label_changes(entry, current, config.priority_labels)
+    add, remove = label_changes(entry, current, config.priority_labels, config.hold_label)
     if add or remove:
         args = ["issue", "edit", number]
         if add:
@@ -880,11 +920,18 @@ def auto_closes(entry: dict[str, Any], config: RubricConfig) -> bool:
     )
 
 
-def preview(plan: dict[str, Any], config: RubricConfig, done: set[int]) -> None:
-    print(f"{'#':<7}{'verdict':<14}{'labels':<60}notes")
+def preview(
+    plan: dict[str, Any], config: RubricConfig, done: set[int],
+    current: dict[int, set[str]], closed: set[int] = frozenset(),
+) -> None:
+    """Print what apply does: each issue's computed label changes, hygiene included."""
+    print(f"{'#':<7}{'verdict':<14}notes; labels")
     for entry in plan["issues"]:
-        labels = " ".join(f"+{x}" for x in entry.get("add_labels", []))
-        labels += "".join(f" -{x}" for x in entry.get("remove_labels", []))
+        if entry["number"] in current:
+            add, remove = label_changes(entry, current[entry["number"]], config.priority_labels, config.hold_label)
+            labels = " ".join([*(f"+{x}" for x in add), *(f"-{x}" for x in remove)]) or "(no label change)"
+        else:
+            labels = "(not read: already applied)"
         notes = []
         if entry.get("body"):
             notes.append("body→comment" if config.rewrite_mode == "suggest" else "body")
@@ -899,9 +946,44 @@ def preview(plan: dict[str, Any], config: RubricConfig, done: set[int]) -> None:
             notes.append('carried unchanged')
         if entry["number"] in done:
             notes.append("already applied")
-        print(f"#{entry['number']:<6}{entry['verdict']:<14}{labels[:58]:<60}{', '.join(notes)}")
+        if entry["number"] in closed:
+            notes.append("closed now")
+        print(f"#{entry['number']:<6}{entry['verdict']:<14}{', '.join(notes) or '-'}; {labels}")
         if entry.get('decision_comment') or entry.get('children') or entry.get('handback_parent'):
             print(json.dumps(entry, indent=2))
+
+
+def load_hold_label(root: str) -> str:
+    """The repository's hgrill hold label; an unreadable herd config stops, never guesses."""
+    path = os.path.join(root, HERD_FILE)
+    if not os.path.exists(path):
+        return DEFAULT_HOLD_LABEL
+    try:
+        with open(path, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"Could not read {HERD_FILE} for grill.hold_label: {exc}")
+    grill = config.get("grill", {}) if isinstance(config, dict) else None
+    hold = grill.get("hold_label", DEFAULT_HOLD_LABEL) if isinstance(grill, dict) else None
+    if not isinstance(hold, str) or not hold.strip() or "\n" in hold:
+        fail(f"{HERD_FILE}: grill.hold_label must be a non-empty single-line string")
+    return hold
+
+
+def read_current_labels(plan: Any, done: set[int]) -> tuple[dict[int, set[str]], set[int]]:
+    """Read-only: each not-yet-applied issue's labels now, and which are closed."""
+    current: dict[int, set[str]] = {}
+    closed: set[int] = set()
+    entries = plan.get("issues") if isinstance(plan, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        number = entry.get("number") if isinstance(entry, dict) else None
+        if type(number) is not int or number <= 0 or number in done or number in current:
+            continue
+        issue = json.loads(gh(["issue", "view", str(number), "--json", "state,labels"]))
+        current[number] = {x["name"] for x in issue.get("labels") or []}
+        if issue.get("state") != "OPEN":
+            closed.add(number)
+    return current, closed
 
 
 def parse_args() -> argparse.Namespace:
@@ -924,13 +1006,15 @@ def main() -> int:
             plan = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"Could not read plan {args.plan}: {exc}")
-    config = load_config(repo_root())
+    root = repo_root()
+    config = load_config(root)._replace(hold_label=load_hold_label(root))
     labels = {x["name"] for x in json.loads(gh(["label", "list", "--limit", "1000", "--json", "name"]))}
-    errors = validate(plan, labels, config.priority_labels)
-    if errors:
-        fail("The plan is not safe to apply; nothing was changed:\n  " + "\n  ".join(errors))
     progress = progress_path(args.plan)
     done = load_progress(progress)
+    current, closed = read_current_labels(plan, done)
+    errors = validate(plan, labels, config.priority_labels, hold_label=config.hold_label, current=current)
+    if errors:
+        fail("The plan is not safe to apply; nothing was changed:\n  " + "\n  ".join(errors))
     bound = any('existing_children' in e or 'handback_parent' in e for e in plan['issues'])
     if bound:
         journal = args.plan + '.existing-handback.json'
@@ -939,7 +1023,7 @@ def main() -> int:
                 fail('Existing handback identity changed; use a new reviewed plan path')
         elif done:
             fail('Unbound progress cannot authorize an existing-child handback')
-    preview(plan, config, done)
+    preview(plan, config, done, current, closed)
     if not args.apply:
         print("\nPreview only. Re-run with --apply to make these changes.")
         return 0
