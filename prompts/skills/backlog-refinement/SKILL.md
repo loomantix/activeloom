@@ -163,9 +163,9 @@ being carried. It does not create, adopt, close or change a child's ready/exclus
 | `agent-bail: epic`, `open-decision` or `spec-gap`, no `needs:` label       | Replacement body, or a no-change carry when the pass changes nothing for it. |
 | One of those three bails with `needs: grill` or `needs: product-grill`     | No-change carry only; a rewrite is refused.                                  |
 | Any other bail with no `needs:` label                                      | Replacement body, or leave it out when the pass changes nothing for it.      |
-| `agent-bail: stale`, more than one bail, or any other `needs:` state | Refused. Leave it out, and record any change it needs as prose in the parent's decision comment. |
+| `agent-bail: stale`, more than one bail, the hold label with no other bail and no `dev: agent`, or any other `needs:` state | Refused. Leave it out, and record any change it needs as prose in the parent's decision comment. |
 
-hgrill's hold label (`grill.hold_label`, default `agent-bail: grill-review`) is not a bail in this table or in any plan. A plan for a held issue restates the issue's existing exclusion and leaves the hold out of `add_labels` and `remove_labels`; the applier keeps it, and only the owner's sign-off removes it. The read-only preview prints each issue's computed label changes, hygiene removals included, so confirm that line.
+hgrill's hold label (`grill.hold_label`, default `agent-bail: grill-review`) is not a bail in this table or in any plan. It never satisfies an `exclude` verdict: an excluded held issue names its own `agent-bail:` label, the current one unless the decision changes it. Every plan leaves the hold out of `add_labels` and `remove_labels`; the applier keeps it, and only the owner's sign-off removes it. The read-only preview prints each issue's computed label changes, hygiene removals included, so confirm that line.
 
 A **no-change carry** sets both `"body": null` and `"comment": null`, and keeps `add_labels` equal to the child's current bail and any `needs:` label. The applier checks the same proof, links, body hash and state, then writes nothing to that child; a new refinement comment would displace its queued interview question. A linked child left out of `existing_children` is neither checked nor touched.
 
