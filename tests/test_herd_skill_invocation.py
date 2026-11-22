@@ -15,10 +15,11 @@ from tests.conftest import REPO_ROOT
 HERD_SKILLS = ("hgrill", "horch", "hloop", "hpromote", "hreview", "hred-team", "auto-glance")
 ROOTS = ("prompts", ".claude", ".agents", ".codex")
 # Templates whose pass prompt carries a brief alongside a skill invocation.
-BRIEF_TEMPLATES = ("hgrill", "hreview", "hred-team")
+BRIEF_TEMPLATES = ("hgrill", "hreview", "hred-team", "horch")
 REFUSAL = "Claude couldn't run /<skill>. It runs only when you type it at the prompt."
 
-FENCE = re.compile(r"^(\s*)```[a-z]*\n(.*?)^\1```", re.M | re.S)
+# The indent excludes newlines so each opening fence pairs with its own close.
+FENCE = re.compile(r"^([ \t]*)```[^\n]*\n(.*?)^\1```[ \t]*$", re.M | re.S)
 
 
 def _herd_sources() -> list[Path]:

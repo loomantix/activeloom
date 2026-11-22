@@ -198,4 +198,4 @@ A failed production deploy, or a lane after the deploy that did not pass (any `p
 
 ## Blocks
 
-Leave GitHub as it stands, keep the lock and every worktree, rename the tab `P<mmdd> ⚠`, and follow herdr.md, Blocks. The user decides how to resume; the driver re-enters at the phase they name. Resume with the original driver arguments: `run --dry-run` for a dry run or `run` for a live promotion. Supply the requested phase and context as the brief for that invocation (herdr.md, Engines and Prompting).
+Leave GitHub as it stands, keep the lock and every worktree, rename the tab `P<mmdd> ⚠`, and follow herdr.md, Blocks. The user decides how to resume; the driver re-enters at the phase they name. Resume with the driver argument for that phase: for Phases 1–5 the original one, `run --dry-run` for a dry run or `run` for a live promotion; `merged` for Post-merge; `deployed` for Post-deploy. Supply the requested phase and context as the brief for that invocation (herdr.md, Engines and Prompting).
