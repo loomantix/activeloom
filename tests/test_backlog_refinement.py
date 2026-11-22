@@ -797,6 +797,8 @@ def test_omitted_exclusion_names_the_label_the_issue_carries(apply_mod: ModuleTy
 def test_apply_plan_never_stacks_a_second_priority(apply_mod: ModuleType) -> None:
     add, _ = apply_mod.label_changes(_entry(), {"priority: low"}, PRIORITY_TUPLE)
     assert "priority: medium" not in add
+    add, remove = apply_mod.label_changes(_entry(), {"priority: low"}, PRIORITY_TUPLE, "priority: low")
+    assert "priority: medium" not in add and "priority: low" not in remove
     # Replacing the existing priority on purpose still works.
     add, remove = apply_mod.label_changes(
         _entry(remove_labels=["priority: low"]), {"priority: low"}, PRIORITY_TUPLE

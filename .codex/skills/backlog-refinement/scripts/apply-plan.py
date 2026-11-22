@@ -428,7 +428,7 @@ def label_changes(
     assessment_labels = current - {hold_label}
     swept = {x for x in assessment_labels if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))}
     # An existing priority stands: never stack a second one on it.
-    if (assessment_labels - remove) & set(priority_labels):
+    if (current - remove) & set(priority_labels):
         add = [x for x in add if x not in priority_labels or x in current]
     if entry["verdict"] == "ready":
         remove |= swept | {BLOCKED}
