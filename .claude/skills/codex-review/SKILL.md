@@ -54,7 +54,7 @@ pass owns the gate.
 
 A PR is silent when `$ARGUMENTS` holds the word `silent`, or when the ledger
 helper's `silent-status --repo <owner/repo> --pr <number>` reports
-`"silent": true`. For an argument-requested PR, run `silent-pin` before the
+`"silent": true`. A failed or malformed status read blocks every evidence write. For an argument-requested PR, run `silent-pin` before the
 first ledger read. A refused pin ends the pass: report the refusal to the user
 and never continue the review loud. A silent PR keeps its ledger local: follow
 [Silent mode](../../references/local-review-ledger.md#silent-mode) for every

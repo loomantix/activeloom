@@ -79,5 +79,9 @@ def test_written_command_uses_only_flags_its_help_lists(
     # the controller's usage block until the first blank line.
     synopsis = result.stdout.split("\n\n", 1)[0]
     assert synopsis.startswith("usage:"), result.stdout
+    if flags == ["--help"]:
+        # Help itself is global; the response must identify this particular subcommand.
+        assert synopsis.startswith(f"usage: review-ledger {name} ")
+        return
     listed = set(re.findall(r"--[a-z0-9-]+", synopsis))
     assert set(flags) <= listed, sorted(set(flags) - listed)

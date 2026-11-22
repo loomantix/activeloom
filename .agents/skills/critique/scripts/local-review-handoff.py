@@ -1820,6 +1820,36 @@ def _user_skill_line(engine: str, skill: str, target: str) -> str:
     return f"/{skill} {target}"
 
 
+def _unbound_user_instructions(
+    engine: str, worktree: Path, head: str, skills: list[str], target: str,
+) -> list[str]:
+    root = USER_LAUNCH[engine]["root"]
+    pin_path = worktree / root / "skills/critique/scripts/review-ledger.version"
+    try:
+        pin = pin_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        _fail(f"the review worktree has no ledger version pin at {pin_path}")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pin):
+        _fail(f"the ledger version pin at {pin_path} is malformed")
+    helper = f"{root}/skills/critique/scripts/review-ledger.js"
+    lines = [
+        "2. In that session, check the exact head and the ledger helper pin first:",
+        "",
+        f'   test "$(git rev-parse HEAD)" = {head}',
+        f'   test "$(node {helper} --version)" = {pin}',
+        "",
+        "3. Then give it this prompt:",
+        "",
+    ]
+    if "refactorpass" in skills:
+        lines.append(
+            "   " + _user_skill_line(engine, "refactorpass", target)
+            + "   (its ledger latch decides whether it runs), then:"
+        )
+    lines.append("   " + _user_skill_line(engine, skills[-1], target))
+    return lines
+
+
 def _user_handoff(args: argparse.Namespace) -> None:
     """Read-only: render the handoff for the run's next pass, launched by the user."""
     rows = _issue_comments(args.repo, args.pr)
@@ -1840,14 +1870,6 @@ def _user_handoff(args: argparse.Namespace) -> None:
     worktree = Path(args.worktree)
     if not worktree.is_absolute():
         _fail("--worktree must be an absolute path")
-    root = USER_LAUNCH[engine]["root"]
-    pin_path = worktree / root / "skills/critique/scripts/review-ledger.version"
-    try:
-        pin = pin_path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
-        _fail(f"the review worktree has no ledger version pin at {pin_path}")
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pin):
-        _fail(f"the ledger version pin at {pin_path} is malformed")
     silent = SILENT_SCOPE is not None
     skills = (
         ["deepcritique"]
@@ -1862,8 +1884,12 @@ def _user_handoff(args: argparse.Namespace) -> None:
         "findings inline before edits; validate, commit, push, reply and resolve; "
         "publish the normal review result."
         + (
-            " This PR is silent: pass `silent` to the skill and keep the ledger "
-            "local per the protocol's Silent mode."
+            (
+                " This PR is silent: pass `silent` to the skill and keep the ledger "
+                "local per the protocol's Silent mode."
+                if args.bound_entry_file is None
+                else " This PR is silent: keep the ledger local per the protocol's Silent mode."
+            )
             if silent else ""
         )
         + (f" {context}" if context else "")
@@ -1872,7 +1898,6 @@ def _user_handoff(args: argparse.Namespace) -> None:
         "preflight check or a helper refuses, report the command and its exact "
         "error, post nothing, and stop."
     )
-    helper = f"{root}/skills/critique/scripts/review-ledger.js"
     lines = [
         f"USER PASS: {args.repo}#{args.pr} {engine} r{number} at {args.head[:12]}",
         "",
@@ -1883,20 +1908,14 @@ def _user_handoff(args: argparse.Namespace) -> None:
             args.env or [],
         ),
         "",
-        "2. In that session, check the exact head and the ledger helper pin first:",
-        "",
-        f'   test "$(git rev-parse HEAD)" = {args.head}',
-        f'   test "$(node {helper} --version)" = {pin}',
-        "",
-        "3. Then give it this prompt:",
-        "",
     ]
-    if "refactorpass" in skills:
-        lines.append(
-            "   " + _user_skill_line(engine, "refactorpass", target)
-            + "   (its ledger latch decides whether it runs), then:"
-        )
-    lines.append("   " + _user_skill_line(engine, skills[-1], target))
+    if args.bound_entry_file is None:
+        lines.extend(_unbound_user_instructions(engine, worktree, args.head, skills, target))
+    else:
+        entry = _read_context(args.bound_entry_file).strip()
+        if not entry:
+            _fail("bound entry instructions must be present")
+        lines.extend(["2. Give the session this plain prompt:", "", entry])
     lines.append("   " + prompt)
     lines += [
         "",
@@ -2103,6 +2122,7 @@ def _parser() -> argparse.ArgumentParser:
         help="one pane-env entry the launched session must carry (repeat)",
     )
     user.add_argument("--context-file", help="extra prompt text, such as carried findings")
+    user.add_argument("--bound-entry-file", help="verified entry commands and instructions for the assigned lanes")
     user.set_defaults(handler=_user_handoff)
 
     recover = commands.add_parser("recover-pass")

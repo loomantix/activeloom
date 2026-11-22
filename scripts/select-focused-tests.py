@@ -40,6 +40,21 @@ GROUPS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "tests/test_review_push.py",
         ),
     ),
+    "bound_reviewer": (
+        (
+            *_skill("hreview"),
+            *_skill("critique"),
+            *_skill("deepcritique"),
+            *_skill("refactorpass"),
+            *_skill("review-setup"),
+            *(f"{root}/references/local-review-ledger.md" for root in ROOTS),
+            *(f"{root}/REVIEW_WORKFLOW.md" for root in ROOTS),
+            "prompts/review/**",
+            "prompts/partials/review/**",
+            "packages/review-ledger/**",
+        ),
+        ("tests/test_bound_reviewer_entry.py",),
+    ),
     "review_runner": (
         (
             *_skill("critique"),

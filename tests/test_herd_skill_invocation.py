@@ -15,7 +15,7 @@ from tests.conftest import REPO_ROOT
 HERD_SKILLS = ("hgrill", "horch", "hloop", "hpromote", "hreview", "hred-team", "auto-glance")
 ROOTS = ("prompts", ".claude", ".agents", ".codex")
 # Templates whose pass prompt carries a brief alongside a skill invocation.
-BRIEF_TEMPLATES = ("hgrill", "hreview", "hred-team", "horch")
+BRIEF_TEMPLATES = ("hgrill", "hred-team", "horch")
 REFUSAL = "Claude couldn't run /<skill>. It runs only when you type it at the prompt."
 
 # The indent excludes newlines so each opening fence pairs with its own close.
@@ -89,7 +89,10 @@ def test_secondary_brief_paths_use_the_brief_protocol(root: str) -> None:
     assert "with this appended to the brief:" in hgrill
 
     hreview = (REPO_ROOT / root / "skills/hreview/SKILL.md").read_text()
-    assert "(`<n>`, plus `silent` for a silent PR)" in hreview
+    # hreview dispatches the verified `enter` command, not a slash command, so
+    # its whole pass prompt is one plain prompt with no separate brief step.
+    assert "one plain prompt with no slash command" in hreview
+    assert "Text: the skill line, then" not in hreview
     assert "pass `silent` to the skill" not in hreview
     assert "Send each prompt with `herdr agent prompt" in hreview
     assert "Its brief carries one extra line naming the earlier blocked result" in hreview

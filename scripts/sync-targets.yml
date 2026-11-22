@@ -403,6 +403,10 @@ harnesses:
         destination: .claude/skills/hred-team/SKILL.md
         substitutions: []
 
+      - source: .claude/skills/hreview/scripts/reviewer-entry.py
+        destination: .claude/skills/hreview/scripts/reviewer-entry.py
+        substitutions: []
+
       - source: .claude/skills/hreview/scripts/herd-config.py
         destination: .claude/skills/hreview/scripts/herd-config.py
         substitutions: []
@@ -1020,6 +1024,10 @@ harnesses:
         destination: .codex/skills/hred-team/SKILL.md
         substitutions: []
 
+      - source: .codex/skills/hreview/scripts/reviewer-entry.py
+        destination: .codex/skills/hreview/scripts/reviewer-entry.py
+        substitutions: []
+
       - source: .codex/skills/hreview/scripts/herd-config.py
         destination: .codex/skills/hreview/scripts/herd-config.py
         substitutions: []
@@ -1582,6 +1590,10 @@ harnesses:
 
       - source: .agents/skills/hred-team/SKILL.md
         destination: .agents/skills/hred-team/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hreview/scripts/reviewer-entry.py
+        destination: .agents/skills/hreview/scripts/reviewer-entry.py
         substitutions: []
 
       - source: .agents/skills/hreview/scripts/herd-config.py
