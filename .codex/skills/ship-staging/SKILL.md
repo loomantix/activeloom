@@ -323,13 +323,16 @@ is intentionally narrow: it ships staging-base PRs only.
     `reset --hard` for this cleanup. Keep it best-effort like issue labeling:
     report the result, but do not block notification delivery.
 
-11. Deliver pending notifications. `flush` attempts every confirmed,
-    undelivered intent, including this one and any left by earlier ships:
+11. Deliver this repository's pending notifications, including any left by
+    earlier ships. Read the stored status of this ship's intent for the report.
 
     ```bash
-    python3 "$OUTBOX" flush
-    PENDING=$(python3 "$OUTBOX" pending)
-    NOTIFICATION=$(jq -r --arg id "$NOTIFICATION_ID" '.pending[$id] // "delivered"' <<<"$PENDING" 2>/dev/null || echo outbox-error)
+    python3 "$OUTBOX" flush --repo "$CURRENT_REPO" || :
+    if STATUS=$(python3 "$OUTBOX" status --id "$NOTIFICATION_ID"); then
+      NOTIFICATION=$(jq -er --arg id "$NOTIFICATION_ID" 'select(.id == $id) | .notification' <<<"$STATUS") || NOTIFICATION=outbox-error
+    else
+      NOTIFICATION=outbox-error
+    fi
     ```
 
     The helper posts only to `https://chat.googleapis.com/v1/spaces/<space>/messages`,
@@ -344,7 +347,7 @@ is intentionally narrow: it ships staging-base PRs only.
     posted or re-point the webhook to retry). Exit 3 means something is still
     pending; it is a notification follow-up, not a failed ship. Do not merge
     again or repeat issue changes to retry a notification; run
-    `python3 "$OUTBOX" flush` later.
+    `python3 "$OUTBOX" flush --repo "$CURRENT_REPO"` later.
 
 12. Report:
 

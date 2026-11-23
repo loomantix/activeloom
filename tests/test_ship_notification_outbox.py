@@ -63,11 +63,11 @@ def test_intent_is_recorded_before_merge_and_not_delivered_until_confirmed(modul
     assert box.status(identity) == module.AWAITING_MERGE
     sender = Recorder()
     assert box.deliver(identity, WEBHOOK, sender) == module.AWAITING_MERGE
-    assert box.flush(WEBHOOK, sender) == {}
+    assert box.flush(REPO, WEBHOOK, sender) == {}
     assert sender.calls == []
     assert box.pending() == {identity: module.AWAITING_MERGE}
     assert box.confirm(identity, MERGE) == module.PENDING_DELIVERY
-    assert box.flush(WEBHOOK, sender) == {identity: module.DELIVERED}
+    assert box.flush(REPO, WEBHOOK, sender) == {identity: module.DELIVERED}
 
 
 def test_record_and_confirm_are_idempotent(module: ModuleType, box) -> None:
@@ -88,10 +88,41 @@ def test_flush_is_safe_to_repeat_and_never_reposts(module: ModuleType, box) -> N
     box.confirm(identity, MERGE)
     sender = Recorder()
     for _ in range(3):
-        box.flush(WEBHOOK, sender)
+        box.flush(REPO, WEBHOOK, sender)
         assert box.deliver(identity, WEBHOOK, sender) == module.DELIVERED
     assert len(sender.calls) == 1
     assert box.pending() == {}
+
+
+def test_flush_only_delivers_the_selected_repository(module: ModuleType, box) -> None:
+    other = box.record("other/project", 7, HEAD, "other summary")
+    box.confirm(other, MERGE)
+    current = box.record(REPO, 7, HEAD, MESSAGE)
+    box.confirm(current, MERGE)
+    sender = Recorder()
+    assert box.flush(REPO, WEBHOOK, sender) == {current: module.DELIVERED}
+    assert [message for _, _, message in sender.calls] == [MESSAGE]
+    assert box.pending() == {other: module.PENDING_DELIVERY}
+
+
+def test_interrupted_send_preserves_the_destination(module: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "outbox.sqlite3"
+    box = module.Outbox(path)
+    identity = box.record(REPO, 7, HEAD, MESSAGE)
+    box.confirm(identity, MERGE)
+
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        box.deliver(identity, WEBHOOK, interrupted)
+    box.close()
+    box = module.Outbox(path)
+    sender = Recorder()
+    assert box.deliver(identity, OTHER_WEBHOOK, sender) == module.PENDING_DESTINATION_CHANGE
+    assert sender.calls == []
+    assert box.deliver(identity, WEBHOOK, sender) == module.DELIVERED
+    box.close()
 
 
 def test_failed_delivery_stays_pending_and_retries_with_the_same_request_id(module: ModuleType, tmp_path: Path) -> None:
@@ -106,7 +137,7 @@ def test_failed_delivery_stays_pending_and_retries_with_the_same_request_id(modu
 
     box = module.Outbox(path)
     success = Recorder()
-    assert box.flush(WEBHOOK, success) == {identity: module.DELIVERED}
+    assert box.flush(REPO, WEBHOOK, success) == {identity: module.DELIVERED}
     assert failing.calls[0][1] == success.calls[0][1]
     box.close()
     stored = path.read_bytes()
@@ -119,6 +150,8 @@ def test_missing_or_invalid_webhook_is_pending_not_an_error(module: ModuleType, 
     box.confirm(identity, MERGE)
     sender = Recorder()
     assert box.deliver(identity, None, sender) == module.PENDING_CONFIGURATION
+    assert box.deliver(identity, "https://chat.googleapis.com:invalid/", sender) == module.PENDING_CONFIGURATION
+    assert box.deliver(identity, "https://[", sender) == module.PENDING_CONFIGURATION
     assert box.deliver(identity, "https://evil.example/v1/spaces/AAAA/messages", sender) == module.PENDING_CONFIGURATION
     assert sender.calls == []
     assert box.pending() == {identity: module.PENDING_CONFIGURATION}
@@ -222,9 +255,13 @@ def test_cli_reports_pending_without_a_webhook(tmp_path: Path) -> None:
     delivered = run_cli(SOURCE, database, "deliver", "--id", identity)
     assert delivered.returncode == 3
     assert json.loads(delivered.stdout)["notification"] == "pending-configuration"
-    flushed = run_cli(SOURCE, database, "flush")
+    flushed = run_cli(SOURCE, database, "flush", "--repo", REPO)
     assert flushed.returncode == 3
+    status = run_cli(SOURCE, database, "status", "--id", identity)
+    assert status.returncode == 0
+    assert json.loads(status.stdout) == {"id": identity, "notification": "pending-configuration"}
     assert run_cli(SOURCE, database, "discard", "--id", identity).returncode == 0
+    assert run_cli(SOURCE, database, "status", "--id", identity).returncode == 2
     assert run_cli(SOURCE, database, "pending").returncode == 0
 
 

@@ -4,7 +4,7 @@
 `ship-staging` records the notification intent before it merges, confirms it
 with the merge commit after the merge is verified, and delivers it afterwards.
 Delivery is decoupled from the merge: a missing webhook or a failed post leaves
-the intent pending, and `flush` retries every confirmed intent until the chat
+the intent pending, and `flush` retries the selected repository's confirmed intents until the chat
 provider returns a message receipt. Each intent carries one request ID for its
 whole life, sent as the provider's idempotency key, and a delivered intent is
 never posted again.
@@ -72,11 +72,15 @@ class NoRedirect(HTTPRedirectHandler):
 
 def validate_webhook(webhook: str) -> str:
     """Return the non-secret space path of a pinned chat webhook, or raise."""
-    parts = urlsplit(webhook.strip())
+    try:
+        parts = urlsplit(webhook.strip())
+        port = parts.port
+    except ValueError:
+        raise InvalidWebhook("webhook is not a pinned chat endpoint") from None
     if (
         parts.scheme != "https"
         or parts.hostname != CHAT_HOST
-        or parts.port not in (None, 443)
+        or port not in (None, 443)
         or parts.username is not None
         or parts.password is not None
         or parts.fragment
@@ -238,16 +242,31 @@ class Outbox:
 
     def deliver(self, identity: str, webhook: str | None, sender: Sender = send) -> str:
         """Attempt one delivery. Holding the write lock serializes concurrent flushes."""
+        destination = None
+        if webhook:
+            try:
+                space = validate_webhook(webhook)
+            except InvalidWebhook:
+                pass
+            else:
+                destination = hashlib.sha256(space.encode()).hexdigest()
+                # Autocommit before sending: a crash can lose the receipt but
+                # must preserve the space in which the request ID was used.
+                self.connection.execute(
+                    "UPDATE intents SET destination = ? WHERE id = ? AND destination IS NULL"
+                    " AND merge_sha IS NOT NULL AND receipt IS NULL",
+                    (destination, identity),
+                )
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            outcome = self._deliver_locked(identity, webhook, sender)
+            outcome = self._deliver_locked(identity, webhook, destination, sender)
             self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise
         return outcome
 
-    def _deliver_locked(self, identity: str, webhook: str | None, sender: Sender) -> str:
+    def _deliver_locked(self, identity: str, webhook: str | None, destination: str | None, sender: Sender) -> str:
         row = self._row(identity)
         if row is None:
             raise OutboxError("unknown notification")
@@ -258,20 +277,17 @@ class Outbox:
             self.connection.execute("UPDATE intents SET status = ? WHERE id = ?", (status, identity))
             return status
 
-        if not webhook:
+        if not webhook or destination is None:
             return settle(PENDING_CONFIGURATION)
-        try:
-            space = validate_webhook(webhook)
-        except InvalidWebhook:
-            return settle(PENDING_CONFIGURATION)
-        destination = hashlib.sha256(space.encode()).hexdigest()
-        if row["destination"] is not None and row["destination"] != destination:
+        if row["destination"] is None:
+            # A confirm or re-record raced with the pin. Retry from the start.
+            return settle(PENDING_DELIVERY)
+        if row["destination"] != destination:
             # An earlier attempt may have landed in the other space; the request
             # ID only deduplicates within one space, so do not resend blindly.
             return settle(PENDING_DESTINATION_CHANGE)
         self.connection.execute(
-            "UPDATE intents SET destination = ?, attempts = attempts + 1 WHERE id = ?",
-            (destination, identity),
+            "UPDATE intents SET attempts = attempts + 1 WHERE id = ?", (identity,)
         )
         try:
             receipt = sender(webhook, str(row["request_id"]), str(row["message"]))
@@ -284,12 +300,13 @@ class Outbox:
         )
         return DELIVERED
 
-    def flush(self, webhook: str | None, sender: Sender = send) -> dict[str, str]:
-        """Deliver every confirmed, undelivered intent; safe to run repeatedly."""
+    def flush(self, repo: str, webhook: str | None, sender: Sender = send) -> dict[str, str]:
+        """Deliver this repository's confirmed, undelivered intents."""
         identities = [
             row[0]
             for row in self.connection.execute(
-                "SELECT id FROM intents WHERE status NOT IN (?, ?) ORDER BY rowid", (DELIVERED, AWAITING_MERGE)
+                "SELECT id FROM intents WHERE repo = ? AND status NOT IN (?, ?) ORDER BY rowid",
+                (repo, DELIVERED, AWAITING_MERGE),
             )
         ]
         return {identity: self.deliver(identity, webhook, sender) for identity in identities}
@@ -324,7 +341,10 @@ def main(argv: list[str] | None = None) -> int:
     confirm.add_argument("--merge", required=True)
     deliver = commands.add_parser("deliver", help="attempt delivery of one intent")
     deliver.add_argument("--id", required=True)
-    commands.add_parser("flush", help="attempt delivery of every confirmed pending intent")
+    flush = commands.add_parser("flush", help="attempt delivery of confirmed pending intents for one repository")
+    flush.add_argument("--repo", required=True)
+    status = commands.add_parser("status", help="read one notification's stored status")
+    status.add_argument("--id", required=True)
     commands.add_parser("pending", help="list undelivered intents and their status")
     discard = commands.add_parser("discard", help="drop an undelivered intent")
     discard.add_argument("--id", required=True)
@@ -343,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "discard":
             print(json.dumps({"id": args.id, "discarded": outbox.discard(args.id)}))
             return EXIT_OK
+        if args.command == "status":
+            print(json.dumps({"id": args.id, "notification": outbox.status(args.id)}))
+            return EXIT_OK
         if args.command == "pending":
             pending = outbox.pending()
             print(json.dumps({"pending": pending}))
@@ -352,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
             outcome = outbox.deliver(args.id, webhook)
             print(json.dumps({"id": args.id, "notification": outcome}))
             return EXIT_OK if outcome == DELIVERED else EXIT_PENDING
-        results = outbox.flush(webhook)
+        results = outbox.flush(args.repo, webhook)
         print(json.dumps({"flushed": results}))
         return EXIT_OK if all(value == DELIVERED for value in results.values()) else EXIT_PENDING
     except OutboxError as error:
