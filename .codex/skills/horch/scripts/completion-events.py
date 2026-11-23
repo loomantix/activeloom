@@ -17,6 +17,10 @@ Contract:
   again, before or after acknowledgement, changes nothing (`duplicate`).
 - `ack` moves an event from `pending/` to `acked/`; acknowledging it again
   changes nothing (`already-acknowledged`).
+- A `pending/` entry that can never be read as a valid event (bad content, a
+  name that is not its ID, not a regular file, a symlink) is moved to
+  `quarantine/` and counted once in `invalid`, so it wakes a waiter once rather
+  than on every call. A transient read error leaves the entry in place.
 - An event grants no authority. It tells the orchestrator where to look; the
   orchestrator still re-reads GitHub, the run state and the pane before acting.
 
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -177,6 +182,7 @@ class Inbox:
         self.pending_dir = _private_dir(root / "pending")
         self.acked_dir = _private_dir(root / "acked")
         self.tmp_dir = _private_dir(root / ".tmp")
+        self.quarantine_dir = _private_dir(root / "quarantine")
         _fsync_dir(root)
         _fsync_dir(root.parent)
 
@@ -253,10 +259,25 @@ class Inbox:
                 events.append(event)
             except FileNotFoundError:
                 continue  # A concurrent acknowledgement removed the entry.
-            except (OSError, ValueError, TypeError, KeyError):
+            except OSError as error:
                 invalid += 1
+                if error.errno in (errno.ELOOP, errno.EISDIR):  # A symlink or a directory.
+                    self._quarantine(path)
+            except (ValueError, TypeError, KeyError):
+                invalid += 1
+                self._quarantine(path)
         events.sort(key=lambda item: (item["at"], item["id"]))
         return {"events": events, "invalid": invalid}
+
+    def _quarantine(self, path: Path) -> None:
+        """Move a permanently unreadable pending entry aside, so it is reported once."""
+        with self._lock():
+            try:
+                os.rename(path, self.quarantine_dir / f"{path.name}.{time.time_ns()}")
+            except FileNotFoundError:
+                return
+            _fsync_dir(self.quarantine_dir)
+            _fsync_dir(self.pending_dir)
 
     def wait(self, timeout: float, interval: float) -> dict[str, Any] | None:
         """Block until an event is pending (returned) or the timeout passes (None)."""

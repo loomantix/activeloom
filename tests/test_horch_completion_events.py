@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -255,10 +256,66 @@ def test_ack_of_unknown_event_is_an_error_and_writes_nothing(tmp_path: Path) -> 
     assert run(SOURCE, inbox, "ack", "--id", "../escape").returncode == 2
 
 
-def test_a_malformed_pending_file_still_wakes_but_is_not_an_event(tmp_path: Path) -> None:
+def test_a_malformed_pending_file_wakes_once_then_is_quarantined(tmp_path: Path) -> None:
     inbox = ce.Inbox(tmp_path / "events")
     (inbox.pending_dir / ("1" * 32 + ".json")).write_text('{"schema": "other"}')
     assert inbox.wait(timeout=1, interval=0.05) == {"events": [], "invalid": 1}
+    assert list(inbox.pending_dir.iterdir()) == []
+    assert [p.name.split(".json.")[0] for p in inbox.quarantine_dir.iterdir()] == ["1" * 32]
+    started = time.monotonic()
+    assert inbox.wait(timeout=0.5, interval=0.05) is None
+    assert time.monotonic() - started >= 0.4
+
+
+def _misnamed_event(path: Path) -> None:
+    path.write_text(json.dumps(ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)))
+
+
+def _symlink_to_event(path: Path) -> None:
+    target = path.parent.parent / "outside.json"
+    event = ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)
+    target.write_text(json.dumps(event))
+    path.with_name(f"{event['id']}.json").symlink_to(target)
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        lambda p: (p / "notes.json").write_bytes(b"\xff"),
+        lambda p: _misnamed_event(p / ("2" * 32 + ".json")),
+        lambda p: (p / ("3" * 32 + ".json")).mkdir(),
+        lambda p: _symlink_to_event(p / "unused.json"),
+    ],
+    ids=["undecodable", "misnamed", "directory", "symlink"],
+)
+def test_unreadable_entries_are_reported_once_and_cleared(tmp_path: Path, plant: Any) -> None:
+    inbox = ce.Inbox(tmp_path / "events")
+    plant(inbox.pending_dir)
+    assert inbox.pending() == {"events": [], "invalid": 1}
+    assert inbox.pending() == {"events": [], "invalid": 0}
+    assert len(list(inbox.quarantine_dir.iterdir())) == 1
+    recorded = run(SOURCE, inbox.root, *build_args())
+    assert json.loads(recorded.stdout)["status"] == "recorded"
+    assert len(inbox.pending()["events"]) == 1
+
+
+def test_a_transient_read_error_is_counted_but_not_quarantined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = ce.Inbox(tmp_path / "events")
+    event = ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)
+    inbox.record(event)
+    real_open = os.open
+
+    def failing_open(path: Any, flags: int, *args: Any) -> int:
+        if str(path).startswith(f"{inbox.pending_dir}{os.sep}"):
+            raise OSError(5, "I/O error")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(ce.os, "open", failing_open)
+    assert inbox.pending() == {"events": [], "invalid": 1}
+    monkeypatch.undo()
+    assert inbox.pending() == {"events": [event], "invalid": 0}
 
 
 def test_inbox_must_be_private_and_absolute(tmp_path: Path) -> None:
@@ -279,3 +336,5 @@ def test_fifo_is_reported_without_blocking_wait(tmp_path: Path) -> None:
     result = run(SOURCE, inbox.root, "wait", "--timeout", "1", "--interval", "0.1", timeout=3)
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"events": [], "invalid": 1}
+    again = run(SOURCE, inbox.root, "wait", "--timeout", "0.5", "--interval", "0.1", timeout=3)
+    assert again.returncode == 124
