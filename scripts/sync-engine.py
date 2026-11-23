@@ -615,6 +615,73 @@ def parse_str_list(target: dict[str, Any], key: str) -> list[str] | None:
     return raw
 
 
+def has_git_metadata_segment(rel: str | Path) -> bool:
+    """Whether a path has a `.git` segment at any depth.
+
+    Case-insensitive, and trailing dots and spaces are ignored, because NTFS
+    and APFS resolve `.GIT`, `.git.` and `.git ` to the same entry. Exact
+    segment match, so `.github`, `.gitignore`, `.gitattributes`, `.gitmodules`
+    and `.gitkeep` are not caught.
+    """
+    parts = rel.parts if isinstance(rel, Path) else rel.split("/")
+    return any(part.rstrip(". ").lower() == ".git" for part in parts)
+
+
+def is_git_metadata_destination(consumer_dir: Path, dest_rel: str, dest_path: Path) -> bool:
+    """Whether a destination lands in git metadata, lexically or via a symlink.
+
+    Nothing under `.git` is committed, so a sync write there only changes the
+    clone the job runs in, and `config` or `hooks` there change how later git
+    commands in that job behave. A nested `.git` (a submodule's pointer file,
+    or a nested checkout) counts too. This is a hard refusal with no opt-in.
+    """
+    if has_git_metadata_segment(dest_rel):
+        return True
+    resolved = dest_path.resolve()
+    try:
+        resolved_rel = resolved.relative_to(consumer_dir.resolve())
+    except ValueError:
+        resolved_rel = resolved
+    return has_git_metadata_segment(resolved_rel)
+
+
+def git_metadata_refusal(destinations: Sequence[str]) -> str:
+    """The refusal text for manifest targets that touch git metadata."""
+    plural = "s" if len(destinations) > 1 else ""
+    listed = "".join(f"       - {dest}\n" for dest in destinations)
+    return (
+        f"  ❌ refusing destination{plural} inside a `.git` directory "
+        f"(engine-level block, no opt-in exists):\n"
+        f"{listed}"
+        f"     Git metadata is never committed, so a sync write there reaches "
+        f"only this clone, where it can change how later git commands behave. "
+        f"`allow_sensitive_writes` cannot permit it.\n"
+    )
+
+
+def git_metadata_targets(targets: Sequence[Any], consumer_dir: Path) -> list[str]:
+    """Manifest destinations inside git metadata, for writes and deletes alike.
+
+    Admission control: runs before anything is written. Like
+    `config_write_targets`, it ignores `skip_targets` and the `delete` flag —
+    no manifest has a reason to name such a path. Destinations that escape the
+    consumer root are left to the main loop's own error.
+    """
+    offenders: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        dest_rel = target.get("destination")
+        if not isinstance(dest_rel, str) or not dest_rel:
+            continue
+        dest_path = resolve_under(consumer_dir, dest_rel)
+        if dest_path is None:
+            continue
+        if is_git_metadata_destination(consumer_dir, dest_rel, dest_path):
+            offenders.append(dest_rel)
+    return offenders
+
+
 def parse_sensitive_write_allowlist(
     config_doc: dict[str, Any], config_path: Path, consumer_dir: Path
 ) -> frozenset[str] | None:
@@ -676,6 +743,13 @@ def parse_sensitive_write_allowlist(
                 f"{config_path}: `allow_sensitive_writes` entries must be canonical "
                 f"repo-relative posix paths (no `./`, `//`, `..`, or leading `/`): "
                 f"{entry!r}\n"
+            )
+            return None
+        if has_git_metadata_segment(entry):
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes` lists {entry!r}, which is "
+                f"inside a `.git` directory. The engine refuses those destinations "
+                f"unconditionally, so no grant can permit them; drop this entry.\n"
             )
             return None
         if not path_matches_any(entry, SENSITIVE_WRITE_REGEXES):
@@ -1522,6 +1596,13 @@ def main() -> int:
         sys.stderr.write(config_destination_refusal(config_writes, config_path.name))
         return 1
 
+    git_writes = git_metadata_targets(
+        [target for _, targets in plan for target in targets], consumer_dir
+    )
+    if git_writes:
+        sys.stderr.write(git_metadata_refusal(git_writes))
+        return 1
+
     # Admission control: validate destinations across scopes before modifying files.
     for scope, scope_targets in plan:
         denied_allowed = unallowed_destinations(
@@ -1695,6 +1776,10 @@ def main() -> int:
                     f"`//`, or `..` segments): got {dest_rel!r}, normalized form "
                     f"is {dest_rel_canonical!r}\n"
                 )
+                return 1
+
+            if is_git_metadata_destination(consumer_dir, dest_rel_canonical, dest_path):
+                sys.stderr.write(git_metadata_refusal([dest_rel_canonical]))
                 return 1
 
             if scope.allowed_patterns is not None and not path_matches_any(
