@@ -153,7 +153,12 @@ class Outbox:
             raise OutboxError("outbox path must not be a symlink")
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        os.close(descriptor)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OutboxError("outbox path must be a regular file")
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
         self.connection = sqlite3.connect(path, timeout=30, isolation_level=None)
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS intents ("

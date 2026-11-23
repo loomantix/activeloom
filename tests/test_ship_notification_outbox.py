@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import importlib.util
 import json
+import stat
 import subprocess
 import sys
 import threading
@@ -70,6 +71,23 @@ def test_intent_is_recorded_before_merge_and_not_delivered_until_confirmed(modul
     assert box.pending() == {identity: module.AWAITING_MERGE}
     assert box.confirm(identity, MERGE) == module.PENDING_DELIVERY
     assert box.flush(REPO, WEBHOOK, sender) == {identity: module.DELIVERED}
+
+
+def test_reopened_outbox_restricts_access_and_preserves_intents(module: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "outbox.sqlite3"
+    original = module.Outbox(path)
+    try:
+        identity = original.record(REPO, 7, HEAD, MESSAGE)
+    finally:
+        original.close()
+    path.chmod(0o644)
+
+    reopened = module.Outbox(path)
+    try:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert reopened.status(identity) == module.AWAITING_MERGE
+    finally:
+        reopened.close()
 
 
 def test_record_and_confirm_are_idempotent(module: ModuleType, box: Any) -> None:
