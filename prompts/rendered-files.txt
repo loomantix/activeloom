@@ -25,6 +25,8 @@
 .agents/skills/hgrill/scripts/signoff.py
 .agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
+.agents/skills/horch/references/evidence-reuse.md
+.agents/skills/horch/scripts/evidence-reuse.py
 .agents/skills/hpromote/SKILL.md
 .agents/skills/hred-team/SKILL.md
 .agents/skills/hreview/SKILL.md
@@ -86,6 +88,8 @@
 .claude/skills/hgrill/scripts/signoff.py
 .claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
+.claude/skills/horch/references/evidence-reuse.md
+.claude/skills/horch/scripts/evidence-reuse.py
 .claude/skills/hpromote/SKILL.md
 .claude/skills/hred-team/SKILL.md
 .claude/skills/hreview/SKILL.md
@@ -145,6 +149,8 @@
 .codex/skills/hgrill/scripts/signoff.py
 .codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md
+.codex/skills/horch/references/evidence-reuse.md
+.codex/skills/horch/scripts/evidence-reuse.py
 .codex/skills/hpromote/SKILL.md
 .codex/skills/hred-team/SKILL.md
 .codex/skills/hreview/SKILL.md
