@@ -105,6 +105,8 @@ def test_flush_only_delivers_the_selected_repository(module: ModuleType, box: An
     assert box.flush(REPO, WEBHOOK, sender) == {current: module.DELIVERED}
     assert [message for _, _, message in sender.calls] == [MESSAGE]
     assert box.pending() == {other: module.PENDING_DELIVERY}
+    assert box.pending(REPO) == {}
+    assert box.pending("other/project") == {other: module.PENDING_DELIVERY}
 
 
 def test_interrupted_send_preserves_the_destination(module: ModuleType, tmp_path: Path) -> None:
@@ -315,6 +317,10 @@ def test_cli_reports_pending_without_a_webhook(tmp_path: Path) -> None:
     delivered = run_cli(SOURCE, database, "deliver", "--id", identity)
     assert delivered.returncode == 3
     assert json.loads(delivered.stdout)["notification"] == "pending-configuration"
+    for repo, expected in [(REPO, {identity: "pending-configuration"}), ("other/project", {})]:
+        listed = run_cli(SOURCE, database, "pending", "--repo", repo)
+        assert listed.returncode == (3 if expected else 0)
+        assert json.loads(listed.stdout) == {"pending": expected}
     flushed = run_cli(SOURCE, database, "flush", "--repo", REPO)
     assert flushed.returncode == 3
     status = run_cli(SOURCE, database, "status", "--id", identity)

@@ -14,7 +14,7 @@ is intentionally narrow: it ships staging-base PRs only.
 
 - Refuse when the PR base is not `staging`; production/main promotions need the
   repo's separate promotion or hotfix workflow.
-- Use only `gh pr merge <pr> --merge --delete-branch`.
+- Merge with `gh pr merge <pr> --merge --delete-branch --match-head-commit "$APPROVED_HEAD"`.
 - Never use `--admin`, `--squash`, `--rebase`, `--auto`, or `--no-verify`.
 - Mark an open draft PR ready before evaluating its merge gates. Stop if the
   ready transition fails or cannot be verified.
@@ -46,28 +46,28 @@ is intentionally narrow: it ships staging-base PRs only.
 
    ```bash
    OUTBOX=.codex/skills/ship-staging/scripts/notification-outbox.py
-   python3 "$OUTBOX" pending; rc=$?
+   CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner') || exit 1
+   rc=0
+   python3 "$OUTBOX" pending --repo "$CURRENT_REPO" || rc=$?
    if [[ $rc -ne 0 && $rc -ne 3 ]]; then
      echo "Notification outbox is unavailable; refusing to merge" >&2
      exit 1
    fi
    ```
 
-   Exit 3 lists notifications still pending from earlier ships; mention them
-   in the final report. Step 11's `flush` retries only confirmed intents. An
+   Exit 3 lists this repository's pending notifications. Step 11 refreshes
+   that list after retrying confirmed intents. An
    `awaiting-merge` intent whose PR has since merged is never retried on its
    own: confirm it with `python3 "$OUTBOX" confirm --id <id> --merge <sha>`
    using the PR's verified `mergeCommit`, or `discard` it if the PR closed
    unmerged.
 
-3. Resolve the current repository identity and fetch PR state. Both queries must
-   succeed before merging. Refuse before changing draft state unless the PR is
+3. Fetch PR state. Refuse before changing draft state unless the PR is
    open and targets `staging`. If it is a draft, mark it ready, refetch the same
    fields, and verify that the PR is still open, still targets `staging`, has
    the same head, and is no longer a draft:
 
    ```bash
-   CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner') || exit 1
    if ! PR_JSON=$(gh pr view <pr> --json number,title,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,url,body,author,reviewDecision,statusCheckRollup,labels); then
      echo "Could not resolve PR state; refusing to merge" >&2
      exit 1
@@ -102,9 +102,10 @@ is intentionally narrow: it ships staging-base PRs only.
 
    # A successful lookup with no required checks is valid. The helper still
    # checks all available CI and refuses lookup errors or changed PR heads.
+   APPROVED_HEAD=$(jq -er '.headRefOid' <<<"$PR_JSON") || exit 1
    python3 .codex/skills/ship-staging/scripts/check-pr-checks.py \
      --repo "$CURRENT_REPO" --pr <pr> \
-     --head "$(jq -r '.headRefOid' <<<"$PR_JSON")" || exit 1
+     --head "$APPROVED_HEAD" || exit 1
    ON_STAGING_LABEL=$(gh label list --search "status: on-staging" --limit 100 \
      --json name --jq 'any(.[]; .name == "status: on-staging")')
    if [[ "$ON_STAGING_LABEL" != "true" ]]; then
@@ -165,21 +166,21 @@ is intentionally narrow: it ships staging-base PRs only.
 
    ```bash
    if ! RECORD=$(python3 "$OUTBOX" record --repo "$CURRENT_REPO" --pr <pr> \
-       --head "$(jq -r '.headRefOid' <<<"$PR_JSON")" --message-file "$MESSAGE_FILE"); then
+       --head "$APPROVED_HEAD" --message-file "$MESSAGE_FILE"); then
      echo "Could not record notification intent; refusing to merge" >&2
      exit 1
    fi
    NOTIFICATION_ID=$(jq -r '.id' <<<"$RECORD")
    rm -f "$MESSAGE_FILE"
 
-   gh pr merge <pr> --merge --delete-branch
+   gh pr merge <pr> --merge --delete-branch --match-head-commit "$APPROVED_HEAD"
    ```
 
    A merge command that exits non-zero can still have merged (local branch
    cleanup fails after the server merge), so read the PR's `state` before
    treating it as a failure. If the PR did not merge, drop the intent with
    `python3 "$OUTBOX" discard --id "$NOTIFICATION_ID"`, do not label issues,
-   and stop.
+   and stop. A changed head requires fresh checks and summary approval.
 
 8. Capture the merge commit and confirm the intent with it. Only a confirmed
    intent is ever delivered.
@@ -338,6 +339,10 @@ is intentionally narrow: it ships staging-base PRs only.
       NOTIFICATION=outbox-error
     fi
     ```
+
+    Run `pending --repo "$CURRENT_REPO"` again through the outbox helper as
+    in step 2. Report the remaining IDs other than `$NOTIFICATION_ID`. If the
+    query fails, report the list as unavailable.
 
     The helper posts only to `https://chat.googleapis.com/v1/spaces/<space>/messages`,
     refuses redirects, sends the intent's request ID so the provider

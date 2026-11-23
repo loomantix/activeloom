@@ -314,11 +314,12 @@ class Outbox:
         ]
         return {identity: self.deliver(identity, webhook, sender) for identity in identities}
 
-    def pending(self) -> dict[str, str]:
+    def pending(self, repo: str | None = None) -> dict[str, str]:
         return {
             row[0]: row[1]
             for row in self.connection.execute(
-                "SELECT id, status FROM intents WHERE status != ? ORDER BY rowid", (DELIVERED,)
+                "SELECT id, status FROM intents WHERE status != ? AND (? IS NULL OR repo = ?) ORDER BY rowid",
+                (DELIVERED, repo, repo),
             )
         }
 
@@ -348,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     flush.add_argument("--repo", required=True)
     status = commands.add_parser("status", help="read one notification's stored status")
     status.add_argument("--id", required=True)
-    commands.add_parser("pending", help="list undelivered intents and their status")
+    pending_command = commands.add_parser("pending", help="list undelivered intents and their status")
+    pending_command.add_argument("--repo", help="list only this repository's intents")
     discard = commands.add_parser("discard", help="drop an undelivered intent")
     discard.add_argument("--id", required=True)
     args = parser.parse_args(argv)
@@ -370,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"id": args.id, "notification": outbox.status(args.id)}))
             return EXIT_OK
         if args.command == "pending":
-            pending = outbox.pending()
+            pending = outbox.pending(args.repo)
             print(json.dumps({"pending": pending}))
             return EXIT_PENDING if pending else EXIT_OK
         webhook = read_webhook()
