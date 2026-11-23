@@ -344,7 +344,7 @@ is intentionally narrow: it ships staging-base PRs only.
     in step 2. Report the remaining IDs other than `$NOTIFICATION_ID`. If the
     query fails, report the list as unavailable.
 
-    The helper posts only to `https://chat.googleapis.com/v1/spaces/<space>/messages`,
+    The helper posts only to the pinned Google Chat host `chat.googleapis.com` at path `/v1/spaces/<space>/messages` over HTTPS,
     refuses redirects, sends the intent's request ID so the provider
     deduplicates a retried post, and marks the intent `delivered` only on a
     `spaces/<space>/messages/<id>` receipt. A delivered intent is never posted
