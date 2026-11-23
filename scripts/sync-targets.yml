@@ -408,6 +408,11 @@ harnesses:
         destination: .claude/skills/horch/SKILL.md
         substitutions: []
 
+      - source: .claude/skills/horch/scripts/completion-events.py
+        destination: .claude/skills/horch/scripts/completion-events.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/hloop/SKILL.md
         destination: .claude/skills/hloop/SKILL.md
         substitutions: []
@@ -1042,6 +1047,11 @@ harnesses:
         destination: .codex/skills/horch/SKILL.md
         substitutions: []
 
+      - source: .codex/skills/horch/scripts/completion-events.py
+        destination: .codex/skills/horch/scripts/completion-events.py
+        substitutions: []
+        mode: '0755'
+
       - source: .codex/skills/hloop/SKILL.md
         destination: .codex/skills/hloop/SKILL.md
         substitutions: []
@@ -1622,6 +1632,11 @@ harnesses:
       - source: .agents/skills/horch/SKILL.md
         destination: .agents/skills/horch/SKILL.md
         substitutions: []
+
+      - source: .agents/skills/horch/scripts/completion-events.py
+        destination: .agents/skills/horch/scripts/completion-events.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/hloop/SKILL.md
         destination: .agents/skills/hloop/SKILL.md

@@ -288,6 +288,8 @@ What you type: `/horch ./push-notes.md` in a fresh session in the workspace you 
 
 `horch` first locates its invoking tab in Herdr's live inventory. It recovers stale inherited workspace or pane IDs using session identity or the matching conversation, then uses the resolved IDs for the run and the workspace label for handoff lookup. UI focus alone never selects the workspace. It asks you only when the live evidence cannot identify a unique tab; stale environment IDs alone do not require opening a new session.
 
+Sessions `horch` starts record a completion event (identifiers only) in its state directory when they finish, and `horch` wakes on it instead of waiting for its next 300-second poll. An event grants nothing: `horch` re-reads GitHub, the run state and the pane before acting, acknowledges each event once, and keeps the 300-second poll as a watchdog, so a lost event only delays it.
+
 It inventories every tab and session in the workspace, checks your instruction file against GitHub, and then:
 
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
