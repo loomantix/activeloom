@@ -79,6 +79,13 @@ recorded:
       with its permission model disabled must be readable, in its own root, as
       exactly what will run.
 
+  - skill: ship-staging
+    record: 0020-ship-staging-outbox-is-vendored-per-root.md
+    reason: >-
+      Only the notification outbox helper is vendored into every root. The
+      skill text and its CI helper stay Codex/Gemini-only, because Claude ships
+      no ship-staging skill.
+
 held:
   - skill: pr-critique
     issue: 172

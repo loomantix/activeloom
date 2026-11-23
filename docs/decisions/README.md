@@ -34,6 +34,7 @@ presumed accidental.
 | 0017 | [The run controller is vendored per root](0017-run-controller-is-vendored-per-root.md) — one source in `packages/`, a copy in every harness root, no cross-root path                             |
 | 0018 | [Dependency updates get an analysis, not a review](0018-dependency-updates-get-an-analysis-not-a-review.md) — no chain on a dependency update; mixed ranges split by part                        |
 | 0019 | [The dependency analysis opens a fix PR for test gaps](0019-dependency-analysis-opens-a-fix-pr-for-test-gaps.md) — a draft PR with the update and missing tests, reviewed by the normal chain    |
+| 0020 | [The ship-staging outbox is vendored per root](0020-ship-staging-outbox-is-vendored-per-root.md) — one helper source in every root; the skill itself stays Codex/Gemini-only                     |
 
 Most records here are parity divergences, and those are the ones
 `parity-allowlist.yml` cites. A record may also fix a vocabulary that several
