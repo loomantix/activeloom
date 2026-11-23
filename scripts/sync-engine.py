@@ -1587,18 +1587,13 @@ def main() -> int:
 
     # Check config writes before consent gates so an upstream manifest cannot
     # grant itself permissions by overwriting consumer configuration.
-    config_writes = config_write_targets(
-        [target for _, targets in plan for target in targets],
-        consumer_dir,
-        selectable_config_paths,
-    )
+    all_targets = [target for _, targets in plan for target in targets]
+    config_writes = config_write_targets(all_targets, consumer_dir, selectable_config_paths)
     if config_writes:
         sys.stderr.write(config_destination_refusal(config_writes, config_path.name))
         return 1
 
-    git_writes = git_metadata_targets(
-        [target for _, targets in plan for target in targets], consumer_dir
-    )
+    git_writes = git_metadata_targets(all_targets, consumer_dir)
     if git_writes:
         sys.stderr.write(git_metadata_refusal(git_writes))
         return 1
