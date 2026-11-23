@@ -19,14 +19,16 @@ Write one receipt per test lane, at the end of each Tests at the head run, into 
 | `outcome`        | `pass` only when the lane passed                                                                                                                                               |
 | `skipped`        | the names of every skipped test or file; `[]` when none                                                                                                                        |
 
-Hash names and versions, never secret values or test output. When a dimension does not apply, hash a fixed `none` marker; never leave the field out.
+At receipt creation and comparison, verify the checkout is at the named head and its tracked inputs match the committed tree. Include any untracked or ignored inputs the lane can read in `inputs`. Capture the effective inputs before executing the lane, including its working directory relative to the checkout and any Git metadata used by its commands or test selection.
+
+Use a non-secret version identifier for a secret-dependent input. Never hash secret values or test output. Reserve a fixed `none` marker for dimensions known to be inapplicable. If a relevant input is unknown, mutable during measurement, or cannot be verified safely, run the lane and omit the reusable receipt.
 
 ## Comparing
 
-At a new head, build the expected identity the same way from the new head and the environment about to run, with `allowed_skips` (the skips the repository's current gate permits, `[]` unless its `AGENTS.md` names some) in place of `outcome` and `skipped`. Then run:
+At a new head, build the expected identity the same way from the new head and the environment about to run, with `allowed_skips` (the skips the repository's current gate permits, `[]` unless its `AGENTS.md` names some) in place of `outcome` and `skipped`. Resolve `horch/scripts/evidence-reuse.py` from the orchestrator's trusted skill installation outside the PR worktree. Set `comparator` to that verified absolute path. If the trusted helper is unavailable, run the lane. Otherwise run:
 
 ```bash
-python3 .codex/skills/horch/scripts/evidence-reuse.py <receipt.json> <expected.json>
+python3 -I "$comparator" <receipt.json> <expected.json>
 ```
 
 It prints `{"decision": "reuse"|"rerun", "reasons": [...]}`. Exit 0 is `reuse`; 3 is `rerun`; 2 is `rerun` because an input could not be read. A missing, malformed or unknown field is `rerun`, as is any mismatch, an outcome other than `pass`, or a skip the expected identity does not allow.

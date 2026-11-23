@@ -97,8 +97,15 @@ def compare(receipt: Any, expected: Any) -> dict[str, Any]:
     return result
 
 
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document = dict(pairs)
+    if len(document) != len(pairs):
+        raise ValueError("duplicate JSON member")
+    return document
+
+
 def _load(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_members)
 
 
 def main(argv: list[str] | None = None) -> int:

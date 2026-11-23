@@ -213,6 +213,22 @@ def test_cli_exit_codes(tmp_path: Path) -> None:
         assert json.loads(unreadable.stdout) == {"decision": "rerun", "reasons": ["unreadable-input"]}
 
 
+@pytest.mark.parametrize("role", ["receipt", "expected"])
+def test_cli_rejects_duplicate_members(tmp_path: Path, role: str) -> None:
+    paths = []
+    for name, document in (("receipt", receipt()), ("expected", expected())):
+        path = tmp_path / name
+        data = json.dumps(document)
+        if name == role:
+            data = '{"version": 2,' + data[1:]
+        path.write_text(data)
+        paths.append(path)
+
+    result = run_cli(SCRIPT, *paths)
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["decision"] == "rerun"
+
+
 @pytest.mark.parametrize("harness", ["claude", "codex", "agents"])
 def test_rendered_helper_matches_source_and_is_synced(harness: str) -> None:
     targets = yaml.safe_load((ROOT / "scripts/sync-targets.yml").read_text())["harnesses"]
