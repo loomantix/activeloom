@@ -18,9 +18,9 @@ Contract:
 - `ack` moves an event from `pending/` to `acked/`; acknowledging it again
   changes nothing (`already-acknowledged`).
 - A `pending/` entry that can never be read as a valid event (bad content, a
-  name that is not its ID, not a regular file, a symlink) is moved to
-  `quarantine/` and counted once in `invalid`, so it wakes a waiter once rather
-  than on every call. A transient read error leaves the entry in place.
+  name that is not its ID, not a regular file, a symlink, unreadable, larger
+  than 4 KiB) is moved to `quarantine/` and counted once in `invalid`, so it
+  wakes a waiter once rather than on every call. A transient read error leaves the entry in place.
 - An event grants no authority. It tells the orchestrator where to look; the
   orchestrator still re-reads GitHub, the run state and the pane before acting.
 
@@ -67,6 +67,10 @@ HEAD_RE = re.compile(r"[0-9a-f]{40}")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 ID_RE = re.compile(r"[0-9a-f]{32}")
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+MAX_EVENT_BYTES = 4096
+# Errors opening a pending entry that retrying cannot fix: a symlink, a directory, no read
+# permission, or a socket or device node.
+PERMANENT_ENTRY_ERRNOS = {errno.ELOOP, errno.EISDIR, errno.EACCES, errno.ENXIO}
 
 
 class EventError(ValueError):
@@ -253,18 +257,21 @@ class Inbox:
                 with os.fdopen(fd, "rb") as handle:
                     if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                         raise EventError("pending entry must be a regular file")
-                    event = validate(json.loads(handle.read().decode("utf-8")))
+                    data = handle.read(MAX_EVENT_BYTES + 1)
+                    if len(data) > MAX_EVENT_BYTES:
+                        raise EventError("pending entry too large")
+                    event = validate(json.loads(data.decode("utf-8")))
                 if path.name != f"{event['id']}.json":
                     raise EventError("name")
                 events.append(event)
             except FileNotFoundError:
                 continue  # A concurrent acknowledgement removed the entry.
             except OSError as error:
-                if error.errno not in (errno.ELOOP, errno.EISDIR):  # A symlink or a directory.
+                if error.errno not in PERMANENT_ENTRY_ERRNOS:
                     raise
                 self._quarantine(path)
                 invalid += 1
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError, RecursionError):
                 invalid += 1
                 self._quarantine(path)
         events.sort(key=lambda item: (item["at"], item["id"]))

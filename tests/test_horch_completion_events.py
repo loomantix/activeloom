@@ -278,6 +278,13 @@ def _symlink_to_event(path: Path) -> None:
     path.with_name(f"{event['id']}.json").symlink_to(target)
 
 
+def _unreadable(path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    path.write_text("{}")
+    path.chmod(0)
+
+
 @pytest.mark.parametrize(
     "plant",
     [
@@ -285,8 +292,11 @@ def _symlink_to_event(path: Path) -> None:
         lambda p: _misnamed_event(p / ("2" * 32 + ".json")),
         lambda p: (p / ("3" * 32 + ".json")).mkdir(),
         lambda p: _symlink_to_event(p / "unused.json"),
+        lambda p: (p / ("4" * 32 + ".json")).write_text("[" * 200_000),
+        lambda p: (p / ("5" * 32 + ".json")).write_text(" " * (ce.MAX_EVENT_BYTES + 1)),
+        lambda p: _unreadable(p / ("6" * 32 + ".json")),
     ],
-    ids=["undecodable", "misnamed", "directory", "symlink"],
+    ids=["undecodable", "misnamed", "directory", "symlink", "deeply-nested", "oversized", "unreadable"],
 )
 def test_unreadable_entries_are_reported_once_and_cleared(tmp_path: Path, plant: Any) -> None:
     inbox = ce.Inbox(tmp_path / "events")
