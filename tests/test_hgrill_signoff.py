@@ -379,14 +379,18 @@ def test_manifest_holds_identifiers_only() -> None:
 
 def test_page_is_self_contained_and_csp_hash_matches_script() -> None:
     page = so.render_page([legacy(), so.load_snapshot(REPO, 3, "Other", v1_body(v1_snapshot()))])
-    scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
-    assert len(scripts) == 1
-    digest = base64.b64encode(hashlib.sha256(scripts[0].encode()).digest()).decode()
+    # Count every script element, any case and any attributes: an extra executable
+    # script would carry no CSP hash and break self-containment.
+    scripts = re.findall(r"<script\b([^>]*)>(.*?)</script\b[^>]*>", page, re.I | re.S)
+    assert len(scripts) == 2
+    data_attrs = re.compile(r'(?=.*\btype="application/json")(?=.*\bid="signoff-data")', re.I)
+    data_blocks = [body for attrs, body in scripts if data_attrs.match(attrs)]
+    executable = [body for attrs, body in scripts if not attrs.strip()]
+    assert len(data_blocks) == 1 and len(executable) == 1
+    digest = base64.b64encode(hashlib.sha256(executable[0].encode()).digest()).decode()
     assert f"script-src 'sha256-{digest}'" in page
     assert not re.search(r"(src|href)=\"?https?:", page)
-    match = re.search(r'id="signoff-data">(.*?)</script>', page, re.S)
-    assert match
-    data = json.loads(match.group(1))
+    data = json.loads(data_blocks[0])
     assert [i["issue"] for i in data["issues"]] == [7, 3]
     assert [i["id"] for i in data["issues"][0]["items"]][:2] == ["R1", "P1"]
 
