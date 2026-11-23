@@ -618,8 +618,9 @@ def parse_str_list(target: dict[str, Any], key: str) -> list[str] | None:
 def has_git_metadata_segment(rel: str | Path) -> bool:
     """Whether a path has a `.git` segment at any depth.
 
-    Case-insensitive, and trailing dots and spaces are ignored, because NTFS
-    and APFS resolve `.GIT`, `.git.` and `.git ` to the same entry. Exact
+    Case-insensitive, because case-insensitive file systems (default APFS,
+    NTFS) resolve `.GIT` to `.git`, and trailing dots and spaces are ignored,
+    because Windows path normalisation strips them from `.git.` and `.git `. Exact
     segment match, so `.github`, `.gitignore`, `.gitattributes`, `.gitmodules`
     and `.gitkeep` are not caught.
     """

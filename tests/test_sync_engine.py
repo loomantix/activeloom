@@ -3961,7 +3961,7 @@ def test_main_refuses_git_metadata_write_before_writing_anything(
     assert not (consumer_dir / destination).exists()
 
 
-@pytest.mark.parametrize("destination", GIT_METADATA_DESTINATIONS)
+@pytest.mark.parametrize("destination", [*GIT_METADATA_DESTINATIONS, ".git/CODEOWNERS"])
 def test_main_git_metadata_destination_cannot_be_granted(
     sync_engine: ModuleType,
     upstream_repo: Path,
@@ -3970,21 +3970,50 @@ def test_main_git_metadata_destination_cannot_be_granted(
     capsys: pytest.CaptureFixture[str],
     destination: str,
 ) -> None:
+    # Stub the parser so the grant is in effect: this pins the engine gate,
+    # not the parser's own rejection (covered separately below).
     (upstream_repo / "payload").write_text("payload\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "payload", "destination": destination}]},
     )
-    _write_yaml(
-        consumer_dir / ".activeloom-config.yml",
-        {"allowed_destinations": ["**"], "allow_sensitive_writes": [destination]},
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+    monkeypatch.setattr(
+        sync_engine, "parse_sensitive_write_allowlist", lambda *a: frozenset({destination})
     )
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
     err = capsys.readouterr().err
-    assert "inside a `.git` directory" in err
+    assert "engine-level block" in err
     assert destination in err
     assert not (consumer_dir / destination).exists()
+
+
+@pytest.mark.parametrize("grant", [".git/CODEOWNERS", ".GIT/CODEOWNERS", ".git./CODEOWNERS"])
+def test_main_rejects_allow_sensitive_writes_grant_inside_git(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    grant: str,
+) -> None:
+    # `**/CODEOWNERS` is a sensitive pattern, so only the `.git` check rejects it.
+    (upstream_repo / "payload").write_text("payload\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": "ordinary.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".activeloom-config.yml",
+        {"allowed_destinations": ["**"], "allow_sensitive_writes": [grant]},
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "drop this entry" in err
+    assert repr(grant) in err
+    assert not (consumer_dir / "ordinary.md").exists()
 
 
 def test_main_refuses_git_metadata_delete(
@@ -4039,6 +4068,32 @@ def test_main_refuses_destination_whose_parent_symlinks_into_git(
     assert "inside a `.git` directory" in err
     assert destination in err
     assert not (hooks / "pre-commit").exists()
+
+
+def test_main_refuses_destination_that_is_a_symlink_into_git(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The destination itself is the symlink; the write would go through it.
+    git_config = consumer_dir / ".git" / "config"
+    git_config.parent.mkdir(parents=True)
+    git_config.write_text("[core]\n")
+    (consumer_dir / "ordinary.md").symlink_to(Path(".git") / "config")
+    (upstream_repo / "payload").write_text("[core]\n\tfsmonitor = x\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": "ordinary.md"}]},
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "inside a `.git` directory" in err
+    assert "ordinary.md" in err
+    assert git_config.read_text() == "[core]\n"
 
 
 def test_main_in_loop_git_metadata_gate_refuses_when_the_pre_pass_misses(
