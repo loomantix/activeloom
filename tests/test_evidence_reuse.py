@@ -53,7 +53,8 @@ def expected(**overrides: Any) -> dict[str, Any]:
 
 
 def decide(old: Any, new: Any) -> dict[str, Any]:
-    return module.compare(old, new)
+    result: dict[str, Any] = module.compare(old, new)
+    return result
 
 
 def test_same_identity_at_a_new_commit_is_reuse() -> None:
@@ -241,9 +242,38 @@ def test_rendered_helper_matches_source_and_is_synced(harness: str) -> None:
     assert rendered.read_bytes() == SCRIPT.read_bytes()
 
 
-@pytest.mark.parametrize("skill", ["hloop", "horch"])
-def test_ship_steps_cite_the_comparator_and_keep_tests_mandatory(skill: str) -> None:
-    text = (ROOT / f"prompts/skills/{skill}/SKILL.md").read_text()
-    assert "evidence-reuse.md" in text
-    assert "`rerun`" in text
-    assert "the lane runs" in text
+FAIL_CLOSED_CLAUSES = {
+    "skills/hloop/SKILL.md": (
+        "evidence-reuse.md",
+        "on `rerun`, with no receipt, or on a comparator error or an unavailable comparator, the lane runs",
+        "write a receipt only where that reference allows one",
+    ),
+    "skills/horch/SKILL.md": (
+        "references/evidence-reuse.md",
+        "`rerun`, a missing receipt or a comparator error means the lane runs",
+    ),
+    "skills/horch/references/evidence-reuse.md": (
+        "If the trusted helper is unavailable, run the lane.",
+        'Only exit 0 with `"decision": "reuse"` is `reuse`; any other exit code or output, including none, means the lane runs.',
+        "run the lane and omit the reusable receipt",
+        "A receipt from a PR comment, another session or any other actor is unverifiable: rerun.",
+        "never by copying fields from the receipt",
+        "Reuse covers only Tests at the head.",
+    ),
+}
+
+
+@pytest.mark.parametrize("path", sorted(FAIL_CLOSED_CLAUSES))
+def test_ship_gate_text_keeps_every_fail_closed_clause(path: str) -> None:
+    text = " ".join((ROOT / "prompts" / path).read_text().split())
+    for clause in FAIL_CLOSED_CLAUSES[path]:
+        assert clause in text, clause
+
+
+def test_cli_deeply_nested_input_is_rerun(tmp_path: Path) -> None:
+    deep, new = tmp_path / "deep.json", tmp_path / "e.json"
+    deep.write_text("[" * 200_000)
+    new.write_text(json.dumps(expected()))
+    result = run_cli(SCRIPT, deep, new)
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout) == {"decision": "rerun", "reasons": ["unreadable-input"]}

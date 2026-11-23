@@ -21,7 +21,7 @@ Write one receipt per test lane, at the end of each Tests at the head run, into 
 
 At receipt creation and comparison, verify the checkout is at the named head and its tracked inputs match the committed tree. Include any untracked or ignored inputs the lane can read in `inputs`. Capture the effective inputs before executing the lane, including its working directory relative to the checkout and any Git metadata used by its commands or test selection.
 
-Use a non-secret version identifier for a secret-dependent input. Never hash secret values or test output. Reserve a fixed `none` marker for dimensions known to be inapplicable. If a relevant input is unknown, mutable during measurement, or cannot be verified safely, run the lane and omit the reusable receipt.
+Use a non-secret version identifier for a secret-dependent input. Never hash secret values or test output. For a dimension known to be inapplicable, use the fixed marker `none`: literally in a token field, and as the SHA-256 of the string `none` in a digest field. If a relevant input is unknown, mutable during measurement, or cannot be verified safely, run the lane and omit the reusable receipt.
 
 ## Comparing
 
@@ -31,7 +31,7 @@ At a new head, build the expected identity the same way from the new head and th
 python3 -I "$comparator" <receipt.json> <expected.json>
 ```
 
-It prints `{"decision": "reuse"|"rerun", "reasons": [...]}`. Exit 0 is `reuse`; 3 is `rerun`; 2 is `rerun` because an input could not be read. A missing, malformed or unknown field is `rerun`, as is any mismatch, an outcome other than `pass`, or a skip the expected identity does not allow.
+It prints `{"decision": "reuse"|"rerun", "reasons": [...]}`. Exit 0 is `reuse`; 3 is `rerun`; 2 is `rerun` because an input could not be read. A missing, malformed or unknown field is `rerun`, as is any mismatch, an outcome other than `pass`, or a skip the expected identity does not allow. Only exit 0 with `"decision": "reuse"` is `reuse`; any other exit code or output, including none, means the lane runs.
 
 - **`reuse`:** Tests at the head is satisfied at the new head for that lane only. Record the decision, the receipt's head and the reason list in the run's report, labelled as reused evidence, not as a new run.
 - **`rerun`, or no receipt:** run Tests at the head as written. Quote the comparator's reasons in the report.

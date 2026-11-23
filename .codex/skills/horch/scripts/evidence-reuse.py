@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         receipt, expected = _load(args.receipt), _load(args.expected)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         print(json.dumps({"decision": "rerun", "reasons": ["unreadable-input"]}))
         return 2
     result = compare(receipt, expected)
