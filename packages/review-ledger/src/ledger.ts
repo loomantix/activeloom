@@ -5,11 +5,13 @@ import {
   requireRevalidationRun,
 } from './revalidation.js';
 import {
+  COMPLETE_V3_RE,
   DISPOSITION_V1,
   DISPOSITION_V1_RE,
   FINDING_V1,
   FINDING_V1_RE,
   LEGACY_THREAD_MARKER_RE,
+  PASS_V3_RE,
   PROTOCOL_THREAD_MARKER_RE,
   PR_V1_MARKERS,
   PROTOCOL_VERSION,
@@ -863,13 +865,67 @@ export function transitionHeads(params: {
   return heads;
 }
 
+const ATTESTATION_PREFIXES = [
+  '<!-- local-review-pass:v3',
+  '<!-- local-review-complete:v3',
+];
+
+/** Gemini attests under either name; both are one reviewer. */
+function readerIdentity(engine: string): string {
+  return engine === 'antigravity' ? 'gemini' : engine;
+}
+
 /**
- * First convergence round for the PR's current run. Lean spends its second and
- * final round in convergence mode; Deep and legacy PRs without a run marker
- * start convergence at round 3.
+ * Whether the history shows this engine already read the change in an earlier
+ * round of `run`. Only actor-owned rows posted after the run marker count, so a
+ * comment body alone never proves or disproves a read. A row that starts as an
+ * attestation but does not parse cannot be attributed, so it counts as a read
+ * by every engine: an unreadable history fails closed to convergence.
  */
-function convergenceStartRound(repo: string, pr: number): number {
-  return currentRun(repo, pr)?.tier === 'lean' ? 2 : 3;
+function readEarlierInRun(
+  rows: Array<Record<string, unknown>>,
+  run: ReviewRun,
+  engine: SupportedEngine,
+  round: number,
+): boolean {
+  const reader = readerIdentity(engine);
+  return rows.some((row) => {
+    const id = row['id'];
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) return true;
+    if (id <= run.commentId) return false;
+    const body = row['body'];
+    if (typeof body !== 'string') return false;
+    if (!ATTESTATION_PREFIXES.some((prefix) => body.startsWith(prefix))) {
+      return false;
+    }
+    const match = PASS_V3_RE.exec(body) ?? COMPLETE_V3_RE.exec(body);
+    if (match?.index !== 0 || !match.groups) return true;
+    return (
+      readerIdentity(match.groups['engine']!) === reader &&
+      parseInt(match.groups['round']!, 10) < round
+    );
+  });
+}
+
+/**
+ * Whether this engine's pass in `round` runs under the convergence rules.
+ * Lean spends its second and final round in convergence mode; Deep and legacy
+ * PRs without a run marker start convergence at round 3. Within a declared run,
+ * an engine with no earlier authenticated pass or completion attestation is
+ * joining late and gets one adversarial cold read whatever the round. Legacy
+ * PRs have no run scope to read that from, so they stay on the round number.
+ */
+function isConvergenceRound(params: {
+  repo: string;
+  pr: number;
+  engine: SupportedEngine;
+  round: number;
+}): boolean {
+  const rows = getIssueComments(params.repo, params.pr);
+  const run = reviewRuns(rows).at(-1);
+  if (params.round < (run?.tier === 'lean' ? 2 : 3)) return false;
+  if (run === undefined) return true;
+  return readEarlierInRun(rows, run, params.engine, params.round);
 }
 
 /**
@@ -946,8 +1002,12 @@ export function verifyResultEvidence(
   if (!evidence.some(([, hasFix]) => hasFix)) {
     fail('changed review results require a fixed ledger finding');
   }
+  const convergence = isConvergenceRound(args);
+  if (convergence && data.classification !== 'material') {
+    fail('convergence changed review results require material classification');
+  }
   if (
-    args.round >= convergenceStartRound(args.repo, args.pr) &&
+    convergence &&
     evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)
   ) {
     fail('convergence review results cannot fix non-blocking findings');
@@ -1003,8 +1063,7 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   if (!changed && params.classification !== undefined) {
     fail('clean review result cannot have a classification');
   }
-  const convergence =
-    params.round >= convergenceStartRound(params.repo, params.pr);
+  const convergence = isConvergenceRound(params);
   // A consequence of the convergence rule below, not an independent judgement:
   // a convergence round may only fix a `blocking` finding, and no `blocking`
   // defect can be cleared by a comment or test edit, so any legitimate
@@ -1022,8 +1081,8 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   // This one reads severity on purpose. It enforces a disposition rule — what a
   // convergence round may change — not a classification, so decoupling
   // classification from severity leaves it alone. A convergence round therefore
-  // still cannot fix a wrong comment; that is intended, because round 3+ exists
-  // to land the change.
+  // still cannot fix a wrong comment; that is intended, because convergence
+  // exists to land the change.
   if (
     changed &&
     convergence &&
@@ -1101,7 +1160,7 @@ export function checkBlockedRound(
       'the blocked round published a change with no fixed same-round finding; it was not reviewed',
     );
   }
-  if (params.round >= convergenceStartRound(params.repo, params.pr)) {
+  if (isConvergenceRound(params)) {
     for (const [fingerprint, , , hasNonblockingFix] of dispositions) {
       if (hasNonblockingFix) {
         slips.push(
@@ -1185,7 +1244,7 @@ export function preflightFix(params: PreflightFixParams): PreflightFixResult {
   requireCarriedFixRun(params);
   verifyHead(params.repo, params.pr, params.head);
   const comments = ledgerComments(params.repo, params.pr);
-  const stance = roundStance(params.repo, params.pr, params.round);
+  const stance = roundStance(params);
   const severity = fixableFindingSeverity(comments, params, stance);
   verifyHead(params.repo, params.pr, params.head);
   return { ...params, severity, stance, verified: true };
@@ -1212,7 +1271,7 @@ export function preflightPublish(
   }
   verifyHead(params.repo, params.pr, params.head);
   const comments = ledgerComments(params.repo, params.pr);
-  const stance = roundStance(params.repo, params.pr, params.round);
+  const stance = roundStance(params);
   for (const finding of params.findings)
     requireCarriedFixRun({ ...params, ...finding });
   const findings = params.findings.map((finding) => ({
@@ -1227,14 +1286,13 @@ export function preflightPublish(
   return { ...params, findings, stance, verified: true };
 }
 
-function roundStance(
-  repo: string,
-  pr: number,
-  round: number,
-): 'adversarial' | 'convergence' {
-  return round >= convergenceStartRound(repo, pr)
-    ? 'convergence'
-    : 'adversarial';
+function roundStance(params: {
+  repo: string;
+  pr: number;
+  engine: SupportedEngine;
+  round: number;
+}): 'adversarial' | 'convergence' {
+  return isConvergenceRound(params) ? 'convergence' : 'adversarial';
 }
 
 /**

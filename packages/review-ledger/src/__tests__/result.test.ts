@@ -69,7 +69,9 @@ describe('review result data validation, reading, and writing', () => {
     expect(res.findingFingerprints).toEqual(['fp-1', 'fp-2']);
   });
 
-  it('requires material classification on round 3+ changed result', () => {
+  // Whether a round is convergence depends on the run and on this engine's
+  // earlier reads, so the material rule lives in verifyResultEvidence.
+  it('leaves the convergence classification rule to ledger verification', () => {
     const minorRound3 = {
       version: 3,
       status: 'changed',
@@ -82,7 +84,7 @@ describe('review result data validation, reading, and writing', () => {
       findingFingerprints: ['fp-1'],
       finalLaneComplete: true,
     };
-    expect(() =>
+    expect(
       validateResultData(
         {
           engine: 'codex',
@@ -92,8 +94,8 @@ describe('review result data validation, reading, and writing', () => {
           head: afterSha,
         },
         Buffer.from(JSON.stringify(minorRound3)),
-      ),
-    ).toThrowError(/changed review result conflicts with the observed pass/);
+      ).classification,
+    ).toBe('minor');
   });
 
   it('validates and writes blocked review result', () => {

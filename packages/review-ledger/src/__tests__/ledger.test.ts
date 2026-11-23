@@ -692,6 +692,12 @@ describe('ledger operations and workflow verification', () => {
       });
       expect(mock.reviewComments).toHaveLength(3);
       expect(mock.reviewComments[0]).toEqual(original);
+      // codex read round 1 of this run, so round 3 is not a late joiner's read.
+      mock.issueComments.push({
+        id: 51,
+        user: { login: mock.actor },
+        body: `<!-- local-review-pass:v3 engine=codex round=1 base=${mock.prBase} head=${oldHead} result-sha256=${'d'.repeat(64)} -->\nReviewed.\n`,
+      });
       expect(
         preflightFix({ ...params, head: nextHead, round: 3 }),
       ).toMatchObject({ stance: 'convergence', severity: 'blocking' });
@@ -900,6 +906,16 @@ describe('ledger operations and workflow verification', () => {
         },
       ];
       post('major', 2);
+      // The engine has not read this run yet: a late joiner's cold read.
+      expect(preflightFix({ ...params, round: 2 })).toMatchObject({
+        stance: 'adversarial',
+        severity: 'major',
+      });
+      mock.issueComments.push({
+        id: 21,
+        user: { login: mock.actor },
+        body: `<!-- local-review-pass:v3 engine=${params.engine} round=1 base=${mock.prBase} head=${headSha} result-sha256=${'d'.repeat(64)} -->\nReviewed.\n`,
+      });
       expect(() => preflightFix({ ...params, round: 2 })).toThrow(
         /convergence fixes require/,
       );

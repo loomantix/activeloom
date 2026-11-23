@@ -516,6 +516,15 @@ convergence mode. At both tiers, stop as soon as every participant covers the
 current head and any material fix has a later independent non-material pass.
 A clean first cycle is enough — the cap is a ceiling, not a target.
 
+A reviewer joining a run late is the exception at both tiers. When this engine
+holds no `local-review-pass:v3` or `local-review-complete:v3` attestation from
+an earlier round of the current run, posted by the authenticated actor, its pass
+is adversarial whatever the round number. `authorize-pass` reports that stance,
+and the ledger's fix preflights, result writing and result verification apply
+the same rule. Attestations from an earlier run do not count; an
+attestation-shaped comment that does not parse counts as a read by every
+engine, so an unreadable history fails closed to convergence.
+
 Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
 ship the PR and carry the issues, not open a fifth round.

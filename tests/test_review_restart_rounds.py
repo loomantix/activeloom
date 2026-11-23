@@ -881,8 +881,9 @@ def test_authorization_reports_the_round_stance(
     }
     monkeypatch.setattr(handoff, "_run_records", lambda rows: [run])
     for round_number, stance in enumerate(stances, start=1):
+        # The engine read every earlier round itself, so it is not joining late.
         rows = [
-            {"id": 30 + index, "body": marker("codex", index + 1)}
+            {"id": 30 + index, "body": marker("claude", index + 1)}
             for index in range(round_number - 1)
         ]
         monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
@@ -897,6 +898,69 @@ def test_authorization_reports_the_round_stance(
             )
         )
         assert json.loads(capsys.readouterr().out)["stance"] == stance
+
+
+def _stance(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    tier: str,
+    round_number: int,
+    rows: list[dict[str, object]],
+) -> str:
+    run = {
+        "comment_id": 20,
+        "run_id": "d" * 64,
+        "base": "b" * 40,
+        "tier": tier,
+        "max_rounds": 2 if tier == "lean" else 4,
+    }
+    monkeypatch.setattr(handoff, "_run_records", lambda _rows: [run])
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    handoff._authorize_pass(
+        SimpleNamespace(
+            repo="example/repo", pr=7, base="b" * 40, head="a" * 40,
+            engine="claude", round=round_number,
+        )
+    )
+    return str(json.loads(capsys.readouterr().out)["stance"])
+
+
+@pytest.mark.parametrize(("tier", "round_number"), [("lean", 2), ("deep", 3)])
+def test_late_joiner_gets_an_adversarial_first_read(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+    round_number: int,
+) -> None:
+    """Stance tracks this engine's reads in the run, not the round ordinal."""
+    others = [
+        {"id": 30 + index, "body": marker("codex", index + 1)}
+        for index in range(round_number - 1)
+    ]
+    # Attestations before the run marker belong to an earlier run.
+    earlier_run = [{"id": 10, "body": marker("claude", 1)}]
+    assert _stance(handoff, monkeypatch, capsys, tier=tier,
+                   round_number=round_number, rows=earlier_run + others) == "adversarial"
+    # A second read by the same engine in that round is convergence.
+    own = [{"id": 29, "body": marker("claude", 1)}]
+    assert _stance(handoff, monkeypatch, capsys, tier=tier,
+                   round_number=round_number, rows=own + others) == "convergence"
+
+
+def test_unattributable_attestation_fails_closed_to_convergence(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows: list[dict[str, object]] = [
+        {"id": 30, "body": marker("codex", 1)},
+        {"id": 31, "body": "<!-- local-review-pass:v3 engine=claude round=1 -->"},
+    ]
+    assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                   round_number=2, rows=rows) == "convergence"
 
 
 def run_comment(
