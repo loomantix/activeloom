@@ -175,7 +175,10 @@ class Outbox:
 
     def _row(self, identity: str) -> sqlite3.Row | None:
         self.connection.row_factory = sqlite3.Row
-        return self.connection.execute("SELECT * FROM intents WHERE id = ?", (identity,)).fetchone()
+        row: sqlite3.Row | None = self.connection.execute(
+            "SELECT * FROM intents WHERE id = ?", (identity,)
+        ).fetchone()
+        return row
 
     def record(self, repo: str, pr: int, head: str, message: str) -> str:
         """Persist the intent before the merge. Re-recording an unmerged intent updates it."""

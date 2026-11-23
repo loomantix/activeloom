@@ -54,7 +54,11 @@ is intentionally narrow: it ships staging-base PRs only.
    ```
 
    Exit 3 lists notifications still pending from earlier ships; mention them
-   in the final report and let step 11's `flush` retry them.
+   in the final report. Step 11's `flush` retries only confirmed intents. An
+   `awaiting-merge` intent whose PR has since merged is never retried on its
+   own: confirm it with `python3 "$OUTBOX" confirm --id <id> --merge <sha>`
+   using the PR's verified `mergeCommit`, or `discard` it if the PR closed
+   unmerged.
 
 3. Resolve the current repository identity and fetch PR state. Both queries must
    succeed before merging. Refuse before changing draft state unless the PR is

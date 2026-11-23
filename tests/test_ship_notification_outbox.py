@@ -10,8 +10,10 @@ import sys
 import threading
 from pathlib import Path
 from types import ModuleType
+from typing import Any, Iterator
 from urllib.error import HTTPError
-from urllib.request import build_opener
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request, build_opener
 
 import pytest
 import yaml
@@ -39,7 +41,7 @@ def module() -> ModuleType:
 
 
 @pytest.fixture
-def box(module: ModuleType, tmp_path: Path):
+def box(module: ModuleType, tmp_path: Path) -> Iterator[Any]:
     outbox = module.Outbox(tmp_path / "state" / "outbox.sqlite3")
     yield outbox
     outbox.close()
@@ -58,7 +60,7 @@ class Recorder:
         return self.receipt
 
 
-def test_intent_is_recorded_before_merge_and_not_delivered_until_confirmed(module: ModuleType, box) -> None:
+def test_intent_is_recorded_before_merge_and_not_delivered_until_confirmed(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     assert box.status(identity) == module.AWAITING_MERGE
     sender = Recorder()
@@ -70,7 +72,7 @@ def test_intent_is_recorded_before_merge_and_not_delivered_until_confirmed(modul
     assert box.flush(REPO, WEBHOOK, sender) == {identity: module.DELIVERED}
 
 
-def test_record_and_confirm_are_idempotent(module: ModuleType, box) -> None:
+def test_record_and_confirm_are_idempotent(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, "first draft")
     assert box.record(REPO, 7, HEAD, MESSAGE) == identity
     request_id = box._row(identity)["request_id"]
@@ -83,7 +85,7 @@ def test_record_and_confirm_are_idempotent(module: ModuleType, box) -> None:
     assert (row["message"], row["request_id"]) == (MESSAGE, request_id)
 
 
-def test_flush_is_safe_to_repeat_and_never_reposts(module: ModuleType, box) -> None:
+def test_flush_is_safe_to_repeat_and_never_reposts(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
     sender = Recorder()
@@ -94,7 +96,7 @@ def test_flush_is_safe_to_repeat_and_never_reposts(module: ModuleType, box) -> N
     assert box.pending() == {}
 
 
-def test_flush_only_delivers_the_selected_repository(module: ModuleType, box) -> None:
+def test_flush_only_delivers_the_selected_repository(module: ModuleType, box: Any) -> None:
     other = box.record("other/project", 7, HEAD, "other summary")
     box.confirm(other, MERGE)
     current = box.record(REPO, 7, HEAD, MESSAGE)
@@ -111,7 +113,7 @@ def test_interrupted_send_preserves_the_destination(module: ModuleType, tmp_path
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
 
-    def interrupted(*args):
+    def interrupted(*args: object) -> str:
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
@@ -145,7 +147,7 @@ def test_failed_delivery_stays_pending_and_retries_with_the_same_request_id(modu
         assert secret.encode() not in stored
 
 
-def test_missing_or_invalid_webhook_is_pending_not_an_error(module: ModuleType, box) -> None:
+def test_missing_or_invalid_webhook_is_pending_not_an_error(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
     sender = Recorder()
@@ -157,7 +159,7 @@ def test_missing_or_invalid_webhook_is_pending_not_an_error(module: ModuleType, 
     assert box.pending() == {identity: module.PENDING_CONFIGURATION}
 
 
-def test_destination_change_does_not_resend_an_uncertain_delivery(module: ModuleType, box) -> None:
+def test_destination_change_does_not_resend_an_uncertain_delivery(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
     box.deliver(identity, WEBHOOK, Recorder(error=TimeoutError()))
@@ -168,7 +170,7 @@ def test_destination_change_does_not_resend_an_uncertain_delivery(module: Module
     assert box.pending() == {}
 
 
-def test_discard_never_removes_a_delivered_intent(module: ModuleType, box) -> None:
+def test_discard_never_removes_a_delivered_intent(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
     box.deliver(identity, WEBHOOK, Recorder())
@@ -199,13 +201,65 @@ def test_endpoint_pins_the_request_id(module: ModuleType) -> None:
     assert endpoint.startswith("https://chat.googleapis.com/v1/spaces/AAAA/messages?")
 
 
+def test_send_carries_the_request_id_and_message(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[Request] = []
+
+    def fake_post(endpoint: str, message: str, opener: object = None) -> str:
+        captured.append(Request(endpoint, data=json.dumps({"text": message}).encode(), method="POST"))
+        return "spaces/AAAA/messages/m1"
+
+    monkeypatch.setattr(module, "post", fake_post)
+    assert module.send(WEBHOOK, "req-1", MESSAGE) == "spaces/AAAA/messages/m1"
+    (request,) = captured
+    parts = urlsplit(request.full_url)
+    assert (parts.scheme, parts.hostname, parts.path) == ("https", "chat.googleapis.com", "/v1/spaces/AAAA/messages")
+    assert parse_qs(parts.query) == {"key": [SECRET_KEY], "token": [SECRET_TOKEN], "requestId": ["req-1"]}
+    assert isinstance(request.data, bytes) and json.loads(request.data) == {"text": MESSAGE}
+    with pytest.raises(module.InvalidWebhook):
+        module.send("https://evil.example/v1/spaces/AAAA/messages", "req-1", MESSAGE)
+    assert len(captured) == 1
+
+
+def test_post_sends_the_message_as_json(module: ModuleType) -> None:
+    seen: list[Request] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, *args: object) -> bytes:
+            return json.dumps({"name": "spaces/AAAA/messages/m1"}).encode()
+
+    class Opener:
+        def open(self, request: Request, timeout: float) -> Response:
+            seen.append(request)
+            return Response()
+
+    assert module.post("https://chat.googleapis.com/v1/spaces/AAAA/messages?requestId=r", MESSAGE, Opener()) == "spaces/AAAA/messages/m1"
+    (request,) = seen
+    assert request.get_method() == "POST"
+    assert isinstance(request.data, bytes) and json.loads(request.data) == {"text": MESSAGE}
+
+
 class _Redirector(http.server.BaseHTTPRequestHandler):
     hits: list[str] = []
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler name
+        # A stock opener follows a 302/303 for a POST as a GET; record it.
+        type(self).hits.append(self.path)
+        self.send_response(200)
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
         type(self).hits.append(self.path)
         if self.path.startswith("/redirect"):
-            self.send_response(307)
+            # 302/303 are the codes the stock handler follows for a POST.
+            self.send_response(int(self.path.rsplit("/", 1)[1]))
             self.send_header("Location", "/landed")
             self.end_headers()
             return
@@ -227,11 +281,17 @@ def test_redirects_are_refused(module: ModuleType) -> None:
     thread.start()
     try:
         base = f"http://127.0.0.1:{server.server_port}"
-        opener = build_opener(module.NoRedirect())
-        assert module.post(f"{base}/ok", "hi", opener) == "spaces/AAAA/messages/m1"
-        with pytest.raises(HTTPError):
-            module.post(f"{base}/redirect", "hi", opener)
+        assert module.post(f"{base}/ok", "hi") == "spaces/AAAA/messages/m1"
+        for code in (302, 303):
+            # The default opener, as production uses it.
+            with pytest.raises(HTTPError):
+                module.post(f"{base}/redirect/{code}", "hi")
+            with pytest.raises(HTTPError):
+                module.post(f"{base}/redirect/{code}", "hi", build_opener(module.NoRedirect()))
         assert "/landed" not in _Redirector.hits
+        # Control: without NoRedirect the same response is followed.
+        build_opener().open(f"{base}/redirect/302", data=b"{}")
+        assert "/landed" in _Redirector.hits
     finally:
         server.shutdown()
         server.server_close()
