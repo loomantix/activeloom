@@ -840,25 +840,19 @@ node <ledger-helper> verify-ledger \
 
 ### Blocking outcomes
 
-A `blocking` finding may not end `deferred`. Both `fixed` and `dismissed` are
-valid terminal outcomes — a blocker judged on inspection not to be a defect is
-dismissed, and that dismissal is attestable. Only deferral, which carries a live
-blocker past the review, is refused.
+A `blocking` finding must be fixed or dismissed with evidence. For a
+dismissal, put the disproof in the disposition body, or record the repository
+owner's design decision and cite the deciding user's words in the reviewing
+session. The helper requires a non-empty body and verifies its content hash.
+Count the dismissal under `blocking.invalidDismissed` in the pass's findings
+summary. It contributes its fingerprint to the same-round result without
+claiming a fix or requiring a run restart.
 
-The rule is evaluated on the **latest** occurrence of a fingerprint. Occurrences
-are a sequential history of one root cause, so the highest occurrence is its
-current state, and a recorded disposition is immutable by design. Evaluating
-every occurrence independently would make a blocker that was deferred once and
-later fixed permanently unattestable, leaving only two ways out — rewriting
-history or forging the marker — which are the two things the ledger exists to
-prevent. When a later occurrence clears an earlier blocking deferral, that
-recurrence and its fix must also form strict forward Git transitions.
-
-The same-round **result evidence** paths are deliberately stricter: there a
-blocking finding must be `fixed`, not merely not-deferred. That rule governs
-what a review result may claim as same-round evidence, which is a different
-question from whether the ledger is internally consistent. Do not collapse the
-two.
+A live blocker cannot be deferred. If an earlier occurrence was already
+deferred, a later occurrence of the same fingerprint must fix it or dismiss
+it with evidence. Each intervening recurrence must advance to a descendant
+commit. A fix must also advance from the finding head to the fix head. A
+dismissal can record its evidence at the finding head.
 
 Same-round result evidence is scoped to the PR's latest run. An earlier run that
 ended, was aborted, or was superseded reuses the same engine and round labels,

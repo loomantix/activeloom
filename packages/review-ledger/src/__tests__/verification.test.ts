@@ -1871,7 +1871,7 @@ describe('severity correction verification in threads and results', () => {
       },
     ];
     expect(() => verifyLedger({ repo: REPO, pr: PR, head: HEAD })).toThrow(
-      'blocking local-review findings must be fixed',
+      'blocking local-review findings cannot be deferred',
     );
   });
 

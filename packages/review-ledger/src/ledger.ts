@@ -527,12 +527,12 @@ export function verifyHistoricalThreads(repo: string, pr: number): void {
 }
 
 /**
- * Require the latest blocking occurrence to be fixed.
+ * Refuse an outstanding blocking deferral.
  *
  * A fingerprint's occurrences are a sequential history of one root cause, so
  * the highest occurrence is its current state. When a later occurrence clears
- * an earlier unfixed blocker, the recurrence and its fix must form strict
- * forward Git transitions.
+ * a deferred blocker, the recurrence must move forward. A fix also needs a
+ * forward commit; a dismissal can cite evidence at the finding head.
  */
 export function verifyBlockingNotDeferred(
   repo: string | undefined,
@@ -551,8 +551,8 @@ export function verifyBlockingNotDeferred(
   for (const records of grouped.values()) {
     records.sort((a, b) => a[0] - b[0]);
     const [, finding, disposition] = records[records.length - 1]!;
-    if (finding.severity === 'blocking' && disposition.outcome !== 'fixed') {
-      fail('blocking local-review findings must be fixed');
+    if (finding.severity === 'blocking' && disposition.outcome === 'deferred') {
+      fail('blocking local-review findings cannot be deferred');
     }
 
     const priorUnfixedBlockers: number[] = [];
@@ -560,7 +560,7 @@ export function verifyBlockingNotDeferred(
       const [, priorFinding, priorDisposition] = records[index]!;
       if (
         priorFinding.severity === 'blocking' &&
-        priorDisposition.outcome !== 'fixed'
+        priorDisposition.outcome === 'deferred'
       ) {
         priorUnfixedBlockers.push(index);
       }
@@ -568,8 +568,8 @@ export function verifyBlockingNotDeferred(
     if (priorUnfixedBlockers.length === 0) {
       continue;
     }
-    if (disposition.outcome !== 'fixed') {
-      fail('an unfixed blocker must be cleared by a later fixed occurrence');
+    if (disposition.outcome === 'deferred') {
+      fail('a deferred blocker must be fixed or dismissed with evidence');
     }
     if (repo === undefined) {
       fail(
@@ -584,7 +584,9 @@ export function verifyBlockingNotDeferred(
         records[index + 1]![1].head,
       );
     }
-    verifyForwardTransition(repo, finding.head, disposition.head);
+    if (disposition.outcome === 'fixed' || finding.head !== disposition.head) {
+      verifyForwardTransition(repo, finding.head, disposition.head);
+    }
   }
 }
 
@@ -774,8 +776,8 @@ export function sameRoundDispositions(
         );
       }
     }
-    if (finding.severity === 'blocking' && disposition.outcome !== 'fixed') {
-      fail('blocking local-review findings must be fixed');
+    if (finding.severity === 'blocking' && disposition.outcome === 'deferred') {
+      fail('blocking local-review findings cannot be deferred');
     }
 
     const fixed = disposition.outcome === 'fixed';
@@ -1682,8 +1684,8 @@ export function dispose(params: DisposeParams): DisposeResult {
   }
 
   const finding = matches[0]!;
-  if (finding.severity === 'blocking' && params.outcome !== 'fixed') {
-    fail('blocking local-review findings must be fixed');
+  if (finding.severity === 'blocking' && params.outcome === 'deferred') {
+    fail('blocking local-review findings cannot be deferred');
   }
 
   // Consistency check
