@@ -254,8 +254,12 @@ marker. Validate the selection with `local-review-handoff.py authorize-pass`
 before a lane. An ended run, including an aborted one, requires fresh restart
 authorization: this controller has no budget-preserving resume command. Never
 count earlier runs toward the new run's round or cap. Only a legacy review with
-no run marker uses PR-wide history. Rounds 1–2 are adversarial; round 3 and later
-are convergence rounds. State which applies before invoking a lane.
+no run marker uses PR-wide history. Take the stance from `authorize-pass`'s
+`stance` field: rounds 1–2 are adversarial and round 3 and later are convergence
+rounds, except that an engine holding no earlier pass or completion attestation
+in the current run reads adversarially whatever the round. When
+`$AGENT_LOOP_REVIEW_ROUND` is set, the round schedule alone applies. State which
+applies before invoking a lane.
 
 ## Chain
 
