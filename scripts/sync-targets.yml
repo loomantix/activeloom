@@ -396,6 +396,14 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .claude/skills/horch/references/evidence-reuse.md
+        destination: .claude/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .claude/skills/horch/scripts/evidence-reuse.py
+        destination: .claude/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
+
       - source: .claude/skills/horch/SKILL.md
         destination: .claude/skills/horch/SKILL.md
         substitutions: []
@@ -1022,6 +1030,14 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .codex/skills/horch/references/evidence-reuse.md
+        destination: .codex/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .codex/skills/horch/scripts/evidence-reuse.py
+        destination: .codex/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
+
       - source: .codex/skills/horch/SKILL.md
         destination: .codex/skills/horch/SKILL.md
         substitutions: []
@@ -1594,6 +1610,14 @@ harnesses:
         destination: .agents/skills/hgrill/scripts/signoff.py
         substitutions: []
         mode: '0755'
+
+      - source: .agents/skills/horch/references/evidence-reuse.md
+        destination: .agents/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .agents/skills/horch/scripts/evidence-reuse.py
+        destination: .agents/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
 
       - source: .agents/skills/horch/SKILL.md
         destination: .agents/skills/horch/SKILL.md
