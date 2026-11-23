@@ -260,9 +260,10 @@ class Inbox:
             except FileNotFoundError:
                 continue  # A concurrent acknowledgement removed the entry.
             except OSError as error:
+                if error.errno not in (errno.ELOOP, errno.EISDIR):  # A symlink or a directory.
+                    raise
+                self._quarantine(path)
                 invalid += 1
-                if error.errno in (errno.ELOOP, errno.EISDIR):  # A symlink or a directory.
-                    self._quarantine(path)
             except (ValueError, TypeError, KeyError):
                 invalid += 1
                 self._quarantine(path)

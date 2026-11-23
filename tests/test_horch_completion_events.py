@@ -299,8 +299,8 @@ def test_unreadable_entries_are_reported_once_and_cleared(tmp_path: Path, plant:
     assert len(inbox.pending()["events"]) == 1
 
 
-def test_a_transient_read_error_is_counted_but_not_quarantined(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_wait_reports_a_transient_read_error_and_delivers_after_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     inbox = ce.Inbox(tmp_path / "events")
     event = ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)
@@ -313,7 +313,8 @@ def test_a_transient_read_error_is_counted_but_not_quarantined(
         return real_open(path, flags, *args)
 
     monkeypatch.setattr(ce.os, "open", failing_open)
-    assert inbox.pending() == {"events": [], "invalid": 1}
+    assert ce.main(["--inbox", str(inbox.root), "wait"]) == 2
+    assert json.loads(capsys.readouterr().out) == {"status": "invalid", "reason": "inbox error 5"}
     monkeypatch.undo()
     assert inbox.pending() == {"events": [event], "invalid": 0}
 
