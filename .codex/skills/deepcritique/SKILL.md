@@ -257,9 +257,11 @@ count earlier runs toward the new run's round or cap. Only a legacy review with
 no run marker uses PR-wide history. Take the stance from `authorize-pass`'s
 `stance` field: rounds 1–2 are adversarial and round 3 and later are convergence
 rounds, except that an engine holding no earlier pass or completion attestation
-in the current run reads adversarially whatever the round. When
-`$AGENT_LOOP_REVIEW_ROUND` is set, the round schedule alone applies. State which
-applies before invoking a lane.
+in the current run reads adversarially whatever the round.
+With `$AGENT_LOOP_REVIEW_ROUND` set, apply the same rule to the authorized
+round using the authenticated prior-pass history. An unparseable attestation
+in the current run counts as an earlier read by every engine. With no run
+marker, use the round number. State the stance before invoking a lane.
 
 ## Chain
 
