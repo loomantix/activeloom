@@ -186,6 +186,7 @@ A refuted premise means a decision was made on a false fact. Fix it here; never 
    This is a correction pass. A read-only check after the last pass refuted these premises:
    - <false belief> — fact: <fact> (<source>). Affects: <decision, with its comment URL>.
    Re-decide every decision that rests on them, and anything that follows from those. Keep every other decision as it stands; do not reopen agreed calls. Your decision comment supersedes only the decisions you change, and names them.
+   If your handback plan excludes the issue, add_labels names its exclusion label: the current one unless this pass changes it, never <hold label>. Leave <hold label> out of add_labels and remove_labels; the applier keeps it whenever it is on the issue.
    ```
 
    Answer it as any other pass.

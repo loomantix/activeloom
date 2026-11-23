@@ -56,6 +56,9 @@ _INTEGRATION_BRANCH = re.compile(_SETTING.format(label="Integration branch"))
 _REWRITE_MODE = re.compile(_SETTING.format(label="Rewrite mode"))
 
 
+DEFAULT_HOLD_LABEL = "agent-bail: grill-review"
+
+
 class RubricConfig(NamedTuple):
     """Repository settings read from the local (or legacy) rubric."""
 
@@ -67,6 +70,9 @@ class RubricConfig(NamedTuple):
     integration_branch: str | None = None
     rewrite_mode: str = "edit"
     grill_handback: str = "ask"
+    # hgrill's hold (`grill.hold_label` in .activeloom-herd.json): only the
+    # owner's sign-off removes it, so refinement never sets, counts or sweeps it.
+    hold_label: str = DEFAULT_HOLD_LABEL
 
 
 def repo_root() -> str:
