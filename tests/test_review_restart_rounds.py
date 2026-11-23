@@ -908,6 +908,7 @@ def _stance(
     tier: str,
     round_number: int,
     rows: list[dict[str, object]],
+    engine: str = "claude",
 ) -> str:
     run = {
         "comment_id": 20,
@@ -921,10 +922,18 @@ def _stance(
     handoff._authorize_pass(
         SimpleNamespace(
             repo="example/repo", pr=7, base="b" * 40, head="a" * 40,
-            engine="claude", round=round_number,
+            engine=engine, round=round_number,
         )
     )
     return str(json.loads(capsys.readouterr().out)["stance"])
+
+
+def complete_marker(engine: str, round_number: int) -> str:
+    return (
+        f"<!-- local-review-complete:v3 engine={engine} round={round_number} "
+        f"base={'b' * 40} before={'a' * 40} head={'a' * 40} "
+        f"classification=minor fingerprints=fp0 result-sha256={'c' * 64} -->"
+    )
 
 
 @pytest.mark.parametrize(("tier", "round_number"), [("lean", 2), ("deep", 3)])
@@ -961,6 +970,45 @@ def test_unattributable_attestation_fails_closed_to_convergence(
     ]
     assert _stance(handoff, monkeypatch, capsys, tier="lean",
                    round_number=2, rows=rows) == "convergence"
+    malformed_complete: list[dict[str, object]] = [
+        {"id": 30, "body": marker("codex", 1)},
+        {"id": 31, "body": "<!-- local-review-complete:v3 engine=claude round=1 -->"},
+    ]
+    assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                   round_number=2, rows=malformed_complete) == "convergence"
+
+
+def test_late_joiner_parses_crlf_complete_and_alias_and_fails_closed_on_bad_id(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # CRLF-terminated attestation from codex still parses so claude remains adversarial.
+    crlf_rows: list[dict[str, object]] = [
+        {"id": 30, "body": f"{marker('codex', 1)}\r\nReviewed.\r\n"},
+    ]
+    assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                   round_number=2, rows=crlf_rows) == "adversarial"
+    # A valid complete:v3 attestation counts as an earlier read.
+    complete_rows: list[dict[str, object]] = [
+        {"id": 30, "body": complete_marker("claude", 1)},
+    ]
+    assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                   round_number=2, rows=complete_rows) == "convergence"
+    # An earlier antigravity attestation counts as a read by gemini.
+    alias_rows: list[dict[str, object]] = [
+        {"id": 30, "body": marker("antigravity", 1)},
+    ]
+    assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                   round_number=2, rows=alias_rows, engine="gemini") == "convergence"
+    # Non-integer comment id (including bool) fails closed to convergence.
+    for bad_id in (None, "30", True):
+        bad_rows: list[dict[str, object]] = [
+            {"id": bad_id, "body": "unrelated"},
+            {"id": 30, "body": marker("codex", 1)},
+        ]
+        assert _stance(handoff, monkeypatch, capsys, tier="lean",
+                       round_number=2, rows=bad_rows) == "convergence"
 
 
 def run_comment(

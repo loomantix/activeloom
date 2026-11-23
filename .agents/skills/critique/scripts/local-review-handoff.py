@@ -1191,23 +1191,26 @@ def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
     read_rounds: dict[str, int] = {}
     unattributed_read = False
     for row in rows:
-        if (
-            not isinstance(row.get("id"), int)
-            or cast(int, row["id"]) <= start_comment_id
-        ):
+        row_id = row.get("id")
+        if type(row_id) is not int:
+            unattributed_read = True
+            continue
+        if row_id <= start_comment_id:
             continue
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        if body.startswith(ATTESTATION_PREFIXES):
-            attestation = PASS_V3_RE.match(body) or COMPLETE_V3_RE.match(body)
+        normalized_body = body.replace("\r\n", "\n")
+        if normalized_body.startswith(ATTESTATION_PREFIXES):
+            first_line = normalized_body.split("\n", 1)[0]
+            attestation = PASS_V3_RE.match(first_line) or COMPLETE_V3_RE.match(first_line)
             if attestation is None:
                 unattributed_read = True
             else:
                 reader = _reader_identity(attestation.group("engine"))
                 read_round = int(attestation.group("round"))
                 read_rounds[reader] = min(read_rounds.get(reader, read_round), read_round)
-        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body), *RECOVERY_V1_RE.finditer(body)):
+        for marker in (*PASS_V3_RE.finditer(normalized_body), *COMPLETE_V3_RE.finditer(normalized_body), *RECOVERY_V1_RE.finditer(normalized_body)):
             engine = marker.group("engine")
             if engine == "antigravity":
                 engine = "gemini"

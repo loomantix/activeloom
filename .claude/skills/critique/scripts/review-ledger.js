@@ -18195,7 +18195,8 @@ function readEarlierInRun(rows, run, engine, round) {
     if (!ATTESTATION_PREFIXES.some((prefix2) => body.startsWith(prefix2))) {
       return false;
     }
-    const match = PASS_V3_RE.exec(body) ?? COMPLETE_V3_RE.exec(body);
+    const firstLine = body.split("\n", 1)[0].replace(/\r$/, "");
+    const match = PASS_V3_RE.exec(firstLine) ?? COMPLETE_V3_RE.exec(firstLine);
     if (match?.index !== 0 || !match.groups) return true;
     return readerIdentity(match.groups["engine"]) === reader && parseInt(match.groups["round"], 10) < round;
   });
