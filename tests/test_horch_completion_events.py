@@ -125,6 +125,42 @@ def test_waiter_wakes_promptly_on_a_new_event(tmp_path: Path) -> None:
     assert result["elapsed"] < 5  # type: ignore[operator]
 
 
+def test_delivery_requires_a_durable_pending_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inbox = ce.Inbox(tmp_path / "events")
+    event = ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)
+    with monkeypatch.context() as patch:
+        def fail_sync(path: Path) -> None:
+            assert path == inbox.pending_dir
+            raise OSError("directory sync failed")
+
+        patch.setattr(ce, "_fsync_dir", fail_sync)
+        with pytest.raises(OSError):
+            inbox.record(event)
+        with pytest.raises(OSError):
+            inbox.wait(timeout=1, interval=0.1)
+        with pytest.raises(OSError):
+            inbox.record(event)
+    assert inbox.pending()["events"] == [event]
+
+
+def test_ack_retry_syncs_destination_before_removing_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inbox = ce.Inbox(tmp_path / "events")
+    event = ce.build_event(kind="build", repo=REPO, outcome="question", issue=3)
+    inbox.record(event)
+    with monkeypatch.context() as patch:
+        def fail_sync(path: Path) -> None:
+            assert path == inbox.acked_dir
+            raise OSError("directory sync failed")
+
+        patch.setattr(ce, "_fsync_dir", fail_sync)
+        for _ in range(2):
+            with pytest.raises(OSError):
+                inbox.ack(event["id"])
+            assert (inbox.pending_dir / (event["id"] + ".json")).exists()
+    assert inbox.ack(event["id"]) == "already-acknowledged"
+    assert inbox.pending()["events"] == []
+
+
 def test_duplicate_and_replayed_events_change_nothing(tmp_path: Path) -> None:
     inbox = ce.Inbox(tmp_path / "events")
     first = ce.build_event(kind="build", repo=REPO, outcome="pr-opened", issue=3, pr=7, head=HEAD, at="2026-01-01T00:00:00Z")
@@ -196,7 +232,7 @@ def test_events_carry_identifiers_only(overrides: dict[str, object]) -> None:
     fields = {"kind": "build", "repo": REPO, "outcome": "pr-opened", "issue": 3, "pr": 7, "head": HEAD}
     fields.update(overrides)
     with pytest.raises(ce.EventError):
-        ce.build_event(**fields)  # type: ignore[arg-type]
+        ce.build_event(**fields)
 
 
 def test_unknown_or_extra_fields_are_rejected(tmp_path: Path) -> None:
@@ -233,3 +269,13 @@ def test_inbox_must_be_private_and_absolute(tmp_path: Path) -> None:
     assert run(SOURCE, Path("relative/events"), "pending").returncode == 2
     ce.Inbox(tmp_path / "events")
     assert (tmp_path / "events").stat().st_mode & 0o077 == 0
+    (tmp_path / "events" / "pending").chmod(0o770)
+    assert run(SOURCE, tmp_path / "events", "pending").returncode == 2
+
+
+def test_fifo_is_reported_without_blocking_wait(tmp_path: Path) -> None:
+    inbox = ce.Inbox(tmp_path / "events")
+    os.mkfifo(inbox.pending_dir / ("1" * 32 + ".json"))
+    result = run(SOURCE, inbox.root, "wait", "--timeout", "1", "--interval", "0.1", timeout=3)
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"events": [], "invalid": 1}

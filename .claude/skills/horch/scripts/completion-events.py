@@ -11,8 +11,8 @@ Contract:
 - An event holds identifiers and enums only: repository, issue, PR, full head,
   run ID, kind, outcome, source session name and a UTC timestamp. No free text.
 - `record` persists before it wakes anyone. The event is written to a private
-  temporary file, fsynced, and hard-linked into `pending/`; that link is the only
-  wake signal `wait` observes, so a waiter never sees a partial event.
+  temporary file, fsynced, and hard-linked into `pending/`. Readers sync the
+  directory after listing it so only durable entries can wake a waiter.
 - The event ID is a digest of the identity fields. Recording the same event
   again, before or after acknowledgement, changes nothing (`duplicate`).
 - `ack` moves an event from `pending/` to `acked/`; acknowledging it again
@@ -158,6 +158,8 @@ def _private_dir(path: Path) -> Path:
         raise EventError("inbox path is not a directory")
     if info.st_uid != os.getuid():
         raise EventError("inbox is owned by another user")
+    if info.st_mode & 0o077:
+        raise EventError("inbox directory must be private")
     return path
 
 
@@ -175,6 +177,8 @@ class Inbox:
         self.pending_dir = _private_dir(root / "pending")
         self.acked_dir = _private_dir(root / "acked")
         self.tmp_dir = _private_dir(root / ".tmp")
+        _fsync_dir(root)
+        _fsync_dir(root.parent)
 
     @contextlib.contextmanager
     def _lock(self) -> Iterator[None]:
@@ -196,8 +200,10 @@ class Inbox:
         validate(event)
         name = self._name(event["id"])
         with self._lock():
-            if (self.pending_dir / name).exists() or (self.acked_dir / name).exists():
-                return "duplicate"
+            for directory in (self.acked_dir, self.pending_dir):
+                if (directory / name).exists():
+                    _fsync_dir(directory)
+                    return "duplicate"
             fd, tmp = tempfile.mkstemp(dir=self.tmp_dir, prefix="event-", suffix=".json")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -205,7 +211,6 @@ class Inbox:
                     handle.write("\n")
                     handle.flush()
                     os.fsync(handle.fileno())
-                # Persisted. The link into pending/ is the wake signal.
                 os.link(tmp, self.pending_dir / name)
                 _fsync_dir(self.pending_dir)
             finally:
@@ -219,29 +224,35 @@ class Inbox:
         with self._lock():
             pending = self.pending_dir / name
             acked = self.acked_dir / name
-            if acked.exists():
-                with contextlib.suppress(FileNotFoundError):
-                    pending.unlink()
-                return "already-acknowledged"
-            if not pending.exists():
-                raise EventError("unknown event")
-            os.link(pending, acked)
+            replay = acked.exists()
+            if not replay:
+                if not pending.exists():
+                    raise EventError("unknown event")
+                os.link(pending, acked)
             _fsync_dir(self.acked_dir)
-            pending.unlink()
+            pending.unlink(missing_ok=True)
             _fsync_dir(self.pending_dir)
-        return "acknowledged"
+        return "already-acknowledged" if replay else "acknowledged"
 
     def pending(self) -> dict[str, Any]:
         events: list[dict[str, Any]] = []
         invalid = 0
-        for path in sorted(self.pending_dir.glob("*.json")):
+        paths = sorted(self.pending_dir.glob("*.json"))
+        if paths:
+            # A writer may have linked an entry and stopped before syncing it.
+            _fsync_dir(self.pending_dir)
+        for path in paths:
             try:
-                if path.is_symlink():
-                    raise EventError("symlink")
-                event = validate(json.loads(path.read_text(encoding="utf-8")))
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as handle:
+                    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                        raise EventError("pending entry must be a regular file")
+                    event = validate(json.loads(handle.read().decode("utf-8")))
                 if path.name != f"{event['id']}.json":
                     raise EventError("name")
                 events.append(event)
+            except FileNotFoundError:
+                continue  # A concurrent acknowledgement removed the entry.
             except (OSError, ValueError, TypeError, KeyError):
                 invalid += 1
         events.sort(key=lambda item: (item["at"], item["id"]))
