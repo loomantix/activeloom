@@ -79,6 +79,10 @@ The stance follows the tier's schedule, not the round ordinal alone:
   the round as the convergence round.
 - **The first round after an escalation is adversarial whatever its ordinal**,
   per the workflow doc's escalation rule.
+- **A late joiner's first read is adversarial whatever its ordinal.** An engine
+  holding no earlier pass or completion attestation in the current run reads
+  adversarially; an unparseable attestation in the current run counts as an
+  earlier read by every engine, and with no run marker the round number decides.
 
 In an adversarial round the matrix and dispositions below apply as written. In a
 convergence round both engines have already read the change cold; the goal moves

@@ -1132,6 +1132,26 @@ def _start_run_checked(args: argparse.Namespace) -> None:
     )
 
 
+ATTESTATION_PREFIXES = ("<!-- local-review-pass:v3", "<!-- local-review-complete:v3")
+
+
+def _reader_identity(engine: str) -> str:
+    """Gemini attests under either name; both are one reviewer."""
+    return "gemini" if engine == "antigravity" else engine
+
+
+def _pass_stance(*, tier: str, round_number: int, read_before: bool) -> str:
+    """Mirror the ledger's convergence split, including the late-joiner rule.
+
+    Lean's final round and Deep's rounds 3+ are convergence rounds, except for an
+    engine with no earlier authenticated attestation in this run: it is joining
+    late, and its first cold read is adversarial whatever the round.
+    """
+    if round_number < (2 if tier == "lean" else 3):
+        return "adversarial"
+    return "convergence" if read_before else "adversarial"
+
+
 def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
     rows = _issue_comments(args.repo, args.pr)
     records = _run_records(rows)
@@ -1165,16 +1185,32 @@ def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
         )
     existing: set[tuple[str, int]] = set()
     highest_round = 0
+    # Engines this run already holds a pass or completion attestation for, with
+    # the earliest such round. An unparseable attestation-shaped row cannot be
+    # attributed, so it marks every engine as having read: fail closed.
+    read_rounds: dict[str, int] = {}
+    unattributed_read = False
     for row in rows:
-        if (
-            not isinstance(row.get("id"), int)
-            or cast(int, row["id"]) <= start_comment_id
-        ):
+        row_id = row.get("id")
+        if type(row_id) is not int:
+            unattributed_read = True
+            continue
+        if row_id <= start_comment_id:
             continue
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body), *RECOVERY_V1_RE.finditer(body)):
+        normalized_body = body.replace("\r\n", "\n")
+        if normalized_body.startswith(ATTESTATION_PREFIXES):
+            first_line = normalized_body.split("\n", 1)[0]
+            attestation = PASS_V3_RE.match(first_line) or COMPLETE_V3_RE.match(first_line)
+            if attestation is None:
+                unattributed_read = True
+            else:
+                reader = _reader_identity(attestation.group("engine"))
+                read_round = int(attestation.group("round"))
+                read_rounds[reader] = min(read_rounds.get(reader, read_round), read_round)
+        for marker in (*PASS_V3_RE.finditer(normalized_body), *COMPLETE_V3_RE.finditer(normalized_body), *RECOVERY_V1_RE.finditer(normalized_body)):
             engine = marker.group("engine")
             if engine == "antigravity":
                 engine = "gemini"
@@ -1206,11 +1242,11 @@ def _pass_authorization(args: argparse.Namespace) -> dict[str, Any]:
         "round": args.round,
         "run_round": run_round,
         "run_id": run["run_id"],
-        # Lean's final round and Deep's rounds 3+ use the ledger's convergence split.
-        "stance": (
-            "convergence"
-            if run_round >= (2 if run["tier"] == "lean" else 3)
-            else "adversarial"
+        "stance": _pass_stance(
+            tier=cast(str, run["tier"]),
+            round_number=run_round,
+            read_before=unattributed_read
+            or read_rounds.get(_reader_identity(args.engine), run_round) < run_round,
         ),
         "tier": run["tier"],
         "verified": True,

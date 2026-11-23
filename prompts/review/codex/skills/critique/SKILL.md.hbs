@@ -70,8 +70,12 @@ marker exists; it never consumes a restarted run's budget.
   and nothing else. The post-before-editing, reply, and resolve contract is
   unchanged, and the round cap does not move.
 
-The first pass after escalation and a reviewer's first cold read remain
-adversarial regardless of ordinal. When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
+The first pass after escalation remains adversarial regardless of ordinal. A
+late joiner's first read is also adversarial whatever its ordinal: an engine
+holding no earlier pass or completion attestation in the current run reads
+adversarially; an unparseable attestation in the current run counts as an
+earlier read by every engine, and with no run marker the round number decides.
+When `$AGENT_LOOP_REVIEW_ROUND` is set, derive the stance from this schedule; otherwise take it from `authorize-pass`'s `stance` field. State the round and
 stance in the output. The ledger refuses a convergence result that fixed a
 non-blocking finding.
 

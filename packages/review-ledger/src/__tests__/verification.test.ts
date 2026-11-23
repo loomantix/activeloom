@@ -95,6 +95,7 @@ function fixedThread(
   fingerprint = 'fp1',
   severity = 'major',
   round = 1,
+  engine = 'claude',
 ): GitHubReviewThreadNode {
   const fc = 'the finding\n';
   const dc = 'the fix\n';
@@ -107,12 +108,12 @@ function fixedThread(
       nodes: [
         {
           databaseId: 1,
-          body: `${findingMarker({ fingerprint, severity, round, content: fc })}\n${fc}`,
+          body: `${findingMarker({ fingerprint, severity, round, engine, content: fc })}\n${fc}`,
           author: { login: ACTOR },
         },
         {
           databaseId: 2,
-          body: `${dispositionMarker({ fingerprint, round, content: dc })}\n${dc}`,
+          body: `${dispositionMarker({ fingerprint, round, engine, content: dc })}\n${dc}`,
           author: { login: ACTOR },
         },
       ],
@@ -1276,6 +1277,20 @@ describe('attestation identity is one per engine and round', () => {
     });
   };
 
+  /** An earlier read of this PR: a pass attestation posted by `login`. */
+  const recordPass = (
+    engine = 'claude',
+    round = 1,
+    login = ACTOR,
+    body = `<!-- local-review-pass:v3 engine=${engine} round=${round} base=${BASE} head=${BEFORE} result-sha256=${'d'.repeat(64)} -->\nReviewed.\n`,
+  ): void => {
+    runner.issueComments.push({
+      id: runner.commentIdSeq++,
+      user: { login },
+      body,
+    });
+  };
+
   it('refuses a result whose base is not the current run base', () => {
     declareRun('deep', OTHER);
     const [file, digest] = seal(changedResult());
@@ -1313,6 +1328,7 @@ describe('attestation identity is one per engine and round', () => {
 
   it('treats Lean round 2 as a convergence round', () => {
     declareRun('lean', BASE);
+    recordPass();
     runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
     const file = writeResultJson(changedResult({ round: 2 }));
     expect(() =>
@@ -1328,6 +1344,37 @@ describe('attestation identity is one per engine and round', () => {
       }),
     ).toThrow('convergence review results cannot fix non-blocking findings');
   });
+
+  // writeResult carries its own copy of this guard, so only a result file
+  // verified directly reaches the one in verifyResultEvidence.
+  it.each([
+    ['lean', 2],
+    ['deep', 3],
+  ] as const)(
+    'refuses a minor %s round %i result file after an earlier read',
+    (tier, round) => {
+      declareRun(tier, BASE);
+      recordPass();
+      runner.threadNodes = [fixedThread('fp1', 'blocking', round)];
+      const file = writeResultJson(
+        changedResult({ round, classification: 'minor' }),
+      );
+      expect(() =>
+        verifyLedger({
+          repo: REPO,
+          pr: PR,
+          head: HEAD,
+          engine: 'claude',
+          round,
+          base: BASE,
+          before: BEFORE,
+          resultFile: file,
+        }),
+      ).toThrow(
+        'convergence changed review results require material classification',
+      );
+    },
+  );
 
   it('keeps Deep round 2 adversarial', () => {
     declareRun('deep', BASE);
@@ -1363,6 +1410,7 @@ describe('attestation identity is one per engine and round', () => {
       });
     };
     declareRun('lean', BASE);
+    recordPass();
     expect(() => write('blocking', 'minor')).toThrow(
       'convergence changed review results require material classification',
     );
@@ -1387,6 +1435,143 @@ describe('attestation identity is one per engine and round', () => {
         classification: 'minor',
       }).status,
     ).toBe('changed');
+  });
+
+  describe.each([
+    ['lean', 2],
+    ['deep', 3],
+  ] as const)('a late joiner in %s round %i', (tier, round) => {
+    const verify = () =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round,
+        base: BASE,
+        before: BEFORE,
+        resultFile: writeResultJson(changedResult({ round })),
+      });
+    const write = () =>
+      writeResult({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round,
+        base: BASE,
+        before: BEFORE,
+        resultFile: resultPath(),
+        classification: 'minor',
+      });
+    const otherEnginesRead = () => {
+      for (let earlier = 1; earlier < round; earlier++) {
+        recordPass('codex', earlier);
+      }
+    };
+
+    beforeEach(() => {
+      runner.threadNodes = [fixedThread('fp1', 'minor', round)];
+    });
+
+    it('may fix a non-blocking finding on its first read', () => {
+      recordPass('claude', 1); // an earlier run's read does not carry over
+      declareRun(tier, BASE);
+      otherEnginesRead();
+      expect(verify().verified).toBe(true);
+      expect(write().status).toBe('changed');
+    });
+
+    it('ignores a pass attestation posted by another actor', () => {
+      declareRun(tier, BASE);
+      otherEnginesRead();
+      recordPass('claude', 1, 'someone-else');
+      expect(verify().verified).toBe(true);
+    });
+
+    it('is refused the same fix on a second read', () => {
+      declareRun(tier, BASE);
+      recordPass('claude', 1);
+      otherEnginesRead();
+      expect(verify).toThrow(
+        'convergence review results cannot fix non-blocking findings',
+      );
+      expect(write).toThrow(
+        'convergence changed review results require material classification',
+      );
+    });
+
+    it('fails closed on an attestation it cannot attribute', () => {
+      declareRun(tier, BASE);
+      otherEnginesRead();
+      recordPass(
+        'claude',
+        1,
+        ACTOR,
+        '<!-- local-review-pass:v3 engine=claude -->\n',
+      );
+      expect(verify).toThrow(
+        'convergence review results cannot fix non-blocking findings',
+      );
+    });
+
+    it('counts a valid complete:v3 attestation and fails closed on a malformed one', () => {
+      const completeBody = (engine: string, extra = '') =>
+        `<!-- local-review-complete:v3 engine=${engine} round=1 base=${BASE} before=${BEFORE} head=${HEAD} classification=minor fingerprints=fp0 result-sha256=${'d'.repeat(64)} -->\n${extra}`;
+      declareRun(tier, BASE);
+      // A complete:v3 by codex quoting a pass:v3 line later in its body must
+      // still attribute to codex rather than short-circuiting to fail-closed.
+      recordPass(
+        'codex',
+        1,
+        ACTOR,
+        completeBody(
+          'codex',
+          `<!-- local-review-pass:v3 engine=codex round=1 base=${BASE} head=${BEFORE} result-sha256=${'e'.repeat(64)} -->\n`,
+        ),
+      );
+      expect(verify().verified).toBe(true);
+
+      recordPass('claude', 1, ACTOR, completeBody('claude'));
+      expect(verify).toThrow(
+        'convergence review results cannot fix non-blocking findings',
+      );
+    });
+
+    it('fails closed on a malformed complete:v3 attestation', () => {
+      declareRun(tier, BASE);
+      otherEnginesRead();
+      recordPass(
+        'claude',
+        1,
+        ACTOR,
+        '<!-- local-review-complete:v3 engine=claude -->\n',
+      );
+      expect(verify).toThrow(
+        'convergence review results cannot fix non-blocking findings',
+      );
+    });
+
+    it('treats an earlier antigravity attestation as a read by gemini', () => {
+      declareRun(tier, BASE);
+      otherEnginesRead();
+      recordPass('antigravity', 1);
+      runner.threadNodes = [fixedThread('fp1', 'minor', round, 'gemini')];
+      expect(() =>
+        verifyLedger({
+          repo: REPO,
+          pr: PR,
+          head: HEAD,
+          engine: 'gemini',
+          round,
+          base: BASE,
+          before: BEFORE,
+          resultFile: writeResultJson(
+            changedResult({ engine: 'gemini', round }),
+          ),
+        }),
+      ).toThrow('convergence review results cannot fix non-blocking findings');
+    });
   });
 
   it('rolls back an attestation when the run changes during finalization', () => {

@@ -179,7 +179,6 @@ export function validateResultData(
     if (
       args.before === expectedHead ||
       (classification !== 'minor' && classification !== 'material') ||
-      (args.round >= 3 && classification !== 'material') ||
       fingerprints.length === 0 ||
       data['finalLaneComplete'] !== true ||
       'blocker' in data
