@@ -625,7 +625,7 @@ Each engine launches with its model and effort from your review profile and its 
 
 **`herd-config.py` exits 1 or 2.** 1 is an invalid config (the message names every problem); 2 is a git problem, often a missing `origin/HEAD`. Pass `--default-branch <name>` or run `git remote set-head origin --auto`.
 
-**A ship refuses.** Read the gate line in the alert. Common causes: a required check still pending, no required checks with `ship.checks: required`, a CI run still running, or `ship-staging` refusing on its own guardrails (it currently ships only to `staging` and needs its `status: on-staging` label and webhook). The PR is left as it was.
+**A ship refuses.** Read the gate line in the alert. Common causes: a required check still pending, no required checks with `ship.checks: required`, a CI run still running, or `ship-staging` refusing on its own guardrails (it currently ships only to `staging` and needs its `status: on-staging` label and a writable notification outbox; a missing webhook only leaves the notification pending). The PR is left as it was.
 
 **A review run ended and the orchestrator will not restart it.** By design, unless [full auto](#full-auto) applies and its restart budget is not spent; the alert names the failed guard. Either open a new tab in the workspace, start a session, and type the words the alert gave, such as `/hreview 42 --restart --scope-decision keep`, or record a [restart approval](#restart-approvals) and tell the orchestrator to continue. The orchestrator cannot pass your approval on for you.
 

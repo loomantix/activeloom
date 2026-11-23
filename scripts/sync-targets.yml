@@ -213,6 +213,15 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # ship-staging's notification outbox, rendered from
+      # `scripts/ship-notification-outbox.py`. Claude ships no ship-staging
+      # skill; the helper is here so a Claude-driven run can flush pending
+      # notifications with the same code the other roots use.
+      - source: .claude/skills/ship-staging/scripts/notification-outbox.py
+        destination: .claude/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/deepcritique/SKILL.md
         destination: .claude/skills/deepcritique/SKILL.md
         substitutions: []
@@ -953,6 +962,11 @@ harnesses:
         destination: .codex/skills/ship-staging/scripts/check-pr-checks.py
         substitutions: []
 
+      - source: .codex/skills/ship-staging/scripts/notification-outbox.py
+        destination: .codex/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -1520,6 +1534,11 @@ harnesses:
       - source: .agents/skills/ship-staging/scripts/check-pr-checks.py
         destination: .agents/skills/ship-staging/scripts/check-pr-checks.py
         substitutions: []
+
+      - source: .agents/skills/ship-staging/scripts/notification-outbox.py
+        destination: .agents/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
 
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses

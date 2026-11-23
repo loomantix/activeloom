@@ -211,9 +211,9 @@ For the review protocol behind the chain, see your harness's `REVIEW_WORKFLOW.md
 
 - labels the linked issues `status: on-staging` and removes `dev: agent`, so `issues ready` and `agent-loop` stop offering them;
 - fast-forwards your local staging checkout; and
-- posts a short "what shipped" message to a Google Chat webhook.
+- delivers a short "what shipped" message to a Google Chat webhook through a durable outbox.
 
-It refuses to merge unless `GCHAT_DEV_WEBHOOK_URL` or `GCHAT_DEV_WEBHOOK_FILE` is set and the `status: on-staging` label exists. It does not close issues; they close when `staging` is promoted. It never squashes, rebases, or bypasses branch protection.
+The notification intent is recorded in a local outbox (under `$XDG_STATE_HOME`, else `~/.local/state`) before the merge and delivered after it. A missing `GCHAT_DEV_WEBHOOK_URL` / `GCHAT_DEV_WEBHOOK_FILE` or a failed post leaves the notification pending rather than blocking the merge; `notification-outbox.py flush` retries pending notifications idempotently, posting only to the Google Chat host and refusing redirects. It refuses to merge unless the `status: on-staging` label exists and the outbox can record the intent. It does not close issues; they close when `staging` is promoted. It never squashes, rebases, or bypasses branch protection.
 
 ## Where to go next
 

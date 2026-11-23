@@ -96,6 +96,12 @@ VENDORED_DOCUMENTS: dict[str, str] = {
         "skills/critique/scripts/local-review-handoff.py"
     ),
     "prompts/references/herdr.md": "references/herdr.md",
+    # ship-staging's durable notification outbox. The skill itself is
+    # hand-maintained in the Codex and Gemini roots; the helper is single-sourced
+    # so every root, including Claude's, carries the same delivery code.
+    "scripts/ship-notification-outbox.py": (
+        "skills/ship-staging/scripts/notification-outbox.py"
+    ),
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()

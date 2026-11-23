@@ -1,6 +1,6 @@
 ---
 name: ship-staging
-description: Mark an approved draft pull request ready, merge it into a staging base branch, mark linked issues as on-staging, fast-forward the local staging reference checkout, and post a short Google Chat notification. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
+description: Mark an approved draft pull request ready, merge it into a staging base branch, mark linked issues as on-staging, fast-forward the local staging reference checkout, and queue a short Google Chat notification for durable delivery. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
 ---
 
 # Ship Staging
@@ -25,8 +25,10 @@ is intentionally narrow: it ships staging-base PRs only.
   define a default secret location.
 - Treat the webhook URL as a secret: never print it, commit it, or include it in
   logs, PRs, issues, or summaries.
-- Do not merge if the webhook secret is unavailable; the notification is part of
-  the staging ship contract.
+- Notification delivery never gates the merge. Record the notification intent
+  in the durable outbox before merging; a missing webhook or a failed post is
+  reported and left pending for a later `flush`, and never blocks or undoes the
+  merge. Only an outbox that cannot record the intent stops before the merge.
 - Require the repository label `status: on-staging` before merging so linked
   issues cannot silently remain in an actionable queue after the merge.
 
@@ -34,26 +36,25 @@ is intentionally narrow: it ships staging-base PRs only.
 
 1. Parse the PR number from the first argument. Accept optional `--yes` only
    when the user explicitly requested an automatic path.
-2. Resolve the webhook secret before validating the PR:
+2. Locate the notification outbox and confirm it can be written. It lives in
+   the private state directory (`$XDG_STATE_HOME`, else `~/.local/state`, under
+   `activeloom/ship-staging/`), outside any worktree, and holds identifiers,
+   the composed message, a request ID and an enum status only: never the
+   webhook URL, its key or token, or a transport error. Do not resolve or
+   print the webhook here; the helper reads it from `GCHAT_DEV_WEBHOOK_URL` or
+   `GCHAT_DEV_WEBHOOK_FILE` only when it delivers.
 
    ```bash
-   if [[ -n "$GCHAT_DEV_WEBHOOK_URL" ]]; then
-     GCHAT_WEBHOOK_URL="$GCHAT_DEV_WEBHOOK_URL"
-   elif [[ -n "$GCHAT_DEV_WEBHOOK_FILE" ]]; then
-     if [[ ! -f "$GCHAT_DEV_WEBHOOK_FILE" || ! -r "$GCHAT_DEV_WEBHOOK_FILE" ]]; then
-       echo "GCHAT_DEV_WEBHOOK_FILE must name a readable regular file" >&2
-       exit 1
-     fi
-     GCHAT_WEBHOOK_URL=$(<"$GCHAT_DEV_WEBHOOK_FILE")
-   else
-     echo "Missing webhook secret: set GCHAT_DEV_WEBHOOK_URL or GCHAT_DEV_WEBHOOK_FILE" >&2
-     exit 1
-   fi
-   if [[ -z "${GCHAT_WEBHOOK_URL//[[:space:]]/}" ]]; then
-     echo "Webhook secret is empty" >&2
+   OUTBOX=.codex/skills/ship-staging/scripts/notification-outbox.py
+   python3 "$OUTBOX" pending; rc=$?
+   if [[ $rc -ne 0 && $rc -ne 3 ]]; then
+     echo "Notification outbox is unavailable; refusing to merge" >&2
      exit 1
    fi
    ```
+
+   Exit 3 lists notifications still pending from earlier ships; mention them
+   in the final report and let step 11's `flush` retry them.
 
 3. Resolve the current repository identity and fetch PR state. Both queries must
    succeed before merging. Refuse before changing draft state unless the PR is
@@ -144,27 +145,49 @@ is intentionally narrow: it ships staging-base PRs only.
    <url>
    ```
 
-   Save it as JSON:
+   Write it to a private temporary file for the outbox:
 
    ```bash
-   jq -n --arg text "$MESSAGE" '{text: $text}' > /tmp/ship-staging-<pr>-payload.json
+   MESSAGE_FILE=$(mktemp /tmp/ship-staging-<pr>-message.XXXXXX)
+   printf '%s\n' "$MESSAGE" > "$MESSAGE_FILE"
    ```
 
 6. Unless `--yes` was explicitly requested, show the assembled message and exact
    merge command, then ask the user to choose ship, edit summary, or cancel.
-7. Merge:
+7. Record the notification intent, then merge. The intent is keyed by
+   `<repo>#<pr>` and keeps one request ID for its whole life, so re-running
+   this step after an edited summary updates the same unmerged intent. If
+   recording fails, stop without merging.
 
    ```bash
+   if ! RECORD=$(python3 "$OUTBOX" record --repo "$CURRENT_REPO" --pr <pr> \
+       --head "$(jq -r '.headRefOid' <<<"$PR_JSON")" --message-file "$MESSAGE_FILE"); then
+     echo "Could not record notification intent; refusing to merge" >&2
+     exit 1
+   fi
+   NOTIFICATION_ID=$(jq -r '.id' <<<"$RECORD")
+   rm -f "$MESSAGE_FILE"
+
    gh pr merge <pr> --merge --delete-branch
    ```
 
-   If the merge fails, do not post to chat and do not label issues.
+   A merge command that exits non-zero can still have merged (local branch
+   cleanup fails after the server merge), so read the PR's `state` before
+   treating it as a failure. If the PR did not merge, drop the intent with
+   `python3 "$OUTBOX" discard --id "$NOTIFICATION_ID"`, do not label issues,
+   and stop.
 
-8. Capture the merge commit:
+8. Capture the merge commit and confirm the intent with it. Only a confirmed
+   intent is ever delivered.
 
    ```bash
    MERGE_SHA=$(gh pr view <pr> --json mergeCommit --jq '.mergeCommit.oid')
+   python3 "$OUTBOX" confirm --id "$NOTIFICATION_ID" --merge "$MERGE_SHA" \
+     || echo "warning: could not confirm notification $NOTIFICATION_ID; it stays awaiting-merge" >&2
    ```
+
+   A confirm failure does not undo or repeat the merge. Report it; re-run the
+   same `confirm` command once the outbox is writable.
 
 9. Mark linked open issues as on-staging. A closing keyword on a staging PR does
    not close the issue until the work later reaches the default branch, so open
@@ -251,7 +274,7 @@ is intentionally narrow: it ships staging-base PRs only.
    done
    ````
 
-   Keep this phase best-effort: labeling failures must not block the chat post
+   Keep this phase best-effort: labeling failures must not block notification delivery
    because the PR has already merged. Do not close the issues. Do not add
    unrelated workflow labels. `status: on-staging` is the only label this skill
    adds. Remove only the agent-loop admission label `dev: agent` when it is
@@ -298,28 +321,32 @@ is intentionally narrow: it ships staging-base PRs only.
 
     Fast-forward only. Never use merge commits, rebase, checkout overwrite, or
     `reset --hard` for this cleanup. Keep it best-effort like issue labeling:
-    report the result, but do not block the chat post.
+    report the result, but do not block notification delivery.
 
-11. Post to Google Chat:
+11. Deliver pending notifications. `flush` attempts every confirmed,
+    undelivered intent, including this one and any left by earlier ships:
 
     ```bash
-    RESPONSE=$(curl -sS -w "\n%{http_code}" \
-      -X POST \
-      -H "Content-Type: application/json" \
-      --data @/tmp/ship-staging-<pr>-payload.json \
-      "$GCHAT_WEBHOOK_URL")
-    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-    BODY=$(echo "$RESPONSE" | sed '$d')
-    MSG_ID=$(echo "$BODY" | jq -r '.name // empty')
+    python3 "$OUTBOX" flush
+    PENDING=$(python3 "$OUTBOX" pending)
+    NOTIFICATION=$(jq -r --arg id "$NOTIFICATION_ID" '.pending[$id] // "delivered"' <<<"$PENDING" 2>/dev/null || echo outbox-error)
     ```
 
-    Success requires `HTTP_CODE == 200` and a non-empty message id shaped like
-    `spaces/<space-id>/messages/<msg-id>`. If Google Chat returns `429`, wait
-    30 seconds and retry once. If posting still fails, report that the PR merged
-    but notification failed and leave the payload file in `/tmp` for manual
-    re-posting.
+    The helper posts only to `https://chat.googleapis.com/v1/spaces/<space>/messages`,
+    refuses redirects, sends the intent's request ID so the provider
+    deduplicates a retried post, and marks the intent `delivered` only on a
+    `spaces/<space>/messages/<id>` receipt. A delivered intent is never posted
+    again, so `flush` is safe to run repeatedly. Anything else stays pending
+    with an enum reason: `pending-configuration` (no valid webhook),
+    `pending-delivery` (the post failed or returned no receipt), or
+    `pending-destination-change` (an earlier uncertain attempt went to a
+    different space; check that space, then `discard` the intent if it was
+    posted or re-point the webhook to retry). Exit 3 means something is still
+    pending; it is a notification follow-up, not a failed ship. Do not merge
+    again or repeat issue changes to retry a notification; run
+    `python3 "$OUTBOX" flush` later.
 
-12. On successful chat post, remove the temp payload file and report:
+12. Report:
 
     ```text
     Shipped PR #<number> - <title>
@@ -328,9 +355,13 @@ is intentionally narrow: it ships staging-base PRs only.
     Issue discovery: <complete | degraded | failed>
     Issues marked status: on-staging: <#N, #M | none>
     Staging checkout: <fast-forwarded | skipped with reason>
-    Chat notification: posted (message id <msg-id>)
+    Chat notification: <delivered | pending reason> (id <notification-id>)
+    Other pending notifications: <ids | none>
     PR: <url>
     ```
+
+    Do not claim delivery without a `delivered` status. Pending intents
+    persist across sessions; never delete the outbox during worktree cleanup.
 
 ## Summary Guidance
 
