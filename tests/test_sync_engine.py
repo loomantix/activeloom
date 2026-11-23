@@ -3897,3 +3897,274 @@ def test_main_carve_out_does_not_reach_outside_the_prompt_surface(
         rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
         assert rc == 1, destination
         assert "refusing to write sensitive path" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Destinations inside a `.git` directory — hard refusal, no opt-in
+# ---------------------------------------------------------------------------
+
+GIT_METADATA_DESTINATIONS = (
+    ".git/config",
+    ".GIT/config",
+    "sub/.git",
+    "sub/.git/hooks/x",
+)
+
+
+@pytest.mark.parametrize(
+    ("rel", "expected"),
+    [
+        (".git", True),
+        (".git/config", True),
+        (".GIT/config", True),
+        ("sub/.Git/hooks/x", True),
+        (".git./config", True),
+        ("sub/.git", True),
+        (".github/workflows/x.yml", False),
+        (".gitignore", False),
+        (".gitattributes", False),
+        (".gitmodules", False),
+        ("sub/.gitkeep", False),
+        ("docs/git/notes.md", False),
+    ],
+)
+def test_has_git_metadata_segment(sync_engine: ModuleType, rel: str, expected: bool) -> None:
+    assert sync_engine.has_git_metadata_segment(rel) is expected
+
+
+@pytest.mark.parametrize("destination", GIT_METADATA_DESTINATIONS)
+def test_main_refuses_git_metadata_write_before_writing_anything(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    destination: str,
+) -> None:
+    (upstream_repo / "payload").write_text("payload\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload", "destination": "ordinary.md"},
+                {"source": "payload", "destination": destination},
+            ]
+        },
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "inside a `.git` directory" in err
+    assert destination in err
+    assert not (consumer_dir / "ordinary.md").exists()
+    assert not (consumer_dir / destination).exists()
+
+
+@pytest.mark.parametrize("destination", [*GIT_METADATA_DESTINATIONS, ".git/CODEOWNERS"])
+def test_main_git_metadata_destination_cannot_be_granted(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    destination: str,
+) -> None:
+    # Stub the parser so the grant is in effect: this pins the engine gate,
+    # not the parser's own rejection (covered separately below).
+    (upstream_repo / "payload").write_text("payload\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": destination}]},
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+    monkeypatch.setattr(
+        sync_engine, "parse_sensitive_write_allowlist", lambda *a: frozenset({destination})
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "engine-level block" in err
+    assert destination in err
+    assert not (consumer_dir / destination).exists()
+
+
+@pytest.mark.parametrize("grant", [".git/CODEOWNERS", ".GIT/CODEOWNERS", ".git./CODEOWNERS"])
+def test_main_rejects_allow_sensitive_writes_grant_inside_git(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    grant: str,
+) -> None:
+    # `**/CODEOWNERS` is a sensitive pattern, so only the `.git` check rejects it.
+    (upstream_repo / "payload").write_text("payload\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": "ordinary.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".activeloom-config.yml",
+        {"allowed_destinations": ["**"], "allow_sensitive_writes": [grant]},
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "drop this entry" in err
+    assert repr(grant) in err
+    assert not (consumer_dir / "ordinary.md").exists()
+
+
+def test_main_refuses_git_metadata_delete(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    hook = consumer_dir / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("#!/bin/sh\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"destination": ".git/hooks/pre-commit", "delete": True}]},
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "inside a `.git` directory" in err
+    assert ".git/hooks/pre-commit" in err
+    assert hook.read_text() == "#!/bin/sh\n"
+
+
+def test_main_refuses_destination_whose_parent_symlinks_into_git(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The lexical path is an ordinary, consented sensitive destination; only
+    # the symlink-resolved path lands in `.git/hooks`.
+    hooks = consumer_dir / ".git" / "hooks"
+    hooks.mkdir(parents=True)
+    (consumer_dir / ".github").mkdir()
+    (consumer_dir / ".github" / "workflows").symlink_to(Path("..") / ".git" / "hooks")
+    (upstream_repo / "payload").write_text("#!/bin/sh\n")
+    destination = ".github/workflows/pre-commit"
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": destination}]},
+    )
+    _write_yaml(
+        consumer_dir / ".activeloom-config.yml",
+        {"allowed_destinations": ["**"], "allow_sensitive_writes": [destination]},
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "inside a `.git` directory" in err
+    assert destination in err
+    assert not (hooks / "pre-commit").exists()
+
+
+def test_main_refuses_destination_that_is_a_symlink_into_git(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The destination itself is the symlink; the write would go through it.
+    git_config = consumer_dir / ".git" / "config"
+    git_config.parent.mkdir(parents=True)
+    git_config.write_text("[core]\n")
+    (consumer_dir / "ordinary.md").symlink_to(Path(".git") / "config")
+    (upstream_repo / "payload").write_text("[core]\n\tfsmonitor = x\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": "ordinary.md"}]},
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "inside a `.git` directory" in err
+    assert "ordinary.md" in err
+    assert git_config.read_text() == "[core]\n"
+
+
+def test_main_in_loop_git_metadata_gate_refuses_when_the_pre_pass_misses(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (upstream_repo / "payload").write_text("payload\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": ".git/config"}]},
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": ["**"]})
+    monkeypatch.setattr(sync_engine, "git_metadata_targets", lambda *a: [])
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "inside a `.git` directory" in capsys.readouterr().err
+    assert not (consumer_dir / ".git" / "config").exists()
+
+
+def test_main_git_prefixed_destinations_still_sync(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (upstream_repo / "payload").write_text("payload\n")
+    destinations = [
+        ".github/workflows/x.yml",
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        "sub/.gitkeep",
+    ]
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "payload", "destination": d} for d in destinations]},
+    )
+    _write_yaml(
+        consumer_dir / ".activeloom-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": [".github/workflows/x.yml"],
+        },
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
+    for destination in destinations:
+        assert (consumer_dir / destination).read_text() == "payload\n", destination
+
+
+def test_canonical_manifest_has_no_git_metadata_destination(sync_engine: ModuleType) -> None:
+    manifest = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "scripts" / "sync-targets.yml").read_text()
+    )
+    destinations: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            dest = node.get("destination")
+            if isinstance(dest, str):
+                destinations.append(dest)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(manifest)
+    assert destinations
+    offenders = [d for d in destinations if sync_engine.has_git_metadata_segment(d)]
+    assert offenders == []
