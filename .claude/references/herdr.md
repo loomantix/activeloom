@@ -172,7 +172,7 @@ One rule on every harness: run the wait as a blocking command. If the harness mo
 
 - A session: `herdr agent wait <name> --until <state> [--until <state>] --timeout 600000`.
 - After answering a blocked UI, wait with `--until working --until done --until idle`. A bare wait matches the stale `blocked` at once.
-- State that only `gh` shows: one shell loop that checks the condition every 300 seconds and exits when it holds, run the same way.
+- State that only `gh` shows: one shell loop that checks the condition every 300 seconds and exits when it holds, run the same way. `horch` replaces the loop's sleep with its completion-event `wait`, which returns early when a session it started records an event and otherwise after the same 300 seconds (`horch`, Completion events).
 - A tab another session drives: poll `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` for its tab ID's label in the same kind of loop.
 - A process you started: wait on its PID (`while kill -0 <pid>`) or its harness task; never `pgrep -f <pattern>`, which matches the waiting loop's own command line and never ends. Give every hand-written wait loop a timeout.
 - **Background shells (Claude):** when Claude moves a long command to the background (a pre-push hook, a test suite) and ends its turn, herdr reports `done` while the shell runs, so `herdr agent wait <name> --until done --until idle --until blocked` returns at once. Tell it apart by reading the pane (`herdr agent read <name> --lines 40`): a `· <N> shell(s) still running` suffix on the `✻` line, or `· <N> shell` in the status bar, with no terminal line yet (`BUILD-PR:`, `PR-READY` or whatever the skill ends on). Then wait in two stages instead of polling:
