@@ -1344,6 +1344,37 @@ describe('attestation identity is one per engine and round', () => {
     ).toThrow('convergence review results cannot fix non-blocking findings');
   });
 
+  // writeResult carries its own copy of this guard, so only a result file
+  // verified directly reaches the one in verifyResultEvidence.
+  it.each([
+    ['lean', 2],
+    ['deep', 3],
+  ] as const)(
+    'refuses a minor %s round %i result file after an earlier read',
+    (tier, round) => {
+      declareRun(tier, BASE);
+      recordPass();
+      runner.threadNodes = [fixedThread('fp1', 'blocking', round)];
+      const file = writeResultJson(
+        changedResult({ round, classification: 'minor' }),
+      );
+      expect(() =>
+        verifyLedger({
+          repo: REPO,
+          pr: PR,
+          head: HEAD,
+          engine: 'claude',
+          round,
+          base: BASE,
+          before: BEFORE,
+          resultFile: file,
+        }),
+      ).toThrow(
+        'convergence changed review results require material classification',
+      );
+    },
+  );
+
   it('keeps Deep round 2 adversarial', () => {
     declareRun('deep', BASE);
     runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
