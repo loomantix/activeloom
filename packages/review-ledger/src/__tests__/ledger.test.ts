@@ -317,6 +317,21 @@ describe('ledger operations and workflow verification', () => {
       syncThread();
     });
 
+    it('records an evidence-backed dismissal and resolves the blocking thread', () => {
+      revalidateOccurrence(params);
+      syncThread();
+      const result = dispose({
+        ...params,
+        outcome: 'dismissed',
+        content:
+          'The input is rejected before the write, disproving the finding.',
+      });
+      expect(result).toMatchObject({ verified: true, resolved: true });
+      expect(mock.threads[0]!.isResolved).toBe(true);
+      syncThread();
+      expect(verifyLedger(params).dispositions).toBe(1);
+    });
+
     it('revalidates, authorizes, publishes, disposes, verifies and writes the current-head result without changing history or budget', () => {
       const original = structuredClone(mock.reviewComments[0]);
       const budget = structuredClone(mock.issueComments);
@@ -1581,7 +1596,7 @@ describe('ledger operations and workflow verification', () => {
     expect(reconciled.findings[0]!['severity']).toBe('blocking');
     expect(reconciled.severityCorrections).toHaveLength(1);
 
-    // Deferring or dismissing the corrected blocker is rejected.
+    // Deferring the corrected blocker is rejected.
     expect(() =>
       dispose({
         repo: 'loomantix/platform-oss',
