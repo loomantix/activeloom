@@ -542,10 +542,67 @@ describe('complete thread verification', () => {
     ).toThrowError(/topology is invalid/);
   });
 
-  it('rejects a blocking finding left deferred', () => {
+  function blockingThread(outcome: string, content: string) {
     const fc = 'the finding\n';
-    const dc = 'deferred to a follow-up\n';
-    const node = thread([
+    return thread([
+      comment(
+        `${findingMarker({ fingerprint: 'fp1', severity: 'blocking', content: fc })}\n${fc}`,
+        1,
+      ),
+      comment(
+        `${dispositionMarker({ fingerprint: 'fp1', outcome, content })}\n${content}`,
+        2,
+      ),
+    ]);
+  }
+
+  it('rejects a blocking dismissal without evidence', () => {
+    runner.threadNodes = [blockingThread('dismissed', '  \n')];
+    expect(() => verifyLedger({ ...scope, head: HEAD })).toThrow(
+      /content is empty/,
+    );
+  });
+
+  it('accepts a blocking dismissal with evidence in the same round', () => {
+    runner.threadNodes = [
+      blockingThread(
+        'dismissed',
+        'The parser rejects the input before the write.',
+      ),
+    ];
+    expect(verifyLedger({ ...scope, head: HEAD }).dispositions).toBe(1);
+    const matched = verifyThreadDispositions(
+      runner.threadNodes,
+      undefined,
+      scope,
+    );
+    expect(
+      sameRoundDispositions({ engine: 'claude', round: 1 }, matched, {
+        [HEAD]: 0,
+      }),
+    ).toEqual([['fp1', false, false, false]]);
+  });
+
+  it('still rejects a deferred blocker', () => {
+    runner.threadNodes = [
+      blockingThread('deferred', 'Tracked for a later change.'),
+    ];
+    expect(() => verifyLedger({ ...scope, head: HEAD })).toThrow(
+      /blocking local-review findings cannot be deferred/,
+    );
+  });
+
+  /** Occurrence 1 is a deferred blocker at HEAD; occurrence 2 recurs. */
+  function clearedBlockerThread(second: {
+    head: string;
+    outcome: string;
+    severity?: string;
+  }) {
+    const fc = 'the finding\n';
+    const dc = 'Tracked for a later change.\n';
+    const rc = 'the finding recurred\n';
+    const sc = 'The parser rejects the input before the write.\n';
+    return thread([
       comment(
         `${findingMarker({ fingerprint: 'fp1', severity: 'blocking', content: fc })}\n${fc}`,
         1,
@@ -554,28 +611,60 @@ describe('complete thread verification', () => {
         `${dispositionMarker({ fingerprint: 'fp1', outcome: 'deferred', content: dc })}\n${dc}`,
         2,
       ),
+      comment(
+        `${findingMarker({ fingerprint: 'fp1', occurrence: 2, severity: second.severity ?? 'blocking', head: second.head, content: rc })}\n${rc}`,
+        3,
+      ),
+      comment(
+        `${dispositionMarker({ fingerprint: 'fp1', occurrence: 2, outcome: second.outcome, head: second.head, content: sc })}\n${sc}`,
+        4,
+      ),
     ]);
-    expect(() =>
-      verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+  }
+
+  it('lets a forward recurrence dismiss a deferred blocker at its own head', () => {
+    runner.prHead = LATER_HEAD;
+    runner.threadNodes = [
+      clearedBlockerThread({ head: LATER_HEAD, outcome: 'dismissed' }),
+    ];
+    expect(verifyLedger({ ...scope, head: LATER_HEAD }).dispositions).toBe(2);
   });
 
-  it('rejects a blocking finding that was dismissed', () => {
-    const fc = 'the finding\n';
-    const dc = 'not a defect after all\n';
-    const node = thread([
-      comment(
-        `${findingMarker({ fingerprint: 'fp1', severity: 'blocking', content: fc })}\n${fc}`,
-        1,
-      ),
-      comment(
-        `${dispositionMarker({ fingerprint: 'fp1', outcome: 'dismissed', content: dc })}\n${dc}`,
-        2,
-      ),
-    ]);
-    expect(() =>
-      verifyThreadDispositions([node], undefined, scope),
-    ).toThrowError(/blocking local-review findings must be fixed/);
+  it('refuses a dismissal whose recurrence is not forward of the deferral', () => {
+    runner.prHead = LATER_HEAD;
+    runner.gitCompare = () => ({
+      status: 'behind',
+      merge_base_commit: { sha: LATER_HEAD },
+    });
+    runner.threadNodes = [
+      clearedBlockerThread({ head: LATER_HEAD, outcome: 'dismissed' }),
+    ];
+    expect(() => verifyLedger({ ...scope, head: LATER_HEAD })).toThrow(
+      /superseding local-review occurrence is not forward-only/,
+    );
+  });
+
+  it('refuses a recurrence recorded at the deferral head', () => {
+    runner.threadNodes = [
+      clearedBlockerThread({ head: HEAD, outcome: 'dismissed' }),
+    ];
+    expect(() => verifyLedger({ ...scope, head: HEAD })).toThrow(
+      /not a forward transition/,
+    );
+  });
+
+  it('refuses to leave a deferred blocker deferred at lower severity', () => {
+    runner.prHead = LATER_HEAD;
+    runner.threadNodes = [
+      clearedBlockerThread({
+        head: LATER_HEAD,
+        outcome: 'deferred',
+        severity: 'major',
+      }),
+    ];
+    expect(() => verifyLedger({ ...scope, head: LATER_HEAD })).toThrow(
+      /a deferred blocker must be fixed or dismissed with evidence/,
+    );
   });
 
   it('rejects one fingerprint split across two threads', () => {

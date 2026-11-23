@@ -213,6 +213,15 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # ship-staging's notification outbox, rendered from
+      # `scripts/ship-notification-outbox.py`. Claude ships no ship-staging
+      # skill; the helper is here so a Claude-driven run can flush pending
+      # notifications with the same code the other roots use.
+      - source: .claude/skills/ship-staging/scripts/notification-outbox.py
+        destination: .claude/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/deepcritique/SKILL.md
         destination: .claude/skills/deepcritique/SKILL.md
         substitutions: []
@@ -386,6 +395,14 @@ harnesses:
         destination: .claude/skills/hgrill/scripts/signoff.py
         substitutions: []
         mode: '0755'
+
+      - source: .claude/skills/horch/references/evidence-reuse.md
+        destination: .claude/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .claude/skills/horch/scripts/evidence-reuse.py
+        destination: .claude/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
 
       - source: .claude/skills/horch/SKILL.md
         destination: .claude/skills/horch/SKILL.md
@@ -958,6 +975,11 @@ harnesses:
         destination: .codex/skills/ship-staging/scripts/check-pr-checks.py
         substitutions: []
 
+      - source: .codex/skills/ship-staging/scripts/notification-outbox.py
+        destination: .codex/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -1012,6 +1034,14 @@ harnesses:
         destination: .codex/skills/hgrill/scripts/signoff.py
         substitutions: []
         mode: '0755'
+
+      - source: .codex/skills/horch/references/evidence-reuse.md
+        destination: .codex/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .codex/skills/horch/scripts/evidence-reuse.py
+        destination: .codex/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
 
       - source: .codex/skills/horch/SKILL.md
         destination: .codex/skills/horch/SKILL.md
@@ -1531,6 +1561,11 @@ harnesses:
         destination: .agents/skills/ship-staging/scripts/check-pr-checks.py
         substitutions: []
 
+      - source: .agents/skills/ship-staging/scripts/notification-outbox.py
+        destination: .agents/skills/ship-staging/scripts/notification-outbox.py
+        substitutions: []
+        mode: '0755'
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -1585,6 +1620,14 @@ harnesses:
         destination: .agents/skills/hgrill/scripts/signoff.py
         substitutions: []
         mode: '0755'
+
+      - source: .agents/skills/horch/references/evidence-reuse.md
+        destination: .agents/skills/horch/references/evidence-reuse.md
+        substitutions: []
+
+      - source: .agents/skills/horch/scripts/evidence-reuse.py
+        destination: .agents/skills/horch/scripts/evidence-reuse.py
+        substitutions: []
 
       - source: .agents/skills/horch/SKILL.md
         destination: .agents/skills/horch/SKILL.md

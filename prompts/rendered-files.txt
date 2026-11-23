@@ -25,7 +25,9 @@
 .agents/skills/hgrill/scripts/signoff.py
 .agents/skills/hloop/SKILL.md
 .agents/skills/horch/SKILL.md
+.agents/skills/horch/references/evidence-reuse.md
 .agents/skills/horch/scripts/completion-events.py
+.agents/skills/horch/scripts/evidence-reuse.py
 .agents/skills/hpromote/SKILL.md
 .agents/skills/hred-team/SKILL.md
 .agents/skills/hreview/SKILL.md
@@ -54,6 +56,7 @@
 .agents/skills/review-setup/scripts/review-profile.py
 .agents/skills/review-setup/scripts/review-settings.py
 .agents/skills/reviewit/SKILL.md
+.agents/skills/ship-staging/scripts/notification-outbox.py
 .agents/skills/simplify-comments/SKILL.md
 .agents/skills/simplify-comments/scripts/comment-density.py
 .agents/skills/simplify-comments/scripts/comment_audit.py
@@ -87,7 +90,9 @@
 .claude/skills/hgrill/scripts/signoff.py
 .claude/skills/hloop/SKILL.md
 .claude/skills/horch/SKILL.md
+.claude/skills/horch/references/evidence-reuse.md
 .claude/skills/horch/scripts/completion-events.py
+.claude/skills/horch/scripts/evidence-reuse.py
 .claude/skills/hpromote/SKILL.md
 .claude/skills/hred-team/SKILL.md
 .claude/skills/hreview/SKILL.md
@@ -115,6 +120,7 @@
 .claude/skills/review-setup/scripts/review-profile.py
 .claude/skills/review-setup/scripts/review-settings.py
 .claude/skills/reviewit/SKILL.md
+.claude/skills/ship-staging/scripts/notification-outbox.py
 .claude/skills/simplify-comments/SKILL.md
 .claude/skills/simplify-comments/scripts/comment-density.py
 .claude/skills/simplify-comments/scripts/comment_audit.py
@@ -147,7 +153,9 @@
 .codex/skills/hgrill/scripts/signoff.py
 .codex/skills/hloop/SKILL.md
 .codex/skills/horch/SKILL.md
+.codex/skills/horch/references/evidence-reuse.md
 .codex/skills/horch/scripts/completion-events.py
+.codex/skills/horch/scripts/evidence-reuse.py
 .codex/skills/hpromote/SKILL.md
 .codex/skills/hred-team/SKILL.md
 .codex/skills/hreview/SKILL.md
@@ -176,6 +184,7 @@
 .codex/skills/review-setup/scripts/review-profile.py
 .codex/skills/review-setup/scripts/review-settings.py
 .codex/skills/reviewit/SKILL.md
+.codex/skills/ship-staging/scripts/notification-outbox.py
 .codex/skills/simplify-comments/SKILL.md
 .codex/skills/simplify-comments/scripts/comment-density.py
 .codex/skills/simplify-comments/scripts/comment_audit.py
