@@ -111,6 +111,8 @@ The block comes from the run controller, never from hand-written text: `local-re
 - the in-session preflight: `git rev-parse HEAD` equal to the run's exact head, and that engine root's `review-ledger.js --version` equal to its `review-ledger.version` pin;
 - the skill invocation and pass prompt, addressed the way that engine expects.
 
+For a bound pass hreview passes `--bound-entry-file` holding the exact bound `reviewer-entry.py enter` command for each assigned lane. The block prints it in place of the in-session preflight and the skill invocation above, and its emitted skill and absolute helpers govern that handoff. `--context-file` still carries only extra brief text.
+
 A bare CLI will not do: it can pick a different model, and for Agy it can keep the user's mount sandbox, which hides linked-worktree Git metadata and `gh` credentials. When the owner chose an Agy `--settings` override instead of the bypass flag, that exact argument is in `user-args` and reaches the line. A reviewer whose preflight or helper call fails reports the command and its exact error, posts nothing and stops; the herder or the user owns any relaunch.
 
 ## Tabs and panes

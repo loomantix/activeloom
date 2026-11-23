@@ -33,6 +33,7 @@
 .agents/skills/hreview/scripts/herd-config.py
 .agents/skills/hreview/scripts/herd-config.schema.json
 .agents/skills/hreview/scripts/herd-user.schema.json
+.agents/skills/hreview/scripts/reviewer-entry.py
 .agents/skills/internal-docs/SKILL.md
 .agents/skills/issues/SKILL.md
 .agents/skills/issues/scripts/link.py
@@ -93,6 +94,7 @@
 .claude/skills/hreview/scripts/herd-config.py
 .claude/skills/hreview/scripts/herd-config.schema.json
 .claude/skills/hreview/scripts/herd-user.schema.json
+.claude/skills/hreview/scripts/reviewer-entry.py
 .claude/skills/internal-docs/SKILL.md
 .claude/skills/issues/SKILL.md
 .claude/skills/issues/scripts/link.py
@@ -151,6 +153,7 @@
 .codex/skills/hreview/scripts/herd-config.py
 .codex/skills/hreview/scripts/herd-config.schema.json
 .codex/skills/hreview/scripts/herd-user.schema.json
+.codex/skills/hreview/scripts/reviewer-entry.py
 .codex/skills/internal-docs/SKILL.md
 .codex/skills/issues/SKILL.md
 .codex/skills/issues/scripts/link.py
