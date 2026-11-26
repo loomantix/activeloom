@@ -6,12 +6,15 @@ with the merge commit after the merge is verified, and delivers it afterwards.
 Delivery is decoupled from the merge: a missing webhook or a failed post leaves
 the intent pending, and `flush` retries the selected repository's confirmed intents until the chat
 provider returns a message receipt. Each intent carries one request ID for its
-whole life, sent as the provider's idempotency key, and a delivered intent is
+whole life. Google Chat webhooks reject `requestId`, so the helper derives a
+client message ID (`messageId=client-<hash>`) from it instead: the provider
+creates at most one message per ID in a space and answers a repeat with 409
+ALREADY_EXISTS, which the helper counts as delivered. A delivered intent is
 never posted again.
 
-The outbox stores identifiers, the composed summary message, an enum status and
-a hash of the non-secret space path. It never stores the webhook URL, its key or
-token, or a raw transport error.
+The outbox stores identifiers, the composed summary message, an enum status, an
+enum for the last failed attempt and a hash of the non-secret space path. It
+never stores the webhook URL, its key or token, or a raw transport error.
 
 Exit codes: 0 done, 2 outbox or usage error, 3 one or more intents pending.
 """
@@ -38,6 +41,11 @@ SPACE_PATH_RE = re.compile(r"/v1/spaces/[A-Za-z0-9_-]+/messages")
 RECEIPT_RE = re.compile(r"spaces/[A-Za-z0-9_-]+/messages/[A-Za-z0-9_.-]+")
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+# Google Chat's client-assigned message ID: `client-` prefix, then lowercase
+# letters, digits and hyphens, 63 characters at most.
+MESSAGE_ID_RE = re.compile(r"client-[a-z0-9-]{1,56}")
+IDEMPOTENCY_KEYS = frozenset({"messageId", "requestId"})
+MAX_ERROR_BODY_BYTES = 65536
 MAX_MESSAGE_CHARS = 1500
 TIMEOUT_SECONDS = 10
 
@@ -51,6 +59,11 @@ PENDING_CONFIGURATION = "pending-configuration"
 PENDING_DELIVERY = "pending-delivery"
 PENDING_DESTINATION_CHANGE = "pending-destination-change"
 DELIVERED = "delivered"
+
+# Last-failure reasons. Enums or an HTTP status code only, never provider text.
+FAILURE_TRANSPORT = "transport"
+FAILURE_NO_RECEIPT = "no-receipt"
+FAILURE_ERROR = "error"
 
 Sender = Callable[[str, str, str], str]
 
@@ -90,12 +103,47 @@ def validate_webhook(webhook: str) -> str:
     return parts.path
 
 
-def build_endpoint(webhook: str, request_id: str) -> str:
-    """Pin the request ID into the webhook query, replacing any supplied one."""
+def message_id_for(request_id: str) -> str:
+    """Derive the intent's stable Chat client message ID from its request ID."""
+    return "client-" + hashlib.sha256(request_id.encode()).hexdigest()[:40]
+
+
+def build_endpoint(webhook: str, message_id: str) -> str:
+    """Pin the client message ID into the webhook query, dropping any supplied idempotency key."""
+    if not MESSAGE_ID_RE.fullmatch(message_id):
+        raise ValueError("invalid client message ID")
     parts = urlsplit(webhook.strip())
-    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "requestId"]
-    query.append(("requestId", request_id))
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key not in IDEMPOTENCY_KEYS
+    ]
+    query.append(("messageId", message_id))
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+
+
+def already_exists(error: HTTPError) -> bool:
+    """True when Chat refused the post because this client message ID already exists."""
+    if error.code != 409:
+        return False
+    try:
+        body = json.loads(error.read(MAX_ERROR_BODY_BYTES))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    detail = body.get("error") if isinstance(body, dict) else None
+    return isinstance(detail, dict) and detail.get("status") == "ALREADY_EXISTS"
+
+
+def failure_reason(error: BaseException) -> str:
+    """Map a failed attempt to a non-secret enum; never the provider's text or URL."""
+    if isinstance(error, HTTPError):
+        code = error.code
+        return f"http-{code}" if isinstance(code, int) and 100 <= code <= 599 else FAILURE_ERROR
+    if isinstance(error, OSError):  # URLError, timeouts, connection resets
+        return FAILURE_TRANSPORT
+    if isinstance(error, ValueError):
+        return FAILURE_NO_RECEIPT
+    return FAILURE_ERROR
 
 
 def post(endpoint: str, message: str, opener: OpenerDirector | None = None) -> str:
@@ -117,10 +165,21 @@ def post(endpoint: str, message: str, opener: OpenerDirector | None = None) -> s
     return name
 
 
-def send(webhook: str, request_id: str, message: str) -> str:
-    """Deliver to the pinned chat host with the intent's idempotency key."""
-    validate_webhook(webhook)
-    return post(build_endpoint(webhook, request_id), message)
+def send(webhook: str, request_id: str, message: str, opener: OpenerDirector | None = None) -> str:
+    """Deliver to the pinned chat host under the intent's client message ID.
+
+    A 409 ALREADY_EXISTS means an earlier attempt created this message, so its
+    receipt is the space path plus the client message ID. Any other HTTP error
+    propagates and leaves the intent pending.
+    """
+    space = validate_webhook(webhook)
+    message_id = message_id_for(request_id)
+    try:
+        return post(build_endpoint(webhook, message_id), message, opener)
+    except HTTPError as error:
+        if already_exists(error):
+            return f"{space.removeprefix('/v1/')}/{message_id}"
+        raise
 
 
 def default_database() -> Path:
@@ -172,8 +231,17 @@ class Outbox:
             " destination TEXT,"
             " status TEXT NOT NULL,"
             " receipt TEXT,"
-            " attempts INTEGER NOT NULL DEFAULT 0)"
+            " attempts INTEGER NOT NULL DEFAULT 0,"
+            " last_failure TEXT)"
         )
+        def has_failure_column() -> bool:
+            return any(row[1] == "last_failure" for row in self.connection.execute("PRAGMA table_info(intents)"))
+
+        if not has_failure_column():
+            with self.connection:
+                self.connection.execute("BEGIN IMMEDIATE")
+                if not has_failure_column():
+                    self.connection.execute("ALTER TABLE intents ADD COLUMN last_failure TEXT")
 
     def close(self) -> None:
         self.connection.close()
@@ -243,10 +311,20 @@ class Outbox:
         return cursor.rowcount > 0
 
     def status(self, identity: str) -> str:
+        return self.status_details(identity)["notification"]
+
+    def status_details(self, identity: str) -> dict[str, str]:
         row = self._row(identity)
         if row is None:
             raise OutboxError("unknown notification")
-        return str(row["status"])
+        result = {"id": identity, "notification": str(row["status"])}
+        # The last failure explains only a pending delivery; other statuses have their own cause.
+        if row["status"] == PENDING_DELIVERY and row["last_failure"] is not None:
+            result["lastFailure"] = str(row["last_failure"])
+        return result
+
+    def last_failure(self, identity: str) -> str | None:
+        return self.status_details(identity).get("lastFailure")
 
     def deliver(self, identity: str, webhook: str | None, sender: Sender = send) -> str:
         """Attempt one delivery. Holding the write lock serializes concurrent flushes."""
@@ -291,20 +369,25 @@ class Outbox:
             # A confirm or re-record raced with the pin. Retry from the start.
             return settle(PENDING_DELIVERY)
         if row["destination"] != destination:
-            # An earlier attempt may have landed in the other space; the request
-            # ID only deduplicates within one space, so do not resend blindly.
+            # An earlier attempt may have landed in the other space; the client
+            # message ID only deduplicates within one space, so do not resend blindly.
             return settle(PENDING_DESTINATION_CHANGE)
         self.connection.execute(
             "UPDATE intents SET attempts = attempts + 1 WHERE id = ?", (identity,)
         )
+        def fail(reason: str) -> str:
+            self.connection.execute("UPDATE intents SET last_failure = ? WHERE id = ?", (reason, identity))
+            return settle(PENDING_DELIVERY)
+
         try:
             receipt = sender(webhook, str(row["request_id"]), str(row["message"]))
-        except Exception:
-            return settle(PENDING_DELIVERY)
+        except Exception as error:
+            return fail(failure_reason(error))
         if not isinstance(receipt, str) or not RECEIPT_RE.fullmatch(receipt):
-            return settle(PENDING_DELIVERY)
+            return fail(FAILURE_NO_RECEIPT)
         self.connection.execute(
-            "UPDATE intents SET status = ?, receipt = ? WHERE id = ?", (DELIVERED, receipt, identity)
+            "UPDATE intents SET status = ?, receipt = ?, last_failure = NULL WHERE id = ?",
+            (DELIVERED, receipt, identity),
         )
         return DELIVERED
 
@@ -374,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"id": args.id, "discarded": outbox.discard(args.id)}))
             return EXIT_OK
         if args.command == "status":
-            print(json.dumps({"id": args.id, "notification": outbox.status(args.id)}))
+            print(json.dumps(outbox.status_details(args.id)))
             return EXIT_OK
         if args.command == "pending":
             pending = outbox.pending(args.repo)
