@@ -340,7 +340,10 @@ def test_failure_reasons_are_enums(module: ModuleType, box: Any) -> None:
     assert box.last_failure(identity) == "no-receipt"
 
 
-def test_an_existing_outbox_gains_the_failure_column(module: ModuleType, tmp_path: Path) -> None:
+@pytest.mark.parametrize("concurrent_upgrade", [False, True])
+def test_an_existing_outbox_gains_the_failure_column(
+    module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, concurrent_upgrade: bool
+) -> None:
     path = tmp_path / "outbox.sqlite3"
     legacy = sqlite3.connect(path)
     legacy.execute(
@@ -354,15 +357,58 @@ def test_an_existing_outbox_gains_the_failure_column(module: ModuleType, tmp_pat
         (f"{REPO}#7", REPO, HEAD, MERGE, MESSAGE),
     )
     legacy.commit()
-    legacy.close()
+    competing_upgrade_finished = False
+    if concurrent_upgrade:
+        connect = sqlite3.connect
+
+        def open_with_competitor(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            connection = connect(*args, **kwargs)
+
+            def finish_other_upgrade(statement: str) -> None:
+                nonlocal competing_upgrade_finished
+                if statement.startswith(("ALTER TABLE", "BEGIN IMMEDIATE")):
+                    connection.set_trace_callback(None)
+                    legacy.execute("ALTER TABLE intents ADD COLUMN last_failure TEXT")
+                    legacy.commit()
+                    competing_upgrade_finished = True
+
+            connection.set_trace_callback(finish_other_upgrade)
+            return connection
+
+        monkeypatch.setattr(sqlite3, "connect", open_with_competitor)
     box = module.Outbox(path)
     try:
+        assert competing_upgrade_finished == concurrent_upgrade
         identity = f"{REPO}#7"
         assert box.last_failure(identity) is None
         assert box.deliver(identity, WEBHOOK, Recorder(error=TimeoutError())) == module.PENDING_DELIVERY
         assert box.last_failure(identity) == "transport"
     finally:
         box.close()
+        legacy.close()
+
+
+def test_status_reads_one_snapshot(
+    module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "outbox.sqlite3"
+    writer = module.Outbox(path)
+    try:
+        identity = writer.record(REPO, 7, HEAD, MESSAGE)
+        read_row = module.Outbox._row
+
+        def read_during_delivery(reader: Any, key: str) -> Any:
+            row = read_row(reader, key)
+            if reader is not writer and row["status"] == module.AWAITING_MERGE:
+                writer.confirm(key, MERGE)
+                writer.deliver(key, WEBHOOK, Recorder(error=TimeoutError()))
+            return row
+
+        monkeypatch.setattr(module.Outbox, "_row", read_during_delivery)
+        assert module.main(["--database", str(path), "status", "--id", identity]) == 0
+        assert json.loads(capsys.readouterr().out) == {"id": identity, "notification": module.AWAITING_MERGE}
+    finally:
+        writer.close()
 
 
 def test_post_sends_the_message_as_json(module: ModuleType) -> None:

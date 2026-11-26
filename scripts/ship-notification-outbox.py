@@ -234,10 +234,14 @@ class Outbox:
             " attempts INTEGER NOT NULL DEFAULT 0,"
             " last_failure TEXT)"
         )
-        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(intents)")}
-        if "last_failure" not in columns:
-            # An outbox created before failure reasons were recorded.
-            self.connection.execute("ALTER TABLE intents ADD COLUMN last_failure TEXT")
+        def has_failure_column() -> bool:
+            return any(row[1] == "last_failure" for row in self.connection.execute("PRAGMA table_info(intents)"))
+
+        if not has_failure_column():
+            with self.connection:
+                self.connection.execute("BEGIN IMMEDIATE")
+                if not has_failure_column():
+                    self.connection.execute("ALTER TABLE intents ADD COLUMN last_failure TEXT")
 
     def close(self) -> None:
         self.connection.close()
@@ -307,16 +311,19 @@ class Outbox:
         return cursor.rowcount > 0
 
     def status(self, identity: str) -> str:
+        return self.status_details(identity)["notification"]
+
+    def status_details(self, identity: str) -> dict[str, str]:
         row = self._row(identity)
         if row is None:
             raise OutboxError("unknown notification")
-        return str(row["status"])
+        result = {"id": identity, "notification": str(row["status"])}
+        if row["last_failure"] is not None:
+            result["lastFailure"] = str(row["last_failure"])
+        return result
 
     def last_failure(self, identity: str) -> str | None:
-        row = self._row(identity)
-        if row is None:
-            raise OutboxError("unknown notification")
-        return None if row["last_failure"] is None else str(row["last_failure"])
+        return self.status_details(identity).get("lastFailure")
 
     def deliver(self, identity: str, webhook: str | None, sender: Sender = send) -> str:
         """Attempt one delivery. Holding the write lock serializes concurrent flushes."""
@@ -449,11 +456,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"id": args.id, "discarded": outbox.discard(args.id)}))
             return EXIT_OK
         if args.command == "status":
-            result = {"id": args.id, "notification": outbox.status(args.id)}
-            failure = outbox.last_failure(args.id)
-            if failure is not None:
-                result["lastFailure"] = failure
-            print(json.dumps(result))
+            print(json.dumps(outbox.status_details(args.id)))
             return EXIT_OK
         if args.command == "pending":
             pending = outbox.pending(args.repo)
