@@ -39,10 +39,10 @@ is intentionally narrow: it ships staging-base PRs only.
 2. Locate the notification outbox and confirm it can be written. It lives in
    the private state directory (`$XDG_STATE_HOME`, else `~/.local/state`, under
    `activeloom/ship-staging/`), outside any worktree, and holds identifiers,
-   the composed message, a request ID and an enum status only: never the
-   webhook URL, its key or token, or a transport error. Do not resolve or
-   print the webhook here; the helper reads it from `GCHAT_DEV_WEBHOOK_URL` or
-   `GCHAT_DEV_WEBHOOK_FILE` only when it delivers.
+   the composed message, a request ID, an enum status and an enum last-failure
+   reason only: never the webhook URL, its key or token, or a transport error.
+   Do not resolve or print the webhook here; the helper reads it from
+   `GCHAT_DEV_WEBHOOK_URL` or `GCHAT_DEV_WEBHOOK_FILE` only when it delivers.
 
    ```bash
    OUTBOX=.codex/skills/ship-staging/scripts/notification-outbox.py
@@ -345,12 +345,16 @@ is intentionally narrow: it ships staging-base PRs only.
     query fails, report the list as unavailable.
 
     The helper posts only to the pinned Google Chat host `chat.googleapis.com` at path `/v1/spaces/<space>/messages` over HTTPS,
-    refuses redirects, sends the intent's request ID so the provider
-    deduplicates a retried post, and marks the intent `delivered` only on a
-    `spaces/<space>/messages/<id>` receipt. A delivered intent is never posted
-    again, so `flush` is safe to run repeatedly. Anything else stays pending
-    with an enum reason: `pending-configuration` (no valid webhook),
-    `pending-delivery` (the post failed or returned no receipt), or
+    refuses redirects, and sends a client `messageId` derived from the
+    intent's request ID (Chat webhooks reject `requestId`), so a retried post
+    cannot create a second message. It marks the intent `delivered` only on a
+    `spaces/<space>/messages/<id>` receipt, or on a 409 `ALREADY_EXISTS` for
+    that `messageId`, which means an earlier attempt already posted it. A
+    delivered intent is never posted again, so `flush` is safe to run
+    repeatedly. Anything else stays pending with an enum reason:
+    `pending-configuration` (no valid webhook), `pending-delivery` (the post
+    failed or returned no receipt; `status` adds a `lastFailure` enum such as
+    `http-400` or `transport`), or
     `pending-destination-change` (an earlier uncertain attempt went to a
     different space; check that space, then `discard` the intent if it was
     posted or re-point the webhook to retry). Exit 3 means something is still

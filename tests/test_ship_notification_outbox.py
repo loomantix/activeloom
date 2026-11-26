@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import http.server
+import io
 import importlib.util
 import json
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -214,30 +216,153 @@ def test_webhook_is_pinned_to_the_chat_host(module: ModuleType, webhook: str) ->
         module.validate_webhook(webhook)
 
 
-def test_endpoint_pins_the_request_id(module: ModuleType) -> None:
-    endpoint = module.build_endpoint(WEBHOOK + "&requestId=attacker", "req-1")
-    assert endpoint.count("requestId=") == 1
-    assert endpoint.endswith("requestId=req-1")
+def test_message_id_is_a_stable_chat_client_id(module: ModuleType) -> None:
+    first = module.message_id_for("0b8f8a52-2f7e-4f43-9d0e-3f2f3d9b1c11")
+    assert first == module.message_id_for("0b8f8a52-2f7e-4f43-9d0e-3f2f3d9b1c11")
+    assert first != module.message_id_for("another-request")
+    for request_id in ("0b8f8a52-2f7e-4f43-9d0e-3f2f3d9b1c11", "UPPER_case/odd chars", "x" * 500):
+        message_id = module.message_id_for(request_id)
+        assert message_id.startswith("client-") and len(message_id) <= 63
+        assert all(character in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in message_id)
+        assert module.RECEIPT_RE.fullmatch(f"spaces/AAAA/messages/{message_id}")
+
+
+def test_endpoint_pins_the_message_id_and_drops_request_id(module: ModuleType) -> None:
+    message_id = module.message_id_for("req-1")
+    endpoint = module.build_endpoint(WEBHOOK + "&requestId=attacker&messageId=client-attacker", message_id)
+    query = parse_qs(urlsplit(endpoint).query)
+    assert query == {"key": [SECRET_KEY], "token": [SECRET_TOKEN], "messageId": [message_id]}
     assert endpoint.startswith("https://chat.googleapis.com/v1/spaces/AAAA/messages?")
+    with pytest.raises(ValueError):
+        module.build_endpoint(WEBHOOK, "req-1")
 
 
-def test_send_carries_the_request_id_and_message(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: list[Request] = []
+class FakeResponse:
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.status = 200
+        self.body = json.dumps(body).encode()
 
-    def fake_post(endpoint: str, message: str, opener: object = None) -> str:
-        captured.append(Request(endpoint, data=json.dumps({"text": message}).encode(), method="POST"))
-        return "spaces/AAAA/messages/m1"
+    def __enter__(self) -> "FakeResponse":
+        return self
 
-    monkeypatch.setattr(module, "post", fake_post)
-    assert module.send(WEBHOOK, "req-1", MESSAGE) == "spaces/AAAA/messages/m1"
-    (request,) = captured
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self, *args: object) -> bytes:
+        return self.body
+
+
+class FakeOpener:
+    """Answers each POST with the next scripted outcome; never touches the network."""
+
+    def __init__(self, *outcomes: tuple[int, dict[str, Any]]) -> None:
+        self.outcomes = list(outcomes)
+        self.requests: list[Request] = []
+
+    def open(self, request: Request, timeout: float) -> FakeResponse:
+        self.requests.append(request)
+        code, body = self.outcomes.pop(0)
+        if code == 200:
+            return FakeResponse(body)
+        raise HTTPError(request.full_url, code, "scripted", {}, io.BytesIO(json.dumps(body).encode()))  # type: ignore[arg-type]
+
+
+def chat_error(code: int, status: str) -> tuple[int, dict[str, Any]]:
+    return code, {"error": {"code": code, "message": "scripted provider text", "status": status}}
+
+
+def test_send_posts_with_the_client_message_id(module: ModuleType) -> None:
+    opener = FakeOpener((200, {"name": "spaces/AAAA/messages/m1"}))
+    assert module.send(WEBHOOK, "req-1", MESSAGE, opener) == "spaces/AAAA/messages/m1"
+    (request,) = opener.requests
     parts = urlsplit(request.full_url)
     assert (parts.scheme, parts.hostname, parts.path) == ("https", "chat.googleapis.com", "/v1/spaces/AAAA/messages")
-    assert parse_qs(parts.query) == {"key": [SECRET_KEY], "token": [SECRET_TOKEN], "requestId": ["req-1"]}
+    assert parse_qs(parts.query) == {
+        "key": [SECRET_KEY], "token": [SECRET_TOKEN], "messageId": [module.message_id_for("req-1")],
+    }
     assert isinstance(request.data, bytes) and json.loads(request.data) == {"text": MESSAGE}
     with pytest.raises(module.InvalidWebhook):
-        module.send("https://evil.example/v1/spaces/AAAA/messages", "req-1", MESSAGE)
-    assert len(captured) == 1
+        module.send("https://evil.example/v1/spaces/AAAA/messages", "req-1", MESSAGE, opener)
+    assert len(opener.requests) == 1
+
+
+def test_send_treats_already_exists_as_delivered(module: ModuleType) -> None:
+    opener = FakeOpener(chat_error(409, "ALREADY_EXISTS"))
+    receipt = module.send(WEBHOOK, "req-1", MESSAGE, opener)
+    assert receipt == f"spaces/AAAA/messages/{module.message_id_for('req-1')}"
+    assert module.RECEIPT_RE.fullmatch(receipt)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [chat_error(400, "INVALID_ARGUMENT"), chat_error(409, "ABORTED"), (409, {}), chat_error(500, "INTERNAL")],
+)
+def test_send_raises_on_other_http_errors(module: ModuleType, outcome: tuple[int, dict[str, Any]]) -> None:
+    with pytest.raises(HTTPError):
+        module.send(WEBHOOK, "req-1", MESSAGE, FakeOpener(outcome))
+
+
+def test_delivery_through_chat_outcomes(module: ModuleType, box: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = box.record(REPO, 7, HEAD, MESSAGE)
+    box.confirm(identity, MERGE)
+    opener = FakeOpener(
+        chat_error(400, "INVALID_ARGUMENT"),
+        chat_error(409, "ALREADY_EXISTS"),
+    )
+
+    def sender(webhook: str, request_id: str, message: str) -> str:
+        return str(module.send(webhook, request_id, message, opener))
+
+    assert box.deliver(identity, WEBHOOK, sender) == module.PENDING_DELIVERY
+    assert box.last_failure(identity) == "http-400"
+    assert box.deliver(identity, WEBHOOK, sender) == module.DELIVERED
+    assert box.last_failure(identity) is None
+    message_id = module.message_id_for(box._row(identity)["request_id"])
+    assert box._row(identity)["receipt"] == f"spaces/AAAA/messages/{message_id}"
+    # Both attempts carried the same client message ID.
+    assert {parse_qs(urlsplit(r.full_url).query)["messageId"][0] for r in opener.requests} == {message_id}
+    assert box.deliver(identity, WEBHOOK, sender) == module.DELIVERED
+    assert len(opener.requests) == 2
+
+
+def test_failure_reasons_are_enums(module: ModuleType, box: Any) -> None:
+    identity = box.record(REPO, 7, HEAD, MESSAGE)
+    box.confirm(identity, MERGE)
+    for error, expected in [
+        (TimeoutError(), "transport"),
+        (OSError("SENSITIVE-TRANSPORT-DETAIL"), "transport"),
+        (ValueError("missing message receipt"), "no-receipt"),
+        (RuntimeError("SENSITIVE"), "error"),
+    ]:
+        assert box.deliver(identity, WEBHOOK, Recorder(error=error)) == module.PENDING_DELIVERY
+        assert box.last_failure(identity) == expected
+    assert box.deliver(identity, WEBHOOK, Recorder(receipt="not a receipt")) == module.PENDING_DELIVERY
+    assert box.last_failure(identity) == "no-receipt"
+
+
+def test_an_existing_outbox_gains_the_failure_column(module: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "outbox.sqlite3"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE intents (id TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL,"
+        " head_sha TEXT NOT NULL, merge_sha TEXT, message TEXT NOT NULL, request_id TEXT NOT NULL,"
+        " destination TEXT, status TEXT NOT NULL, receipt TEXT, attempts INTEGER NOT NULL DEFAULT 0)"
+    )
+    legacy.execute(
+        "INSERT INTO intents(id, repo, pr, head_sha, merge_sha, message, request_id, status)"
+        " VALUES (?, ?, 7, ?, ?, ?, 'legacy-request', 'pending-delivery')",
+        (f"{REPO}#7", REPO, HEAD, MERGE, MESSAGE),
+    )
+    legacy.commit()
+    legacy.close()
+    box = module.Outbox(path)
+    try:
+        identity = f"{REPO}#7"
+        assert box.last_failure(identity) is None
+        assert box.deliver(identity, WEBHOOK, Recorder(error=TimeoutError())) == module.PENDING_DELIVERY
+        assert box.last_failure(identity) == "transport"
+    finally:
+        box.close()
 
 
 def test_post_sends_the_message_as_json(module: ModuleType) -> None:
@@ -260,7 +385,7 @@ def test_post_sends_the_message_as_json(module: ModuleType) -> None:
             seen.append(request)
             return Response()
 
-    assert module.post("https://chat.googleapis.com/v1/spaces/AAAA/messages?requestId=r", MESSAGE, Opener()) == "spaces/AAAA/messages/m1"
+    assert module.post("https://chat.googleapis.com/v1/spaces/AAAA/messages?messageId=client-r", MESSAGE, Opener()) == "spaces/AAAA/messages/m1"
     (request,) = seen
     assert request.get_method() == "POST"
     assert isinstance(request.data, bytes) and json.loads(request.data) == {"text": MESSAGE}
