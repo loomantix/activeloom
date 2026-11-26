@@ -362,7 +362,7 @@ def test_an_existing_outbox_gains_the_failure_column(
         connect = sqlite3.connect
 
         def open_with_competitor(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-            connection = connect(*args, **kwargs)
+            connection: sqlite3.Connection = connect(*args, **kwargs)
 
             def finish_other_upgrade(statement: str) -> None:
                 nonlocal competing_upgrade_finished
