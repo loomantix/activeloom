@@ -318,7 +318,8 @@ class Outbox:
         if row is None:
             raise OutboxError("unknown notification")
         result = {"id": identity, "notification": str(row["status"])}
-        if row["last_failure"] is not None:
+        # The last failure explains only a pending delivery; other statuses have their own cause.
+        if row["status"] == PENDING_DELIVERY and row["last_failure"] is not None:
             result["lastFailure"] = str(row["last_failure"])
         return result
 

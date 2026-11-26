@@ -192,6 +192,30 @@ def test_destination_change_does_not_resend_an_uncertain_delivery(module: Module
     assert box.pending() == {}
 
 
+def test_status_reports_last_failure_only_for_a_pending_delivery(
+    module: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "outbox.sqlite3"
+    box = module.Outbox(path)
+    try:
+        identity = box.record(REPO, 7, HEAD, MESSAGE)
+        box.confirm(identity, MERGE)
+
+        def cli_status() -> Any:
+            capsys.readouterr()
+            assert module.main(["--database", str(path), "status", "--id", identity]) == 0
+            return json.loads(capsys.readouterr().out)
+
+        assert box.deliver(identity, WEBHOOK, Recorder(error=TimeoutError())) == module.PENDING_DELIVERY
+        assert cli_status() == {"id": identity, "notification": module.PENDING_DELIVERY, "lastFailure": "transport"}
+        assert box.deliver(identity, OTHER_WEBHOOK, Recorder()) == module.PENDING_DESTINATION_CHANGE
+        assert cli_status() == {"id": identity, "notification": module.PENDING_DESTINATION_CHANGE}
+        assert box.deliver(identity, None, Recorder()) == module.PENDING_CONFIGURATION
+        assert cli_status() == {"id": identity, "notification": module.PENDING_CONFIGURATION}
+    finally:
+        box.close()
+
+
 def test_discard_never_removes_a_delivered_intent(module: ModuleType, box: Any) -> None:
     identity = box.record(REPO, 7, HEAD, MESSAGE)
     box.confirm(identity, MERGE)
@@ -396,17 +420,25 @@ def test_status_reads_one_snapshot(
     try:
         identity = writer.record(REPO, 7, HEAD, MESSAGE)
         read_row = module.Outbox._row
+        interleaved = False
 
         def read_during_delivery(reader: Any, key: str) -> Any:
+            nonlocal interleaved
             row = read_row(reader, key)
             if reader is not writer and row["status"] == module.AWAITING_MERGE:
                 writer.confirm(key, MERGE)
                 writer.deliver(key, WEBHOOK, Recorder(error=TimeoutError()))
+                interleaved = True
             return row
 
         monkeypatch.setattr(module.Outbox, "_row", read_during_delivery)
         assert module.main(["--database", str(path), "status", "--id", identity]) == 0
         assert json.loads(capsys.readouterr().out) == {"id": identity, "notification": module.AWAITING_MERGE}
+        # The race really ran: the writer's state moved underneath the single read.
+        assert interleaved
+        assert writer.status_details(identity) == {
+            "id": identity, "notification": module.PENDING_DELIVERY, "lastFailure": "transport",
+        }
     finally:
         writer.close()
 
